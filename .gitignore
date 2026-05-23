@@ -1,0 +1,55 @@
+# Python caches
+__pycache__/
+quant_collector_app/__pycache__/
+tests/__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.env
+*.env
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build and packaging artifacts
+build/
+dist/
+*.spec
+
+# Quant Replay Collector local data
+quant_collector_app/data/cache/
+quant_collector_app/data/exports/
+quant_collector_app/data/*.db
+quant_collector_app/data/*.db-wal
+quant_collector_app/data/*.db-shm
+quant_collector_app/data/theme_settings.json
+quant_collector_app/data/app_settings.json
+
+# Legacy/root local cache data
+cache/
+backup_old/
+
+# Logs and local runtime files
+logs/*.log
+logs/*.log.*
+*.log
+*.log.*
+quant_collector_app/logs/*.log
+quant_collector_app/logs/*.log.*
+quant_collector_app/data/logs/*.log
+quant_collector_app/data/logs/*.log.*
+
+# Local backups and temporary working files
+.codex-backups/
+.codex-tmp/
+*_codex_selfcheck_*/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
