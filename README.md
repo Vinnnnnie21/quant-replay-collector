@@ -37,6 +37,7 @@ K 线回放
 → 回测与参数扫描
 → 时间序列诊断
 → 数据导出与 AI 研究摘要
+```
 
 ## Screenshots
 
@@ -66,9 +67,6 @@ Quant Replay Collector is designed to bridge this gap.
 Instead of forcing subjective trading ideas into predefined rules immediately, the tool allows users to replay K-line data, annotate trading events, record labels and notes, extract event windows, compute structured features, audit strategy consistency, and export research-ready datasets.
 
 The core idea is to transform discretionary chart-based observations into structured, testable, and auditable quantitative research samples.
-
-
-然后你原来的“为什么做这个项目”可以改成更完整的版本：
 
 ## 为什么做这个项目
 
@@ -146,7 +144,7 @@ Trading/
 │  ├─ premium_monitor.py     # USDT 溢价率采样
 │  ├─ requirements.txt       # Python 依赖
 │  ├─ README.txt             # 简短运行说明
-│  ├─ 开始.bat               # Windows 开发运行脚本
+│  ├─ start.bat               # Windows 开发运行脚本
 │  ├─ build_windows.bat      # Windows 打包脚本
 │  └─ data/                  # 本地数据库、缓存、导出目录（不提交 GitHub）
 ├─ docs/
@@ -161,7 +159,7 @@ Trading/
 进入 `quant_collector_app/`，双击：
 
 ```text
-开始.bat
+start.bat
 ```
 
 该脚本会检查运行依赖，缺少依赖时自动执行：
