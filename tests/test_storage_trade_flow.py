@@ -195,3 +195,40 @@ def test_undo_close_trade_bundle_restores_open(tmp_path):
     assert storage.fetch_table("trade_events", "event_id=?", ("evt_close",)) == []
     assert storage.fetch_table("event_windows", "event_id=?", ("evt_close",)) == []
     assert storage.fetch_table("event_features", "event_id=?", ("evt_close",)) == []
+
+
+def test_clear_manual_research_records_keeps_market_and_premium_data(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.upsert_session({"session_id": SESSION_ID})
+    insert_open_bundle(storage)
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO account_equity (session_id, sequence_no) VALUES (?, ?)",
+            (SESSION_ID, 1),
+        )
+        conn.execute(
+            "INSERT INTO usdt_premium_history (sample_time_bjt) VALUES (?)",
+            (NOW,),
+        )
+        conn.execute(
+            "INSERT INTO klines (symbol, interval, open_time_utc_ms) VALUES (?, ?, ?)",
+            (SYMBOL, INTERVAL, 1),
+        )
+        conn.execute(
+            "INSERT INTO data_quality_reports (report_id, symbol, interval) VALUES (?, ?, ?)",
+            ("report_1", SYMBOL, INTERVAL),
+        )
+
+    deleted = storage.clear_manual_research_records()
+
+    assert deleted["sessions"] == 1
+    assert deleted["trades"] == 1
+    assert deleted["trade_events"] == 1
+    assert deleted["event_windows"] == 41
+    assert deleted["event_features"] == 1
+    assert deleted["account_equity"] == 1
+    for table in StorageManager.MANUAL_RESEARCH_TABLES:
+        assert storage.fetch_table(table) == []
+    assert len(storage.fetch_table("usdt_premium_history")) == 1
+    assert len(storage.fetch_table("klines")) == 1
+    assert len(storage.fetch_table("data_quality_reports")) == 1

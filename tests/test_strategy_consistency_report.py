@@ -40,5 +40,5 @@ def test_gate_failures_written_to_json_and_markdown(tmp_path):
     text = path.read_text(encoding="utf-8")
     payload = json.loads((tmp_path / "strategy_consistency.json").read_text(encoding="utf-8"))
     assert payload["gate_failures"]
-    assert "Gate Failures" in text
-    assert "sample_count below min_sample_count" in text
+    assert "硬性门槛失败项" in text
+    assert "样本数低于策略档案要求的最小值" in text
