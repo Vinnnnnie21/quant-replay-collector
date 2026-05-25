@@ -369,16 +369,19 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btnCloseShort = QtWidgets.QPushButton("平空 (X)")
         self.btnUndo = QtWidgets.QPushButton("撤销 (Ctrl+Z)")
         self.btnRedo = QtWidgets.QPushButton("重做 (Ctrl+Y)")
+        self.btnClearTradeRecords = QtWidgets.QPushButton("清空全部交易样本")
         self.btnOpenLong.setStyleSheet(style_success_button())
         self.btnOpenShort.setStyleSheet(style_danger_button())
         for btn in (self.btnCloseLong, self.btnCloseShort, self.btnUndo, self.btnRedo):
             btn.setStyleSheet(style_secondary_button())
+        self.btnClearTradeRecords.setStyleSheet(style_danger_button())
         trade_grid.addWidget(self.btnOpenLong, 0, 0)
         trade_grid.addWidget(self.btnOpenShort, 0, 1)
         trade_grid.addWidget(self.btnCloseLong, 1, 0)
         trade_grid.addWidget(self.btnCloseShort, 1, 1)
         trade_grid.addWidget(self.btnUndo, 2, 0)
         trade_grid.addWidget(self.btnRedo, 2, 1)
+        trade_grid.addWidget(self.btnClearTradeRecords, 3, 0, 1, 2)
         trade_l.addLayout(trade_grid)
         sidebar_l.addWidget(trade_box)
 
@@ -730,6 +733,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btnCloseShort.setText(f"{self.tr('close_short')} (X)")
         self.btnUndo.setText(f"{self.tr('undo')} (Ctrl+Z)")
         self.btnRedo.setText(f"{self.tr('redo')} (Ctrl+Y)")
+        self.btnClearTradeRecords.setText(self.tr("clear_trade_records"))
         self.btnExport.setText(f"{self.tr('export_session')} (E)")
         self.btnAnalysis.setText(self.tr("data_analysis"))
         self.btnSettings.setText(self.tr("settings"))
@@ -999,6 +1003,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btnCloseShort.clicked.connect(lambda: self.request_close_trade("SHORT"))
         self.btnUndo.clicked.connect(self.undo)
         self.btnRedo.clicked.connect(self.redo)
+        self.btnClearTradeRecords.clicked.connect(self.confirm_clear_trade_records)
         self.btnApplyEventMeta.clicked.connect(self.apply_labels_to_selected_event)
         self.symbolSearchEdit.textChanged.connect(self.filter_symbol_list)
         self.symbolList.itemClicked.connect(self.on_symbol_item_selected)
@@ -1092,6 +1097,73 @@ class MainWindow(QtWidgets.QMainWindow):
                 "fill_mode": self._fill_mode_value(),
             }
         )
+
+    def confirm_clear_trade_records(self):
+        if self._loading_data or self.app_state.export.running:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("clear_trade_records_title"),
+                self.tr("clear_trade_records_busy"),
+            )
+            return
+        response = QtWidgets.QMessageBox.warning(
+            self,
+            self.tr("clear_trade_records_title"),
+            self.tr("clear_trade_records_warning"),
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel,
+        )
+        if response != QtWidgets.QMessageBox.Yes:
+            return
+        phrase, accepted = QtWidgets.QInputDialog.getText(
+            self,
+            self.tr("clear_trade_records_title"),
+            self.tr("clear_trade_records_phrase_prompt"),
+        )
+        if not accepted:
+            return
+        if phrase.strip() != self.tr("clear_trade_records_phrase"):
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("clear_trade_records_title"),
+                self.tr("clear_trade_records_phrase_mismatch"),
+            )
+            return
+        try:
+            deleted = self.storage.clear_manual_research_records()
+        except Exception as exc:
+            self._operation_error(self.tr("clear_trade_records_failed"), exc)
+            return
+
+        self.playing = False
+        self._accum = 0.0
+        self.trades.clear()
+        self.events.clear()
+        self._trade_by_id.clear()
+        self._event_by_id.clear()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.restoring_session_id = None
+        self.restore_snapshot_pending = False
+        self.session_id = self._new_id("sess")
+        for checkbox in self.tag_checks:
+            checkbox.setChecked(False)
+        self.noteEdit.clear()
+        self.detailText.setPlainText(self.tr("none"))
+        self.replay_controller.load_state(self.cursor, False, self.follow_latest, 0.0)
+        self.persist_session_state()
+        self._sync_markers()
+        self._refresh_tables()
+        self._render_dirty = True
+        self._render(force=True)
+        if self._analysis_workspace is not None:
+            try:
+                self._analysis_workspace.refresh()
+            except Exception:
+                logger.exception("Failed to refresh analysis workspace after clearing trade samples")
+        message = self.tr("clear_trade_records_done").format(**deleted)
+        self._log(message)
+        QtWidgets.QMessageBox.information(self, self.tr("clear_trade_records_title"), message)
 
     def _new_id(self, prefix: str):
         return f"{prefix}_{uuid.uuid4().hex[:12]}"

@@ -12,6 +12,14 @@ from errors import DatabaseError
 
 class StorageManager:
     SCHEMA_VERSION = 3
+    MANUAL_RESEARCH_TABLES = (
+        "account_equity",
+        "event_features",
+        "event_windows",
+        "trade_events",
+        "trades",
+        "sessions",
+    )
     ALLOWED_TABLES = {
         "sessions",
         "trades",
@@ -461,6 +469,17 @@ class StorageManager:
                 "SELECT * FROM sessions ORDER BY COALESCE(last_saved_at, last_opened_at) DESC LIMIT 1"
             ).fetchone()
             return dict(row) if row else None
+
+    def clear_manual_research_records(self) -> dict[str, int]:
+        """Delete manually recorded trade research data while retaining market data."""
+        with self.connect() as conn:
+            deleted = {
+                table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+                for table in self.MANUAL_RESEARCH_TABLES
+            }
+            for table in self.MANUAL_RESEARCH_TABLES:
+                conn.execute(f"DELETE FROM {table}")
+        return deleted
 
     def insert_trade(self, row: dict[str, Any]):
         with self.connect() as conn:
