@@ -7,9 +7,10 @@ from backtesting.strategies import FeatureRuleLongStrategy, MovingAverageCrossSt
 from backtesting.types import Signal
 
 
-def test_feature_rule_rejects_future_fields():
+@pytest.mark.parametrize("column", ["fwd_ret_10", "post_close_1", "mfe_10", "mae_10", "manual_trade_final_return_pct"])
+def test_feature_rule_rejects_future_fields(column):
     with pytest.raises(ValueError):
-        FeatureRuleLongStrategy([{"column": "fwd_ret_10", "op": ">", "value": 0}])
+        FeatureRuleLongStrategy([{"column": column, "op": ">", "value": 0}])
 
 
 def test_load_candidate_rule_from_dataframe():

@@ -163,6 +163,25 @@ def test_same_bar_stop_loss_before_take_profit():
     assert trade["exit_fill_price"] == 99.0
 
 
+def test_same_bar_take_first_priority_selects_take_profit():
+    result = run_backtest(
+        _risk_df(second_high=102, second_low=98, second_close=101),
+        OpenSideStrategy("LONG"),
+        BacktestConfig(
+            fee_bps=0,
+            slippage_bps=0,
+            stop_loss_pct=1,
+            take_profit_pct=1,
+            stop_take_priority="take_first",
+            signal_timing="on_close",
+        ),
+        "BTCUSDT",
+        "1m",
+    )
+    assert result.trades.iloc[0]["exit_reason"] == "take_profit"
+    assert result.trades.iloc[0]["exit_fill_price"] == 101.0
+
+
 def test_risk_exit_still_applies_fee_and_slippage():
     result = run_backtest(
         _risk_df(second_high=104, second_low=99, second_close=90),
@@ -175,6 +194,46 @@ def test_risk_exit_still_applies_fee_and_slippage():
     assert trade["exit_reason"] == "take_profit"
     assert trade["exit_fill_price"] < trade["exit_price_raw"]
     assert trade["net_return_pct"] < trade["gross_return_pct"]
+
+
+def test_equity_curve_contains_mark_to_market_unrealized_pnl():
+    df = _risk_df(n=4)
+    df.loc[1, "close"] = 105.0
+    result = run_backtest(
+        df,
+        OpenSideStrategy("LONG"),
+        BacktestConfig(fee_bps=0, slippage_bps=0, signal_timing="on_close"),
+        "BTCUSDT",
+        "1m",
+    )
+    assert "unrealized_pnl" in result.equity_curve.columns
+    assert result.equity_curve.iloc[1]["unrealized_pnl"] > 0
+
+
+def test_taker_fee_and_funding_are_included_in_net_pnl():
+    without_cost = run_backtest(
+        _risk_df(n=4),
+        OpenSideStrategy("LONG"),
+        BacktestConfig(fee_bps=0, slippage_bps=0, signal_timing="on_close"),
+        "BTCUSDT",
+        "1m",
+    )
+    with_cost = run_backtest(
+        _risk_df(n=4),
+        OpenSideStrategy("LONG"),
+        BacktestConfig(
+            fee_bps=0,
+            taker_fee_bps=10,
+            funding_fee_bps=5,
+            slippage_bps=0,
+            signal_timing="on_close",
+        ),
+        "BTCUSDT",
+        "1m",
+    )
+    trade = with_cost.trades.iloc[0]
+    assert trade["funding_pnl_quote"] < 0
+    assert trade["net_pnl_quote"] < without_cost.trades.iloc[0]["net_pnl_quote"]
 
 
 def test_exit_bars_uses_internal_index_when_bar_index_starts_at_100():

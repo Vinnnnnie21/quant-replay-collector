@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import shutil
 import sys
+import warnings
+from datetime import datetime
 from pathlib import Path
 
 from ui_style import EXCHANGE_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME
 
 APP_NAME = "Quant Replay Collector"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_INTERVAL = "1m"
 DEFAULT_INITIAL_EQUITY = 10_000.0
@@ -71,9 +74,6 @@ LOG_DIR = ROOT_DIR / "logs"
 DB_PATH = DATA_DIR / "quant_replay.db"
 THEME_CONFIG_PATH = DATA_DIR / "theme_settings.json"
 
-for _p in (DATA_DIR, CACHE_DIR, EXPORT_DIR, LOG_DIR):
-    _p.mkdir(parents=True, exist_ok=True)
-
 BINANCE_FAPI = "https://fapi.binance.com/fapi/v1/klines"
 
 DEFAULT_THEME = dict(EXCHANGE_DARK_THEME, name="交易暗色")
@@ -93,10 +93,19 @@ def load_theme_settings() -> dict:
             merged = dict(DEFAULT_THEME)
             merged.update(data)
             return merged
-        except Exception:
-            pass
+        except Exception as exc:
+            broken = THEME_CONFIG_PATH.with_name(
+                f"{THEME_CONFIG_PATH.stem}.{datetime.now().strftime('%Y%m%d_%H%M%S')}.broken.json"
+            )
+            try:
+                shutil.copy2(THEME_CONFIG_PATH, broken)
+            except OSError:
+                broken = None
+            suffix = f" Backup: {broken}" if broken is not None else ""
+            warnings.warn(f"Theme settings are invalid; defaults loaded.{suffix} Reason: {exc}")
     return dict(DEFAULT_THEME)
 
 
 def save_theme_settings(theme: dict) -> None:
+    THEME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     THEME_CONFIG_PATH.write_text(json.dumps(theme, ensure_ascii=False, indent=2), encoding="utf-8")

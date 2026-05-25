@@ -33,8 +33,6 @@ def _make_file_handler(path: Path) -> RotatingFileHandler:
 
 def setup_logging() -> Path:
     global _LOGGER_READY, _ACTIVE_LOG_FILE
-    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-
     root = logging.getLogger()
     root.setLevel(logging.INFO)
 
@@ -45,6 +43,7 @@ def setup_logging() -> Path:
     )
     if not has_file_handler:
         try:
+            LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
             file_handler = _make_file_handler(LOG_FILE)
             _ACTIVE_LOG_FILE = LOG_FILE
         except OSError:
@@ -65,8 +64,6 @@ def setup_logging() -> Path:
 
 
 def get_logger(name: str) -> logging.Logger:
-    if not _LOGGER_READY:
-        setup_logging()
     return logging.getLogger(name)
 
 

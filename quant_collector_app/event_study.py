@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 
@@ -35,6 +36,16 @@ def _parse_tags(value: Any) -> list[str]:
     return tags or ["UNTAGGED"]
 
 
+def _bootstrap_mean_ci(series: pd.Series, draws: int = 1000) -> tuple[float | None, float | None]:
+    values = pd.to_numeric(series, errors="coerce").dropna().to_numpy(dtype=float)
+    if not len(values):
+        return None, None
+    rng = np.random.default_rng(42)
+    samples = rng.choice(values, size=(draws, len(values)), replace=True).mean(axis=1)
+    low, high = np.quantile(samples, [0.025, 0.975])
+    return float(low), float(high)
+
+
 def build_event_study_summary(events: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
     base_columns = ["label_tag", "event_type", "side", "sample_count"]
     if events.empty or features.empty or "event_id" not in events.columns or "event_id" not in features.columns:
@@ -58,6 +69,12 @@ def build_event_study_summary(events: pd.DataFrame, features: pd.DataFrame) -> p
             "event_type": event_type,
             "side": side,
             "sample_count": int(len(group)),
+            "small_sample_warning": bool(len(group) < 30),
+            "warning_text": (
+                "Small sample: descriptive output only; candidate hypothesis, not a trading signal."
+                if len(group) < 30
+                else "Candidate hypothesis, not a trading signal."
+            ),
         }
         for col in RET_COLUMNS:
             if col not in group.columns:
@@ -65,6 +82,18 @@ def build_event_study_summary(events: pd.DataFrame, features: pd.DataFrame) -> p
             series = pd.to_numeric(group[col], errors="coerce").dropna()
             row[f"{col}_mean"] = float(series.mean()) if len(series) else None
             row[f"{col}_median"] = float(series.median()) if len(series) else None
+            row[f"{col}_std"] = float(series.std(ddof=1)) if len(series) > 1 else None
+            row[f"{col}_q25"] = float(series.quantile(0.25)) if len(series) else None
+            row[f"{col}_q75"] = float(series.quantile(0.75)) if len(series) else None
             row[f"{col}_win_rate_pct"] = float((series > 0).mean() * 100.0) if len(series) else None
+            low, high = _bootstrap_mean_ci(series)
+            row[f"{col}_mean_ci95_low"] = low
+            row[f"{col}_mean_ci95_high"] = high
         rows.append(row)
-    return pd.DataFrame(rows).sort_values(["label_tag", "event_type", "side"]).reset_index(drop=True)
+    result = pd.DataFrame(rows).sort_values(["label_tag", "event_type", "side"]).reset_index(drop=True)
+    result["multiple_testing_warning"] = (
+        "Multiple groups or candidate rules require out-of-sample validation; comparisons are exploratory."
+        if len(result) > 1
+        else "Candidate hypothesis, not a trading signal."
+    )
+    return result

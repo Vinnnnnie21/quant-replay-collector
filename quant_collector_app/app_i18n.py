@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from i18n import has_translation as _has_resource_translation
+from i18n import tr as _resource_tr
+
 
 TRANSLATIONS = {
     "zh_CN": {
@@ -183,4 +186,6 @@ def tr(key: str, language: str = "zh_CN", default: str | None = None) -> str:
     table = TRANSLATIONS.get(language) or TRANSLATIONS["zh_CN"]
     if key in table:
         return table[key]
+    if _has_resource_translation(key, language):
+        return _resource_tr(key, language, default)
     return default if default is not None else key

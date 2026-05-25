@@ -19,6 +19,11 @@ env/
 build/
 dist/
 *.spec
+*.zip
+performance_reports/
+.coverage
+coverage.xml
+htmlcov/
 
 # Quant Replay Collector local data
 quant_collector_app/data/cache/
@@ -40,10 +45,12 @@ logs/*.log.*
 *.log.*
 quant_collector_app/logs/*.log
 quant_collector_app/logs/*.log.*
+quant_collector_app/logs/
 quant_collector_app/data/logs/*.log
 quant_collector_app/data/logs/*.log.*
 
 # Local backups and temporary working files
+Backup/
 .codex-backups/
 .codex-tmp/
 *_codex_selfcheck_*/

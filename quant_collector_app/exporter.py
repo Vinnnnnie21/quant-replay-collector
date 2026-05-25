@@ -11,13 +11,14 @@ from app_config import APP_VERSION, BJT, DEFAULT_INITIAL_EQUITY, DEFAULT_TRADE_N
 from app_logger import get_logger
 from analysis.binning import build_binning_report
 from analysis.data_audit import audit_export_tables, write_audit_report
-from analysis.feature_engineering import build_enhanced_event_features
+from analysis.feature_engineering import build_enhanced_event_features, feature_registry_frame
 from analysis.label_builder import build_strategy_labels
 from analysis.report_writer import write_strategy_research_report
 from analysis.rule_mining import generate_candidate_rules
 from dataset_builder import build_ml_datasets
 from event_study import build_event_study_summary
 from performance import build_performance_summary, flatten_performance_summary
+from research.dataset import run_research_pack
 from strategy_consistency.consistency import analyze_strategy_consistency
 from strategy_consistency.profile import default_reversal_long_profile
 from strategy_consistency.report import write_strategy_consistency_report
@@ -47,6 +48,7 @@ LABEL_COLUMNS = [
 class Exporter:
     def __init__(self, storage):
         self.storage = storage
+        self._parquet_unavailable_reported = False
 
     def _to_df(self, rows):
         return pd.DataFrame(rows) if rows else pd.DataFrame()
@@ -114,6 +116,13 @@ class Exporter:
             info = {"csv": csv_name, "parquet": parquet_name, "parquet_status": "ok"}
             try:
                 df.to_parquet(parquet_path, index=False)
+            except ImportError as e:
+                if not self._parquet_unavailable_reported:
+                    logger.warning("Parquet skipped: pyarrow or fastparquet is not installed. CSV export remains available.")
+                    self._parquet_unavailable_reported = True
+                info["parquet_status"] = "skipped"
+                info["parquet_error"] = f"{type(e).__name__}: {e}"
+                info.pop("parquet", None)
             except Exception as e:
                 logger.warning("Parquet 写入失败，CSV 已保留：%s", parquet_path, exc_info=True)
                 info["parquet_status"] = "failed"
@@ -193,6 +202,7 @@ class Exporter:
             "account_equity": ("账户权益曲线", "基于手动回放交易、成交模型、手续费和滑点参数生成的已实现权益曲线，不包含未平仓浮动盈亏。"),
             "event_study_summary": ("事件研究汇总", "按标签、事件类型、方向分组统计未来收益、方向调整收益、MFE/MAE 的样本数、均值、中位数和胜率。"),
             "enhanced_event_features": ("主观反转策略增强特征", "仅使用事件前 K 线和事件 K 线生成的可解释特征，用于研究大跌、承接、下影线、收回前低等主观概念。"),
+            "feature_registry": ("特征注册表", "逐字段标明含义、能否作为模型输入，以及是否存在未来信息泄漏风险。"),
             "strategy_labels": ("策略研究标签", "从未来收益、MFE/MAE 等结果字段构建的胜负、强反弹、失败反转、好交易/坏交易标签，不可作为模型输入。"),
             "feature_binning_summary": ("特征分箱分析", "按特征分位数分箱统计标签表现，帮助探索主观概念的量化边界。"),
             "candidate_rules": ("候选规则", "基于分位数阈值生成的单条件或双条件候选假设，只用于后续验证，不是交易信号。"),
@@ -266,11 +276,21 @@ class Exporter:
             "- 说明：包含收益率分布、滚动波动率、回撤、市场状态、随机事件基准摘要。\n"
             "- 数据源：当前版本优先使用 event_windows_long 构建局部事件窗口级时间序列，source=event_windows_only；完整 session K 线后续再接入。\n"
             "- 注意：统计结果只用于研究，不构成投资建议。\n"
+            "\n## research/ directory\n\n"
+            "- 用途：可审计的量化研究流水线输出。\n"
+            "- 说明：包含 feature/label registry、泄漏审计、事件研究、因子分箱、IC、候选规则、walk-forward、manifest 和研究报告。\n"
+            "- 注意：research/factor_values.csv 只包含事件当根及之前可见的模型输入；未来结果仅在 label_values.csv 和 research_samples.csv 中用于评估。\n"
         )
         path = export_dir / "data_dictionary.md"
         path.write_text(path.read_text(encoding="utf-8") + notes, encoding="utf-8")
 
-    def export_session(self, session_id: str, export_root: Path | str | None = None):
+    def export_session(
+        self,
+        session_id: str,
+        export_root: Path | str | None = None,
+        language: str = "zh_CN",
+        selected_label: str = "fwd_ret_10_side_adj",
+    ):
         export_root = Path(export_root or EXPORT_DIR)
         export_dir = export_root / f"session_{session_id}"
         export_dir.mkdir(parents=True, exist_ok=True)
@@ -322,6 +342,7 @@ class Exporter:
             "enhanced_event_features",
             lambda: build_enhanced_event_features(windows, events),
         )
+        feature_registry = feature_registry_frame()
         strategy_labels = self._safe_analysis_df(
             "strategy_labels",
             lambda: build_strategy_labels(labels if not labels.empty else features),
@@ -412,6 +433,7 @@ class Exporter:
             "account_equity": equity,
             "event_study_summary": event_study,
             "enhanced_event_features": enhanced_features,
+            "feature_registry": feature_registry,
             "strategy_labels": strategy_labels,
             "feature_binning_summary": binning_summary,
             "candidate_rules": candidate_rules,
@@ -474,7 +496,7 @@ class Exporter:
                 json.dumps(time_series_summary, ensure_ascii=False, indent=2, default=str),
                 encoding="utf-8",
             )
-            ts_report = write_time_series_report(time_series_summary, export_dir / "time_series_report.md")
+            ts_report = write_time_series_report(time_series_summary, export_dir / "time_series_report.md", language=language)
             files["time_series_summary"] = {
                 "json": "time_series_summary.json",
                 "markdown": ts_report.name,
@@ -488,6 +510,30 @@ class Exporter:
             files["time_series_summary"] = {
                 "source": "skipped",
                 "skipped_reason": f"{type(e).__name__}: {e}",
+            }
+        try:
+            research_result = run_research_pack(
+                export_dir / "research",
+                windows,
+                events,
+                trades,
+                premium,
+                selected_label=selected_label,
+                language=language,
+            )
+            files["research_pack"] = {
+                "directory": "research",
+                "manifest": "research/research_manifest.json",
+                "report": "research/research_report.md",
+                "experiment_id": research_result["manifest"]["experiment_id"],
+                "dataset_hash": research_result["manifest"]["dataset_hash"],
+            }
+        except Exception as e:
+            logger.warning("研究流水线生成失败：%s", e, exc_info=True)
+            files["research_pack"] = {
+                "directory": "research",
+                "status": "failed",
+                "error": f"{type(e).__name__}: {e}",
             }
         self._write_data_dictionary(export_dir, tables)
         self._append_data_dictionary_notes(export_dir)

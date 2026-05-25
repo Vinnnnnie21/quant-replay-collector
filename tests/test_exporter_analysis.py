@@ -125,6 +125,18 @@ def test_export_session_writes_analysis_outputs_and_keeps_ml_features_clean(tmp_
     ]
     for filename in expected:
         assert (export_dir / filename).exists(), filename
+    for filename in [
+        "research_manifest.json",
+        "data_audit.json",
+        "leakage_audit.json",
+        "event_study_summary.csv",
+        "factor_binning_summary.csv",
+        "factor_ic_summary.csv",
+        "candidate_rules.csv",
+        "walk_forward_results.csv",
+        "research_report.md",
+    ]:
+        assert (export_dir / "research" / filename).exists(), filename
 
     ml_features = pd.read_csv(export_dir / "ml_features.csv")
     forbidden = [c for c in ml_features.columns if c.startswith(("fwd_", "post_")) or c in {"mfe_10", "mae_10"}]
@@ -139,5 +151,6 @@ def test_export_session_writes_analysis_outputs_and_keeps_ml_features_clean(tmp_
     assert "strategy_consistency" in manifest["files"]
     assert "time_series_returns" in manifest["files"]
     assert manifest["files"]["time_series_summary"]["source"] == "event_windows_only"
+    assert manifest["files"]["research_pack"]["experiment_id"].startswith("exp_")
     summary = json.loads((export_dir / "time_series_summary.json").read_text(encoding="utf-8"))
     assert any("fragmented" in warning for warning in summary["warnings"])

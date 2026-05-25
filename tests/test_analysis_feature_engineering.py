@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from analysis.feature_engineering import build_enhanced_event_features
+from analysis.feature_engineering import build_enhanced_event_features, feature_registry_frame
 
 
 def _windows(include_post: bool = True):
@@ -54,3 +54,20 @@ def test_no_future_columns():
     out = build_enhanced_event_features(_windows(), _events())
     assert not any(c.startswith(("post_", "fwd_")) for c in out.columns)
 
+
+def test_professional_features_and_registry_are_past_only():
+    out = build_enhanced_event_features(_windows(), _events()).iloc[0]
+    for field in [
+        "log_ret_1",
+        "atr_14",
+        "range_atr_ratio",
+        "volume_zscore_20",
+        "distance_to_prev_high_20",
+        "fake_breakout_down",
+        "trend_slope_20",
+        "volatility_regime",
+    ]:
+        assert field in out.index
+    registry = feature_registry_frame().set_index("field")
+    assert bool(registry.loc["atr_14", "model_input_allowed"]) is True
+    assert bool(registry.loc["atr_14", "future_leakage_risk"]) is False

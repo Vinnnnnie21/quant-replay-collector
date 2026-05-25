@@ -10,6 +10,100 @@ The goal is not to claim that a strategy is profitable. The goal is to make subj
 
 > This is a research and replay tool, not a live trading system. Backtest results and AI summaries do not represent investment advice or future performance.
 
+## v1.2 Stability & Research Quality Release
+
+Version `1.2.0` tightens the research data path without changing the product into a trading system or web application.
+
+- Stable launch entry points: `python run_app.py`, `python -m quant_collector_app`, and the existing `cd quant_collector_app && python main_app.py`.
+- Versioned SQLite migration using `PRAGMA user_version`, with `PRAGMA foreign_keys=ON` enabled per connection and a five-second busy timeout. This does not assert that every legacy table has a declared foreign-key constraint.
+- Persistent `klines` and `data_quality_reports` tables for market-data provenance and audit results.
+- Reusable Binance Futures HTTP sessions, bounded retry/backoff for rate-limit, server and connection failures, cache fallback, and cache manifest files.
+- Rendering is throttled to 16 ms and large histories render the current working region instead of rebuilding the full series on each replay step.
+- Replay, premium sampling and export orchestration have isolated controller boundaries; UI layout and the PySide6/pyqtgraph desktop stack are retained.
+
+### Data Quality Audit
+
+Every online download or cache load is evaluated before use. The report records expected and actual bars, missing and duplicate bars, invalid OHLC rows, ordering status, time coverage, source and creation time. Rows with impossible OHLC relationships are excluded from the usable frame and recorded as invalid. Downloaded CSV caches receive a sibling `.manifest.json` containing the source and quality report.
+
+Quality results are stored in SQLite and exposed in the application status line with the data source, quality status, sample count and current session identifier.
+
+### SQLite Schema
+
+`StorageManager` upgrades existing local databases in place and does not remove user samples. Schema version `2` adds:
+
+- `klines`, keyed by `(symbol, interval, open_time_utc_ms)`.
+- `data_quality_reports`, keyed by `report_id`.
+
+Existing `sessions`, `trades`, `trade_events`, `event_windows`, `event_features`, `account_equity` and `usdt_premium_history` tables remain supported.
+
+Schema version `3` adds read-path indexes for session, symbol, interval, trade and event-time queries. Connections run with WAL mode, `PRAGMA foreign_keys=ON`, normal synchronous mode and a five-second busy timeout. Legacy databases are upgraded conservatively; complete declared foreign-key coverage is not claimed.
+
+### Performance And Stability Diagnostics
+
+The desktop launcher defers export, analysis, backtest and strategy-consistency imports until those tools are opened. The readonly local API is not imported or started by desktop startup. Data exports started from the main window or research page run in a background worker. Large chart histories are reduced to the visible region plus a small margin before plot items are rebuilt.
+
+Run local diagnostics:
+
+```powershell
+python scripts/profile_startup.py
+python scripts/profile_imports.py
+python scripts/profile_runtime.py
+```
+
+Reports are written to `performance_reports/`. A missing GUI dependency or unavailable Qt platform is recorded as an explicit failed probe rather than terminating the script without a report.
+
+`python quant_collector_app/self_check.py` now includes runtime directory, SQLite connection and required dependency health checks. Invalid app or theme settings are ignored safely, with a `.broken.json` backup preserved for diagnosis.
+
+### Clean Release
+
+Build a distribution directory without local caches, databases, logs, settings, Python cache directories or backup folders:
+
+```powershell
+python scripts/clean_release.py --output dist/QuantReplayCollector-Clean
+python scripts/check_release_clean.py dist/QuantReplayCollector-Clean
+```
+
+The clean directory contains source code, documentation, tests, launcher files and audit reports named `clean_release_report.json` and `clean_release_report.md`. `check_release_clean.py` must pass before a package is uploaded. Local runtime data in the working directory is not deleted. Virtual environments, prior `dist` output, performance reports, databases, cache, exports, logs, local settings and backup folders are not copied.
+
+### Feature And Label Separation
+
+Enhanced features include log returns, realized volatility, ATR-normalised candle measures, volume/range z-scores, previous-range breaks, trend slope, volatility regime and time-of-day bucket. These features use only the event bar and earlier bars.
+
+`feature_registry.csv` documents model-input eligibility and leakage risk. Forward returns, post-event windows, MFE, MAE and manual final outcomes remain label/research-result fields and are excluded from model-input datasets and feature-rule strategy conditions.
+
+### Event Studies And Backtests
+
+Event-study exports group by label, direction and event type. They now provide count, mean, median, standard deviation, quartiles, win rate and bootstrap 95% confidence intervals. Samples below 30 are explicitly marked as small; comparisons across candidate rules carry a multiple-testing warning. Candidate rules are hypotheses, not trading signals.
+
+Backtests support mark-to-market equity, unrealised PnL, maker/taker fee configuration, optional funding cost/rate input, maximum holding bars, short disabling, `on_close` versus `next_open` signal timing, and configurable same-bar stop/take resolution (`stop_first`, `take_first`, `conservative`). Strategies only receive data through the current bar. Backtests are simplified research simulations; fill assumptions, funding timing, liquidity and intrabar ordering can materially change results.
+
+The research workspace displays data audit, event study, factor binning, factor IC, candidate rules, walk-forward validation and the report in separate tables/tabs. It presents generated research output; it does not convert exploratory findings into trading instructions.
+
+### Research Localization And Time-Series Diagnostics
+
+The Research Analysis workspace defaults to Chinese and retains an English mode. Research and time-series reports accept `language="zh_CN"` or `language="en_US"`; CSV and JSON field names remain stable for downstream use.
+
+Research Analysis evaluates annotated events, labels, feature relationships and walk-forward degradation. Time-Series Diagnostics evaluates the market series itself: log-return distribution, Jarque-Bera normality diagnostics, ACF/Ljung-Box checks, volatility clustering proxies, EWMA volatility, VaR/Expected Shortfall, short-interval microstructure proxies and optional multi-symbol PCA factor summaries.
+
+Strategy Consistency v2 is a behavior audit, not a profitability score. Declared long-only or short-only behavior is not penalised for lacking the opposite side. Missing strategy definitions, small closed-trade samples, missing tags, missing risk/exit metadata, failed data quality, or failed leakage audit limit or invalidate the score.
+
+The time-series methodology is limited to explanatory diagnostics commonly used in financial time-series analysis. Diagnostics default to log return; annualized continuous-compounding return is distinct from converted simple annualized return. Ljung-Box is a dependence diagnostic, not a prediction claim. Microstructure results are proxies without tick/order-book data, and PCA factors require multi-symbol return matrices. VaR and Expected Shortfall are risk measures, not return forecasts. Candidate rules are not trading signals.
+
+### Verification
+
+From the repository root, after installing `quant_collector_app/requirements.txt`:
+
+```powershell
+$env:PYTHONPATH = ".;quant_collector_app"
+python -m compileall quant_collector_app scripts
+python -m pytest -q
+python quant_collector_app/self_check.py --core
+```
+
+See `docs/testing.md` for the full local release-validation command set.
+
+Quant Replay Collector does not connect to Binance order APIs and does not execute live trades. It is a local research tool. Its outputs do not constitute investment advice.
+
 ## 项目简介
 
 Quant Replay Collector 是一个面向主观交易策略量化研究的桌面工具，用于将“看图交易”中的主观判断转化为可记录、可统计、可验证的结构化研究样本。
@@ -132,7 +226,10 @@ Trading/
 ├─ .gitignore
 ├─ quant_collector_app/
 │  ├─ main_app.py            # 主入口、UI、回放、交易操作、会话恢复
-│  ├─ market_data.py         # Binance K 线加载、缓存、绘图项、特征计算
+│  ├─ market_data/           # HTTP、缓存、清洗、质量审计和数据特征（不依赖 Qt）
+│  ├─ views/                 # pyqtgraph 绘图组件与轻量视图辅助
+│  ├─ workers/               # K线加载和导出后台任务
+│  ├─ services/              # 市场数据、导出与分析任务入口
 │  ├─ storage.py             # SQLite 表结构与读写逻辑
 │  ├─ exporter.py            # CSV / Parquet 导出
 │  ├─ execution.py           # 模拟成交价、手续费、滑点和净收益计算
@@ -200,14 +297,11 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name QuantRepla
 
 在项目根目录运行：
 
-```bash
+```powershell
+$env:PYTHONPATH = ".;quant_collector_app"
+python -m compileall quant_collector_app scripts
 python -m pytest -q
-```
-
-也可以在 `quant_collector_app/` 下运行轻量自检：
-
-```bash
-python self_check.py
+python quant_collector_app/self_check.py --core
 ```
 
 ## 数据源说明：Binance Futures Kline API
@@ -513,50 +607,26 @@ http://127.0.0.1:8765
 - 候选规则只是研究假设，不是交易建议。
 ## 策略一致性验证
 
-`strategy_consistency` 模块用于判断人工交易样本是否来自同一套相对稳定的交易逻辑。
+`strategy_consistency` v2 衡量交易行为是否符合一套已声明、可重复、可审计的规则。它不是盈利评分，也不是多空覆盖评分。
 
-它不是盈利证明。它只判断样本是否适合继续做特征分析、规则挖掘、回测和 LLM 解读。
+`StrategyProfile` 可声明允许方向、入场标签、风险约束、持仓/退出约束及适用品种和周期。声明 `allowed_sides=["LONG"]` 后只做多不会扣方向分；未声明方向时，单边集中只产生观察性 warning，不获得高奖励。
 
-如果交易者没有固定策略，只是随机开仓，系统会提示样本不适合直接挖掘规则。这样可以降低 garbage in, garbage out 的风险。
+评分由样本充分性、策略定义完整度、入场标签、方向纪律、入场设置、风险执行、退出纪律、行为稳定性和数据质量组成。没有策略档案、样本太少、缺少标签/风险/退出元数据或数据质量失败会限制最高分；未来函数审计失败时评分无效。
 
-当前默认策略档案是“大跌后的反转 K 线做多”。审计会检查：
-
-- 方向是否集中在 LONG。
-- 标签是否稳定。
-- 备注是否缺失过多。
-- 入场前市场状态是否接近“大跌后”。
-- 相似 K 线场景下，人工动作是否一致。
-- early / middle / late 三段样本是否出现明显漂移。
-
-一致性评分解释：
-
-- `>= 80`：样本一致性较好，可以进入后续分析。
-- `60-80`：需要人工复核标签、样本定义和失败样本覆盖。
-- `< 60`：不适合直接规则挖掘。
-
-常见 warning：
-
-- 样本量不足。
-- LONG / SHORT 混杂。
-- 大量事件没有标签。
-- 大量事件没有备注。
-- 相似场景下动作冲突。
-- 可能缺少失败样本，存在选择性标注偏差。
-
-低一致性样本不应直接拿去训练、回测或交给大模型解释。否则系统可能会把混乱交易记录解释成一个看似稳定、实则无效的“策略”。
+只做多/只做空不是一致性问题。只有当策略声明要求双向交易时，方向覆盖不足才是问题。
 
 导出目录会新增：
 
 - `strategy_consistency.json`
 - `strategy_consistency_report.md`
 
-说明：一致性审计 UI 已支持主要入口中英文切换；导出的 Markdown 报告当前主要为中文，完整英文报告后续完善。
+说明：一致性审计与研究分析界面支持中英文切换；研究报告和时间序列报告均可按 `zh_CN` 或 `en_US` 生成。
 
 详细说明见 `docs/strategy_consistency.md`。
 
 ## 时间序列分析与市场状态诊断
 
-项目新增 `time_series_analysis/`，用于统计收益率分布、波动率状态、趋势状态、自相关和随机基准。
+`time_series_analysis/` 诊断行情序列本身，与标注事件的 Research Analysis 分开。默认采用 log return，输出分布/厚尾、Jarque-Bera、ACF/Ljung-Box、波动聚集 proxy、EWMA 波动率、VaR/ES、短周期微观结构 proxy 和可选多品种 PCA 因子摘要。
 
 当前导出会生成：
 
@@ -565,7 +635,7 @@ http://127.0.0.1:8765
 - `time_series_summary.json`
 - `time_series_report.md`
 
-注意：当前 exporter 主要基于 `event_windows_long` 构建局部事件窗口级分析，`source=event_windows_only`。这不是完整 session 市场分布，不能当作交易信号或因果结论。
+注意：当前 exporter 主要基于 `event_windows_long` 构建局部事件窗口级分析，`source=event_windows_only`。这不是完整 session 市场分布。没有逐笔盘口数据时，系统不能估计真实 bid-ask spread。VaR / ES 是风险度量，不是收益预测或交易信号。
 
 详细说明见 `docs/time_series_analysis.md`。
 

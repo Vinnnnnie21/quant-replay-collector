@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+import warnings
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +50,14 @@ def load_app_settings(path: Path | None = None) -> dict[str, Any]:
         return dict(DEFAULT_APP_SETTINGS)
     try:
         data = json.loads(target.read_text(encoding="utf-8"))
-    except Exception:
+    except Exception as exc:
+        broken = target.with_name(f"{target.stem}.{datetime.now().strftime('%Y%m%d_%H%M%S')}.broken.json")
+        try:
+            shutil.copy2(target, broken)
+        except OSError:
+            broken = None
+        suffix = f" Backup: {broken}" if broken is not None else ""
+        warnings.warn(f"App settings are invalid; defaults loaded.{suffix} Reason: {exc}")
         return dict(DEFAULT_APP_SETTINGS)
     if not isinstance(data, dict):
         return dict(DEFAULT_APP_SETTINGS)

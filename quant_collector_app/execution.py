@@ -69,11 +69,14 @@ def trade_outcome(
     entry_fill_price: float,
     exit_fill_price: float,
     settings: ExecutionSettings,
+    entry_fee_bps: float | None = None,
+    exit_fee_bps: float | None = None,
 ) -> dict[str, float]:
     entry = _safe_float(entry_fill_price)
     exit_ = _safe_float(exit_fill_price)
     notional = max(0.0, _safe_float(settings.notional_quote))
-    fee_rate = max(0.0, _safe_float(settings.fee_bps)) / 10_000.0
+    entry_fee_rate = max(0.0, _safe_float(settings.fee_bps if entry_fee_bps is None else entry_fee_bps)) / 10_000.0
+    exit_fee_rate = max(0.0, _safe_float(settings.fee_bps if exit_fee_bps is None else exit_fee_bps)) / 10_000.0
     if entry <= 0 or exit_ <= 0 or notional <= 0:
         return {
             "quantity": 0.0,
@@ -90,8 +93,8 @@ def trade_outcome(
     exit_notional = qty * exit_
     direction = 1.0 if str(side).upper() == "LONG" else -1.0
     gross_pnl = (exit_ - entry) * qty * direction
-    entry_fee = notional * fee_rate
-    exit_fee = exit_notional * fee_rate
+    entry_fee = notional * entry_fee_rate
+    exit_fee = exit_notional * exit_fee_rate
     total_fee = entry_fee + exit_fee
     net_pnl = gross_pnl - total_fee
     return {

@@ -1,111 +1,51 @@
-# 时间序列分析与市场状态诊断
+# 金融时间序列诊断
 
-## 模块目标
+`time_series_analysis` 分析的是行情序列本身，不是用户标记的事件是否有效。事件研究和时间序列诊断在界面与报告中分开呈现。
 
-`time_series_analysis` 用来做基础金融时间序列统计。
+## 方法对应
 
-它不生成交易信号。
-它不证明策略有效。
-它只帮助判断当前样本所在市场环境、收益分布、波动状态和随机基准口径。
+实现采用金融时间序列分析中的基础、可审计方法：
 
-## Return Distribution
+- 收益率与分布：`simple_return`、`log_return`、偏度、超额峰度、Jarque-Bera 正态性诊断和厚尾提示。
+- 序列依赖：ACF、可选 PACF、Ljung-Box 白噪声诊断；同时检查平方收益和绝对收益的依赖。
+- 波动率：滚动波动率、已实现波动率、EWMA 波动率、波动状态和 ARCH-effect proxy。
+- 尾部风险：历史、正态和 EWMA 口径的 VaR / Expected Shortfall，以及最大回撤。
+- 短周期 K 线警告：负的一阶收益自相关、零收益比例和成交量集中度只能作为微观结构 proxy。
+- 多品种共同变动：相关矩阵、滚动相关和 PCA 第一共同因子 proxy。
 
-`returns.py` 会从 K 线生成：
+这里没有实现完整 GARCH 极大似然估计、逐笔订单簿价差估计、复杂因果模型或涨跌预测器。
 
-- simple_return
-- log_return
-- rolling_return_5 / 10 / 20
-- rolling_volatility_20 / 50
-- realized_volatility_20
-- downside_volatility_20
-- high_low_range_pct
-- close_position
-- volume_zscore_20
-- return_zscore_20
+## 收益率口径
 
-`summarize_return_distribution()` 输出均值、中位数、标准差、偏度、峰度、分位数和自相关。
+CSV 同时保存 simple return 与 log return。分布、自相关、波动率和风险诊断默认使用 log return。价格水平不直接用于相关性结论。
 
-## Autocorrelation
+`annualized_log_return` 为 `mean(log_return) * periods_per_year`，表示年化连续复利收益。`annualized_return` 为 `exp(annualized_log_return) - 1`，表示由对数收益换算后的简单年化收益。两者不能混用。
 
-当前输出：
+## 输出
 
-- return autocorr lag 1 / 3 / 5
-- squared return autocorr lag 1 / 5
+`time_series_summary.json` 新增：
 
-收益率自相关用于观察短期惯性或均值回复。
-平方收益自相关用于观察波动聚集。
+- `distribution_diagnostics`
+- `autocorrelation_diagnostics`
+- `volatility_diagnostics`
+- `risk_metrics`
+- `microstructure_diagnostics`
+- `factor_model`（提供多品种重叠收益时）
 
-这只是统计描述，不是交易信号。
+原有 `return_distribution`、`regime_distribution` 和 baseline 键保留，避免破坏既有导出消费者。
 
-## Volatility Regime / Trend Regime
+`time_series_report.md` 默认中文，可通过 `language="en_US"` 生成英文版本。
 
-`regime.py` 会生成：
+Jarque-Bera 统计量渐近服从自由度为 2 的卡方分布，因此其 p 值可使用 `exp(-statistic / 2)` 的闭式 survival function。Ljung-Box 在 `scipy` 可用时使用卡方 survival function；缺少 `scipy` 时返回近似 p 值并标记 `p_value_method="normal_approximation"`，该结果仅供诊断参考。
 
-- volatility_regime: low_vol / normal_vol / high_vol / extreme_vol
-- trend_regime: uptrend / downtrend / range
-- drawdown_pct
-- rolling_return_50
-- rolling_volatility_50
-- trend_threshold
-- regime_label
+## 风险解释
 
-趋势阈值使用：
+VaR / ES 使用损失口径，正数表示损失。VaR 只表示阈值；超过阈值后的损失需要用 ES 辅助观察。两者均不是收益预测或交易信号。
 
-```text
-trend_threshold = max(min_abs_threshold, vol_multiplier * rolling_volatility_50 * sqrt(window))
-```
+对于 `1m`、`3m`、`5m` K 线，没有逐笔成交与 bid/ask 数据时，系统只报告噪声 proxy，不能估计真实 bid-ask spread。`bid_ask_bounce_proxy` 使用 lag-1 return autocorrelation `< -0.15` 的经验阈值，只提示可能存在高频噪声，不是价差估计。
 
-这样能把单根 bar 波动率缩放到同一窗口口径，再和 rolling_return 做比较。
+PCA factor model 需要至少两个品种的重叠收益矩阵。单品种 K 线只会返回不可用提示，不能据此估计共同市场因子。
 
-## event_windows_only 的限制
+## 数据限制
 
-当前 exporter 还不能读取完整 session K 线。
-所以导出中的 `time_series_summary.json` 默认使用 `event_windows_long` 拼出局部事件窗口序列，标记为：
-
-```text
-source = event_windows_only
-```
-
-这不是完整市场分布。
-它只代表被标注事件附近的局部样本。
-
-不能把它解释成整个回放区间的市场状态。
-
-## Baseline 口径
-
-### event_label_resampling
-
-`build_random_event_baseline()` 当前做的是事件标签重采样。
-
-它从已有 `event_features` / labels 里抽样。
-这不是完整随机市场事件基准。
-它只能回答：“已标注事件内部的结果分布大概是什么样”。
-
-如果样本本身有选择性偏差，这个 baseline 也会继承偏差。
-
-### random_bar_forward_return
-
-`build_random_bar_baseline()` 是为完整 K 线准备的随机 bar 基准。
-
-它会从完整 K 线中随机抽 bar，并计算未来 horizon 根方向调整收益：
-
-- LONG: `close[t+h] / close[t] - 1`
-- SHORT: `close[t] / close[t+h] - 1`
-
-当前 exporter 还没有完整 session K 线存储，所以这个函数主要作为后续接入点。
-
-## 为什么时间序列统计不等于交易信号
-
-收益分布、波动率状态、自相关和随机基准只是描述性统计。
-
-它们不能说明某个点应该买入或卖出。
-它们也不能证明某个策略有因果优势。
-
-只有经过清晰规则、费用滑点、样本外验证和失败样本审计后，才有资格进入回测研究。
-
-## Roadmap
-
-- 保存完整 session K 线，用于真正 session-level 时间序列分析。
-- 增加随机大跌基准，而不是只做全市场随机 bar。
-- 按 regime 分层回测，比较不同市场状态下的规则稳定性。
-- 增加事件窗口统计和完整市场统计的差异报告。
+若导出的来源为 `event_windows_only`，序列是事件周围的片段集合，不代表完整市场时间序列；跨窗口收益被故意禁止。这种输出适合局部诊断，不适合宣称全时段市场性质。

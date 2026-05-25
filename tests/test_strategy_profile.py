@@ -35,6 +35,14 @@ def test_profile_save_and_load(tmp_path):
     assert profile_to_dict(loaded)["expected_entry_features"]["pre_ret_20"]["value"] == -0.02
 
 
+def test_legacy_profile_direction_maps_to_allowed_sides(tmp_path):
+    path = tmp_path / "legacy.json"
+    path.write_text('{"expected_direction": "BOTH", "required_tags": ["A"]}', encoding="utf-8")
+    loaded = load_strategy_profile(path)
+    assert loaded.allowed_sides == ["LONG", "SHORT"]
+    assert loaded.required_entry_tags == ["A"]
+
+
 def test_load_profile_missing_file_returns_default(tmp_path):
     loaded = load_strategy_profile(tmp_path / "missing.json")
     assert loaded.strategy_id == "reversal_long_after_drop"

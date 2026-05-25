@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import math
+
 import pandas as pd
 
-from time_series_analysis.returns import build_event_window_return_series, build_return_series, summarize_return_distribution
+from time_series_analysis.returns import annualized_log_return, annualized_return, build_event_window_return_series, build_return_series, cumulative_log_return, log_return, simple_return, summarize_return_distribution
 
 
 def _klines(n=80):
@@ -23,6 +25,32 @@ def test_build_return_series_empty_safe():
     out = build_return_series(pd.DataFrame())
     assert out.empty
     assert "simple_return" in out.columns
+
+
+def test_simple_and_log_return_calculation():
+    close = pd.Series([100.0, 101.0, 99.0])
+    assert abs(simple_return(close).iloc[1] - 0.01) < 1e-12
+    assert abs(log_return(close).iloc[1] - 0.009950330853168092) < 1e-12
+
+
+def test_annualized_return_distinguishes_log_and_simple_compounding():
+    values = pd.Series([0.001, 0.002, -0.0005])
+    annual_log = annualized_log_return(values, periods_per_year=12)
+    annual_simple = annualized_return(values, periods_per_year=12)
+    assert annual_log == values.mean() * 12
+    assert abs(annual_simple - math.expm1(annual_log)) < 1e-12
+    assert annual_simple != annual_log
+    assert abs(annual_simple - annual_log) < 0.001
+
+
+def test_cumulative_log_return_is_cumulative_sum():
+    values = pd.Series([0.01, -0.02, 0.03])
+    result = cumulative_log_return(values)
+    assert abs(result.iloc[-1] - values.sum()) < 1e-12
+
+
+def test_annualized_simple_return_is_safe_when_exponential_overflows():
+    assert annualized_return(pd.Series([1.0]), periods_per_year=1000) is None
 
 
 def test_build_return_series_outputs_required_columns():
@@ -46,6 +74,12 @@ def test_summarize_return_distribution_outputs_autocorr():
     assert summary["sample_count"] > 0
     assert "autocorr_lag_1" in summary
     assert "squared_return_autocorr_lag_5" in summary
+
+
+def test_constant_returns_have_no_undefined_autocorrelation():
+    summary = summarize_return_distribution(pd.DataFrame({"simple_return": [0.0] * 20}))
+    assert summary["autocorr_lag_1"] is None
+    assert summary["squared_return_autocorr_lag_1"] is None
 
 
 def test_event_window_return_series_does_not_cross_windows():

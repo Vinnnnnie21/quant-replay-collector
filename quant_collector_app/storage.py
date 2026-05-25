@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from app_config import DB_PATH
+from errors import DatabaseError
 
 
 class StorageManager:
+    SCHEMA_VERSION = 3
     ALLOWED_TABLES = {
         "sessions",
         "trades",
@@ -18,6 +20,8 @@ class StorageManager:
         "event_features",
         "account_equity",
         "usdt_premium_history",
+        "klines",
+        "data_quality_reports",
     }
     TRADE_COLUMNS = [
         "trade_id", "session_id", "symbol", "interval", "side", "status",
@@ -33,15 +37,30 @@ class StorageManager:
 
     def __init__(self, db_path: Path | str = DB_PATH):
         self.db_path = str(db_path)
-        self._init_db()
+        try:
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            self._init_db()
+        except OSError as exc:
+            raise DatabaseError(f"Database directory is not writable: {exc}") from exc
 
     @contextmanager
     def connect(self):
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
         try:
+            conn = sqlite3.connect(self.db_path)
+        except sqlite3.Error as exc:
+            raise DatabaseError(f"Cannot open database: {exc}") from exc
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             yield conn
             conn.commit()
+        except sqlite3.OperationalError as exc:
+            conn.rollback()
+            if "locked" in str(exc).lower():
+                raise DatabaseError("Database is temporarily busy. Please retry after the current save completes.") from exc
+            raise DatabaseError(f"SQLite operation failed: {exc}") from exc
         except Exception:
             conn.rollback()
             raise
@@ -49,6 +68,22 @@ class StorageManager:
             conn.close()
 
     def _init_db(self):
+        with self.connect() as conn:
+            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+        if version > self.SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Database schema version {version} is newer than supported version {self.SCHEMA_VERSION}."
+            )
+        # Version 0 databases predate migration metadata. The v1 repair is
+        # idempotent and also completes partially upgraded legacy databases.
+        self._migrate_to_v1()
+        if version < 2:
+            self._migrate_to_v2()
+        self._migrate_to_v3()
+        with self.connect() as conn:
+            conn.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
+
+    def _migrate_to_v1(self):
         with self.connect() as conn:
             conn.executescript(
                 """
@@ -235,6 +270,16 @@ class StorageManager:
             self._ensure_column(conn, "usdt_premium_history", "avg_premium_pct", "REAL")
             self._ensure_column(conn, "usdt_premium_history", "fx_source", "TEXT")
             for column, column_type in {
+                "symbol": "TEXT",
+                "interval": "TEXT",
+                "start_date_bjt": "TEXT",
+                "end_date_bjt": "TEXT",
+                "cursor_bar_index": "INTEGER",
+                "follow_latest": "INTEGER",
+                "speed": "REAL",
+                "last_opened_at": "TEXT",
+                "last_saved_at": "TEXT",
+                "app_version": "TEXT",
                 "initial_equity": "REAL",
                 "trade_notional": "REAL",
                 "fee_bps": "REAL",
@@ -243,6 +288,21 @@ class StorageManager:
             }.items():
                 self._ensure_column(conn, "sessions", column, column_type)
             for column, column_type in {
+                "symbol": "TEXT",
+                "interval": "TEXT",
+                "side": "TEXT",
+                "entry_event_id": "TEXT",
+                "exit_event_id": "TEXT",
+                "entry_bar_index": "INTEGER",
+                "exit_bar_index": "INTEGER",
+                "entry_bar_time_bjt": "TEXT",
+                "exit_bar_time_bjt": "TEXT",
+                "entry_real_time_bjt": "TEXT",
+                "exit_real_time_bjt": "TEXT",
+                "entry_price_proxy": "REAL",
+                "exit_price_proxy": "REAL",
+                "holding_bars": "INTEGER",
+                "final_return_pct": "REAL",
                 "fill_mode": "TEXT",
                 "fee_bps": "REAL",
                 "slippage_bps": "REAL",
@@ -259,8 +319,77 @@ class StorageManager:
                 "gross_return_pct": "REAL",
                 "net_return_pct": "REAL",
                 "fee_return_pct": "REAL",
+                "created_at": "TEXT",
+                "updated_at": "TEXT",
             }.items():
                 self._ensure_column(conn, "trades", column, column_type)
+
+    def _migrate_to_v2(self):
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS klines (
+                    symbol TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    open_time_utc_ms INTEGER NOT NULL,
+                    open_time_bjt TEXT,
+                    close_time_utc_ms INTEGER,
+                    open REAL,
+                    high REAL,
+                    low REAL,
+                    close REAL,
+                    volume REAL,
+                    source TEXT,
+                    downloaded_at TEXT,
+                    data_quality_status TEXT,
+                    PRIMARY KEY (symbol, interval, open_time_utc_ms)
+                );
+                CREATE INDEX IF NOT EXISTS idx_klines_symbol_interval_time
+                    ON klines(symbol, interval, open_time_utc_ms);
+
+                CREATE TABLE IF NOT EXISTS data_quality_reports (
+                    report_id TEXT PRIMARY KEY,
+                    symbol TEXT,
+                    interval TEXT,
+                    start_time_bjt TEXT,
+                    end_time_bjt TEXT,
+                    expected_bars INTEGER,
+                    actual_bars INTEGER,
+                    missing_bars INTEGER,
+                    duplicated_bars INTEGER,
+                    invalid_rows INTEGER,
+                    first_open_time_bjt TEXT,
+                    last_open_time_bjt TEXT,
+                    created_at TEXT,
+                    report_json TEXT
+                );
+                CREATE INDEX IF NOT EXISTS idx_quality_symbol_interval_time
+                    ON data_quality_reports(symbol, interval, created_at);
+                """
+            )
+
+    def _migrate_to_v3(self):
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE INDEX IF NOT EXISTS idx_sessions_symbol_interval
+                    ON sessions(symbol, interval);
+                CREATE INDEX IF NOT EXISTS idx_trades_session_symbol_interval
+                    ON trades(session_id, symbol, interval);
+                CREATE INDEX IF NOT EXISTS idx_trade_events_trade_time
+                    ON trade_events(trade_id, bar_open_time_bjt);
+                CREATE INDEX IF NOT EXISTS idx_trade_events_symbol_interval
+                    ON trade_events(symbol, interval);
+                CREATE INDEX IF NOT EXISTS idx_event_windows_session_event
+                    ON event_windows(session_id, event_id);
+                CREATE INDEX IF NOT EXISTS idx_event_features_symbol_interval
+                    ON event_features(symbol, interval);
+                """
+            )
+
+    def schema_version(self) -> int:
+        with self.connect() as conn:
+            return int(conn.execute("PRAGMA user_version").fetchone()[0])
 
 
     def _ensure_column(self, conn, table: str, column: str, column_type: str):
@@ -722,6 +851,92 @@ class StorageManager:
                     row.get("p2p_avg_price_cny"), row.get("usd_cny_rate"),
                     row.get("buy_premium_pct"), row.get("sell_premium_pct"), row.get("avg_premium_pct"),
                     row.get("premium_pct"), row.get("fx_source"), row.get("sample_status"), row.get("error_message"),
+                ),
+            )
+
+    def upsert_klines(self, rows: Iterable[dict[str, Any]]) -> None:
+        payload = list(rows)
+        if not payload:
+            return
+        with self.connect() as conn:
+            conn.executemany(
+                """
+                INSERT INTO klines (
+                    symbol, interval, open_time_utc_ms, open_time_bjt, close_time_utc_ms,
+                    open, high, low, close, volume, source, downloaded_at, data_quality_status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(symbol, interval, open_time_utc_ms) DO UPDATE SET
+                    open_time_bjt=excluded.open_time_bjt,
+                    close_time_utc_ms=excluded.close_time_utc_ms,
+                    open=excluded.open,
+                    high=excluded.high,
+                    low=excluded.low,
+                    close=excluded.close,
+                    volume=excluded.volume,
+                    source=excluded.source,
+                    downloaded_at=excluded.downloaded_at,
+                    data_quality_status=excluded.data_quality_status
+                """,
+                [
+                    (
+                        row.get("symbol"),
+                        row.get("interval"),
+                        row.get("open_time_utc_ms"),
+                        row.get("open_time_bjt"),
+                        row.get("close_time_utc_ms"),
+                        row.get("open"),
+                        row.get("high"),
+                        row.get("low"),
+                        row.get("close"),
+                        row.get("volume"),
+                        row.get("source"),
+                        row.get("downloaded_at"),
+                        row.get("data_quality_status"),
+                    )
+                    for row in payload
+                ],
+            )
+
+    def save_data_quality_report(self, row: dict[str, Any]) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO data_quality_reports (
+                    report_id, symbol, interval, start_time_bjt, end_time_bjt,
+                    expected_bars, actual_bars, missing_bars, duplicated_bars,
+                    invalid_rows, first_open_time_bjt, last_open_time_bjt,
+                    created_at, report_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(report_id) DO UPDATE SET
+                    symbol=excluded.symbol,
+                    interval=excluded.interval,
+                    start_time_bjt=excluded.start_time_bjt,
+                    end_time_bjt=excluded.end_time_bjt,
+                    expected_bars=excluded.expected_bars,
+                    actual_bars=excluded.actual_bars,
+                    missing_bars=excluded.missing_bars,
+                    duplicated_bars=excluded.duplicated_bars,
+                    invalid_rows=excluded.invalid_rows,
+                    first_open_time_bjt=excluded.first_open_time_bjt,
+                    last_open_time_bjt=excluded.last_open_time_bjt,
+                    created_at=excluded.created_at,
+                    report_json=excluded.report_json
+                """,
+                (
+                    row.get("report_id"),
+                    row.get("symbol"),
+                    row.get("interval"),
+                    row.get("start_time_bjt"),
+                    row.get("end_time_bjt"),
+                    row.get("expected_bars"),
+                    row.get("actual_bars"),
+                    row.get("missing_bars"),
+                    row.get("duplicated_bars"),
+                    row.get("invalid_rows"),
+                    row.get("first_open_time_bjt"),
+                    row.get("last_open_time_bjt"),
+                    row.get("created_at"),
+                    row.get("report_json"),
                 ),
             )
 

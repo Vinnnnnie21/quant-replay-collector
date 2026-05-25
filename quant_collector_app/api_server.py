@@ -18,7 +18,14 @@ from storage import StorageManager
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 
 app = FastAPI(title=f"{APP_NAME} Local Readonly API", version="1.0")
-storage = StorageManager()
+storage: StorageManager | None = None
+
+
+def _storage() -> StorageManager:
+    global storage
+    if storage is None:
+        storage = StorageManager()
+    return storage
 
 
 def _validate_session_id(session_id: str) -> str:
@@ -32,12 +39,13 @@ def _df_rows(rows: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 def _row_counts(session_id: str) -> dict[str, int]:
+    database = _storage()
     return {
-        "trades": len(storage.fetch_table("trades", "session_id=?", (session_id,))),
-        "trade_events": len(storage.fetch_table("trade_events", "session_id=?", (session_id,))),
-        "event_windows": len(storage.fetch_table("event_windows", "session_id=?", (session_id,))),
-        "event_features": len(storage.fetch_table("event_features", "session_id=?", (session_id,))),
-        "account_equity": len(storage.fetch_table("account_equity", "session_id=?", (session_id,))),
+        "trades": len(database.fetch_table("trades", "session_id=?", (session_id,))),
+        "trade_events": len(database.fetch_table("trade_events", "session_id=?", (session_id,))),
+        "event_windows": len(database.fetch_table("event_windows", "session_id=?", (session_id,))),
+        "event_features": len(database.fetch_table("event_features", "session_id=?", (session_id,))),
+        "account_equity": len(database.fetch_table("account_equity", "session_id=?", (session_id,))),
     }
 
 
@@ -53,7 +61,7 @@ def health():
 
 @app.get("/api/sessions")
 def list_sessions():
-    rows = storage.fetch_table("sessions")
+    rows = _storage().fetch_table("sessions")
     rows.sort(key=lambda r: str(r.get("last_saved_at") or ""), reverse=True)
     allowed = ["session_id", "symbol", "interval", "start_date_bjt", "end_date_bjt", "last_saved_at"]
     return [{k: row.get(k) for k in allowed} for row in rows[:50]]
@@ -62,11 +70,12 @@ def list_sessions():
 @app.get("/api/session/{session_id}/summary")
 def session_summary(session_id: str):
     session_id = _validate_session_id(session_id)
-    sessions = storage.fetch_table("sessions", "session_id=?", (session_id,))
+    database = _storage()
+    sessions = database.fetch_table("sessions", "session_id=?", (session_id,))
     if not sessions:
         raise HTTPException(status_code=404, detail="session not found")
-    trades = storage.fetch_table("trades", "session_id=?", (session_id,))
-    equity = storage.fetch_table("account_equity", "session_id=?", (session_id,))
+    trades = database.fetch_table("trades", "session_id=?", (session_id,))
+    equity = database.fetch_table("account_equity", "session_id=?", (session_id,))
     return {
         "session_info": {k: v for k, v in sessions[0].items() if "path" not in str(k).lower()},
         "performance_summary": build_performance_summary(trades, equity, sessions[0].get("initial_equity")),
@@ -77,18 +86,20 @@ def session_summary(session_id: str):
 @app.get("/api/session/{session_id}/llm-context")
 def llm_context(session_id: str, max_rows: int = 20):
     session_id = _validate_session_id(session_id)
-    if not storage.fetch_table("sessions", "session_id=?", (session_id,)):
+    database = _storage()
+    if not database.fetch_table("sessions", "session_id=?", (session_id,)):
         raise HTTPException(status_code=404, detail="session not found")
-    context = build_llm_context(session_id, storage, _export_dir_for_session(session_id), max_rows=max_rows)
+    context = build_llm_context(session_id, database, _export_dir_for_session(session_id), max_rows=max_rows)
     return JSONResponse(context)
 
 
 @app.post("/api/session/{session_id}/llm-analysis/mock")
 def mock_llm_analysis(session_id: str):
     session_id = _validate_session_id(session_id)
-    if not storage.fetch_table("sessions", "session_id=?", (session_id,)):
+    database = _storage()
+    if not database.fetch_table("sessions", "session_id=?", (session_id,)):
         raise HTTPException(status_code=404, detail="session not found")
-    context = build_llm_context(session_id, storage, _export_dir_for_session(session_id), max_rows=20)
+    context = build_llm_context(session_id, database, _export_dir_for_session(session_id), max_rows=20)
     return analyze_strategy_context(context, provider="mock")
 
 
@@ -96,4 +107,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run("api_server:app", host="127.0.0.1", port=8765, reload=False)
-

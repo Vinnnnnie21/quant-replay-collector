@@ -113,3 +113,17 @@ def test_export_session_writes_core_files(tmp_path):
     assert "performance_summary" in manifest["files"]
     assert "ml_features" in manifest["files"]
     assert "event_study_summary" in manifest["files"]
+
+
+def test_export_session_passes_selected_research_label(tmp_path):
+    storage = make_storage(tmp_path)
+    insert_session(storage)
+    insert_complete_trade(storage)
+
+    export_dir = Exporter(storage).export_session(
+        SESSION_ID,
+        tmp_path / "exports",
+        selected_label="fwd_ret_5_side_adj",
+    )
+    research_manifest = json.loads((export_dir / "research" / "research_manifest.json").read_text(encoding="utf-8"))
+    assert research_manifest["selected_label"] == "fwd_ret_5_side_adj"

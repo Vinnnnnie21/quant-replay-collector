@@ -1,14 +1,11 @@
 from __future__ import annotations
 
+import argparse
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
-
-from app_config import EVENT_WINDOW_POST_BARS, EVENT_WINDOW_PRE_BARS
-from exporter import Exporter
-from storage import StorageManager
-
 
 SESSION_ID = "sess_selfcheck"
 NOW = "2026-01-01T00:00:00+08:00"
@@ -34,6 +31,8 @@ def _event(event_id: str, trade_id: str, event_type: str, bar_index: int, price:
 
 
 def _windows():
+    from app_config import EVENT_WINDOW_POST_BARS, EVENT_WINDOW_PRE_BARS
+
     return [
         {
             "offset": offset,
@@ -71,10 +70,38 @@ def _feature(event_id: str, trade_id: str, event_type: str):
     }
 
 
-def run_self_check() -> dict:
+def _gui_dependency_check() -> dict:
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    try:
+        from PySide6 import QtWidgets
+        import pyqtgraph  # noqa: F401
+        from main_app import MainWindow  # noqa: F401
+    except ImportError as exc:
+        return {"status": "failed", "available": False, "reason": f"GUI dependency unavailable: {exc}"}
+    try:
+        app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+        app.processEvents()
+    except Exception as exc:
+        return {"status": "failed", "available": False, "reason": f"Offscreen QApplication failed: {exc}"}
+    return {"status": "ok", "available": True, "reason": None}
+
+
+def _run_core_check() -> dict:
+    from app_health import run_health_checks
+
     tmp = Path(tempfile.mkdtemp(prefix="qrc_selfcheck_"))
     try:
+        health = run_health_checks(tmp / "runtime", tmp / "health.db", require_gui=False)
+        if health["status"] != "ok":
+            return {"status": "failed", "health": health, "warnings": []}
+
+        from exporter import Exporter
+        from storage import StorageManager
+
         storage = StorageManager(tmp / "selfcheck.db")
+        assert storage.schema_version() == StorageManager.SCHEMA_VERSION
+        assert storage.fetch_table("klines") == []
+        assert storage.fetch_table("data_quality_reports") == []
         storage.upsert_session(
             {
                 "session_id": SESSION_ID,
@@ -147,10 +174,48 @@ def run_self_check() -> dict:
         assert "strategy_consistency" in manifest["files"]
         assert len(_windows()) == 41
         assert manifest["row_counts"]["event_windows_long"] == 82
-        return {"status": "ok", "export_dir": str(out_dir)}
+        parquet_statuses = [
+            info.get("parquet_status")
+            for info in manifest.get("files", {}).values()
+            if isinstance(info, dict) and "parquet_status" in info
+        ]
+        warnings = []
+        if "skipped" in parquet_statuses:
+            warnings.append("Parquet skipped: pyarrow or fastparquet is not installed. CSV export remains available.")
+        return {"status": "ok", "health": health, "export_dir": str(out_dir), "warnings": warnings}
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def run_self_check(mode: str = "core", check_gui: bool | None = None) -> dict:
+    if check_gui is not None:
+        mode = "all" if check_gui else "core"
+    if mode not in {"core", "gui", "all"}:
+        raise ValueError(f"Unsupported self-check mode: {mode}")
+    if mode == "gui":
+        gui = _gui_dependency_check()
+        return {"status": gui["status"], "mode": mode, "gui": gui}
+    result = _run_core_check()
+    result["mode"] = mode
+    if mode == "all":
+        result["gui"] = _gui_dependency_check()
+        if result["gui"]["status"] != "ok":
+            result["status"] = "failed"
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run Quant Replay Collector health and export checks.")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--core", action="store_true", help="Run non-GUI storage and export checks (default).")
+    mode.add_argument("--gui", action="store_true", help="Run GUI dependency and offscreen application probes only.")
+    mode.add_argument("--all", action="store_true", help="Run core and GUI probes.")
+    args = parser.parse_args()
+    requested_mode = "all" if args.all else "gui" if args.gui else "core"
+    result = run_self_check(mode=requested_mode)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result["status"] == "ok" else 1
+
+
 if __name__ == "__main__":
-    print(json.dumps(run_self_check(), ensure_ascii=False, indent=2))
+    raise SystemExit(main())

@@ -1,0 +1,37 @@
+name: quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    env:
+      PYTHONPATH: .;quant_collector_app
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: quant_collector_app/requirements.txt
+      - name: Install dependencies
+        run: python -m pip install -r quant_collector_app/requirements.txt
+      - name: Compile application
+        run: python -m compileall quant_collector_app scripts
+      - name: Run tests
+        run: python -m pytest -q
+      - name: Run core self check
+        run: python quant_collector_app/self_check.py --core
+      - name: Build clean release
+        run: python scripts/clean_release.py --output dist/QuantReplayCollector-Clean
+      - name: Verify clean release content
+        run: python scripts/check_release_clean.py dist/QuantReplayCollector-Clean
+      - name: Upload clean release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: QuantReplayCollector-Clean
+          path: dist/QuantReplayCollector-Clean
+          if-no-files-found: error

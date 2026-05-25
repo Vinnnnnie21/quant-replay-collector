@@ -33,6 +33,48 @@ RETURN_COLUMNS = [
 ]
 
 
+def simple_return(close: pd.Series) -> pd.Series:
+    prices = pd.to_numeric(close, errors="coerce")
+    return prices.pct_change()
+
+
+def log_return(close: pd.Series) -> pd.Series:
+    prices = pd.to_numeric(close, errors="coerce")
+    return np.log(prices / prices.shift(1)).replace([np.inf, -np.inf], np.nan)
+
+
+def cumulative_log_return(log_ret: pd.Series) -> pd.Series:
+    return pd.to_numeric(log_ret, errors="coerce").fillna(0.0).cumsum()
+
+
+def annualized_log_return(log_ret: pd.Series, periods_per_year: int = 365 * 24 * 60) -> float | None:
+    clean = pd.to_numeric(log_ret, errors="coerce").dropna()
+    if clean.empty:
+        return None
+    return _finite_float(float(clean.mean()) * int(periods_per_year))
+
+
+def annualized_return(log_ret: pd.Series, periods_per_year: int = 365 * 24 * 60) -> float | None:
+    annual_log_return = annualized_log_return(log_ret, periods_per_year)
+    if annual_log_return is None:
+        return None
+    try:
+        return _finite_float(math.expm1(annual_log_return))
+    except OverflowError:
+        return None
+
+
+def rolling_return(log_ret: pd.Series, window: int) -> pd.Series:
+    return pd.to_numeric(log_ret, errors="coerce").rolling(max(1, int(window)), min_periods=1).sum()
+
+
+def excess_return(log_ret: pd.Series, benchmark_log_ret: pd.Series | None = None) -> pd.Series:
+    values = pd.to_numeric(log_ret, errors="coerce")
+    if benchmark_log_ret is None:
+        return values
+    return values - pd.to_numeric(benchmark_log_ret, errors="coerce")
+
+
 def _empty_returns() -> pd.DataFrame:
     return pd.DataFrame(columns=RETURN_COLUMNS)
 
@@ -48,8 +90,8 @@ def _add_return_columns(out: pd.DataFrame, group_key: str | None = None) -> pd.D
     high_low = (out["high"] - out["low"]).replace(0, np.nan)
     if group_key:
         grouped_close = out.groupby(group_key, sort=False)["close"]
-        simple_return = grouped_close.pct_change()
-        log_return = np.log(close / grouped_close.shift(1)).replace([np.inf, -np.inf], np.nan)
+        simple_ret = grouped_close.pct_change()
+        log_ret = np.log(close / grouped_close.shift(1)).replace([np.inf, -np.inf], np.nan)
         out["rolling_return_5"] = close / grouped_close.shift(5) - 1.0
         out["rolling_return_10"] = close / grouped_close.shift(10) - 1.0
         out["rolling_return_20"] = close / grouped_close.shift(20) - 1.0
@@ -57,41 +99,41 @@ def _add_return_columns(out: pd.DataFrame, group_key: str | None = None) -> pd.D
             lambda s: s.rolling(20, min_periods=2).std()
         ) if "simple_return" in out.columns else np.nan
     else:
-        simple_return = close.pct_change()
-        log_return = np.log(close / close.shift(1)).replace([np.inf, -np.inf], np.nan)
+        simple_ret = simple_return(close)
+        log_ret = log_return(close)
         out["rolling_return_5"] = close / close.shift(5) - 1.0
         out["rolling_return_10"] = close / close.shift(10) - 1.0
         out["rolling_return_20"] = close / close.shift(20) - 1.0
 
-    out["simple_return"] = simple_return
-    out["log_return"] = log_return
-    out["abs_return"] = simple_return.abs()
-    out["squared_return"] = simple_return.pow(2)
+    out["simple_return"] = simple_ret
+    out["log_return"] = log_ret
+    out["abs_return"] = log_ret.abs()
+    out["squared_return"] = log_ret.pow(2)
 
     if group_key:
-        out["rolling_volatility_20"] = out.groupby(group_key, sort=False)["simple_return"].transform(
+        out["rolling_volatility_20"] = out.groupby(group_key, sort=False)["log_return"].transform(
             lambda s: s.rolling(20, min_periods=2).std()
         )
-        out["rolling_volatility_50"] = out.groupby(group_key, sort=False)["simple_return"].transform(
+        out["rolling_volatility_50"] = out.groupby(group_key, sort=False)["log_return"].transform(
             lambda s: s.rolling(50, min_periods=2).std()
         )
         out["realized_volatility_20"] = out.groupby(group_key, sort=False)["squared_return"].transform(
             lambda s: np.sqrt(s.rolling(20, min_periods=2).sum())
         )
-        downside = out["simple_return"].where(out["simple_return"] < 0)
+        downside = out["log_return"].where(out["log_return"] < 0)
         out["downside_volatility_20"] = downside.groupby(out[group_key], sort=False).transform(
             lambda s: s.rolling(20, min_periods=2).std()
         )
         out["volume_zscore_20"] = out.groupby(group_key, sort=False)["volume"].transform(lambda s: _safe_zscore(s, 20))
-        out["return_zscore_20"] = out.groupby(group_key, sort=False)["simple_return"].transform(lambda s: _safe_zscore(s, 20))
+        out["return_zscore_20"] = out.groupby(group_key, sort=False)["log_return"].transform(lambda s: _safe_zscore(s, 20))
     else:
-        out["rolling_volatility_20"] = simple_return.rolling(20, min_periods=2).std()
-        out["rolling_volatility_50"] = simple_return.rolling(50, min_periods=2).std()
+        out["rolling_volatility_20"] = log_ret.rolling(20, min_periods=2).std()
+        out["rolling_volatility_50"] = log_ret.rolling(50, min_periods=2).std()
         out["realized_volatility_20"] = np.sqrt(out["squared_return"].rolling(20, min_periods=2).sum())
-        downside = simple_return.where(simple_return < 0)
+        downside = log_ret.where(log_ret < 0)
         out["downside_volatility_20"] = downside.rolling(20, min_periods=2).std()
         out["volume_zscore_20"] = _safe_zscore(out["volume"], 20)
-        out["return_zscore_20"] = _safe_zscore(simple_return, 20)
+        out["return_zscore_20"] = _safe_zscore(log_ret, 20)
 
     out["high_low_range_pct"] = (out["high"] - out["low"]) / close.replace(0, np.nan)
     out["close_position"] = (out["close"] - out["low"]) / high_low
@@ -168,12 +210,15 @@ def _autocorr(series: pd.Series, lag: int) -> float | None:
     clean = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
     if len(clean) <= lag + 1:
         return None
+    if clean.iloc[:-lag].nunique() < 2 or clean.iloc[lag:].nunique() < 2:
+        return None
     return _finite_float(clean.autocorr(lag=lag))
 
 
 def summarize_return_distribution(returns_df: pd.DataFrame) -> dict:
-    if returns_df is None or returns_df.empty or "simple_return" not in returns_df.columns:
+    if returns_df is None or returns_df.empty or not {"simple_return", "log_return"}.intersection(returns_df.columns):
         return {
+            "return_definition": "log_return",
             "sample_count": 0,
             "mean_return": None,
             "median_return": None,
@@ -194,11 +239,13 @@ def summarize_return_distribution(returns_df: pd.DataFrame) -> dict:
             "squared_return_autocorr_lag_1": None,
             "squared_return_autocorr_lag_5": None,
         }
-    ret = pd.to_numeric(returns_df["simple_return"], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    return_column = "log_return" if "log_return" in returns_df.columns else "simple_return"
+    ret = pd.to_numeric(returns_df[return_column], errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
     if ret.empty:
         return summarize_return_distribution(pd.DataFrame())
     squared = ret.pow(2)
     return {
+        "return_definition": return_column,
         "sample_count": int(len(ret)),
         "mean_return": _finite_float(ret.mean()),
         "median_return": _finite_float(ret.median()),

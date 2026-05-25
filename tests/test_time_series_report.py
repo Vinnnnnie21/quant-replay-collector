@@ -29,9 +29,18 @@ def test_time_series_report_generates_markdown(tmp_path):
     result = build_time_series_report(_klines())
     path = write_time_series_report(result, tmp_path / "time_series_report.md")
     text = path.read_text(encoding="utf-8")
-    assert "Return Distribution" in text
+    assert "收益率定义" in text
+    assert "波动率状态" in text
+    assert "研究限制" in text
+
+
+def test_time_series_report_supports_english(tmp_path):
+    result = build_time_series_report(_klines())
+    path = write_time_series_report(result, tmp_path / "time_series_report_en.md", language="en_US")
+    text = path.read_text(encoding="utf-8")
+    assert "Return Definition" in text
     assert "Volatility Regime" in text
-    assert "Limitations" in text
+    assert "Research Limitations" in text
 
 
 def test_exporter_writes_time_series_outputs(tmp_path):
