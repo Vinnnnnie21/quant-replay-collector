@@ -33,12 +33,21 @@ quant_collector_app/data/*.db-wal
 quant_collector_app/data/*.db-shm
 quant_collector_app/data/theme_settings.json
 quant_collector_app/data/app_settings.json
+data/cache/
+data/exports/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
 
 # Legacy/root local cache data
 cache/
 backup_old/
 
 # Logs and local runtime files
+logs/
 logs/*.log
 logs/*.log.*
 *.log
@@ -53,6 +62,7 @@ quant_collector_app/data/logs/*.log.*
 Backup/
 .codex-backups/
 .codex-tmp/
+.codex_pytest_tmp/
 *_codex_selfcheck_*/
 
 # OS/editor noise

@@ -36,14 +36,11 @@ from app_config import (
 from app_logger import get_logger, install_exception_hook
 from app_i18n import tr as i18n_tr
 from app_settings import load_app_settings, save_app_settings
-from execution import ExecutionSettings, FILL_MODES, fill_price, trade_outcome
+from execution import ExecutionSettings, FILL_MODES
 from market_data import (
     LoadRequest,
     bjt_now_iso,
-    build_feature_row,
-    build_window_rows,
     clamp,
-    compute_price_proxy,
 )
 from premium_monitor import PremiumWorker
 from premium_controller import PremiumController
@@ -97,6 +94,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1820, 980)
 
         self.storage = StorageManager()
+        self.trade_controller = TradeController(self.storage, export_version=APP_VERSION)
         self.exporter = None
         self.export_controller = None
         self.premium_controller = PremiumController()
@@ -1358,7 +1356,7 @@ class MainWindow(QtWidgets.QMainWindow):
         return max(0.1, float(self.speedSlider.value()) / 10.0)
 
     def execution_settings(self) -> ExecutionSettings:
-        return TradeController.execution_settings(
+        return self.trade_controller.execution_settings(
             self._fill_mode_value(),
             self.feeBpsSpin.value(),
             self.slippageBpsSpin.value(),
@@ -1384,7 +1382,7 @@ class MainWindow(QtWidgets.QMainWindow):
             float(self.initialEquitySpin.value()),
             float(self.tradeNotionalSpin.value()),
         )
-        self.storage.replace_equity_curve(self.session_id, rows)
+        self.trade_controller.replace_equity_curve(self.session_id, rows)
 
     def on_timer(self):
         if len(self.df) == 0:
@@ -1706,72 +1704,26 @@ class MainWindow(QtWidgets.QMainWindow):
         tags, note = self.current_tags_and_note()
         event_id = self._new_id("evt")
         trade_id = self._new_id("trd")
-        price_proxy = compute_price_proxy(bar)
-        settings = self.execution_settings()
-        entry_raw_price, entry_fill_price = fill_price(bar, side, "OPEN", settings)
-        entry_fee_quote = settings.notional_quote * max(0.0, settings.fee_bps) / 10_000.0
-        now_iso = bjt_now_iso()
-        bar_time = pd.to_datetime(bar["open_time_bjt"]).tz_convert(BJT).isoformat(timespec="seconds")
-
-        trade_row = {
-            "trade_id": trade_id,
-            "session_id": self.session_id,
-            "symbol": self.symbolBox.currentText().strip().upper(),
-            "interval": self.intervalBox.currentText().strip(),
-            "side": side,
-            "status": "OPEN",
-            "entry_event_id": event_id,
-            "exit_event_id": None,
-            "entry_bar_index": int(bar["bar_index"]),
-            "exit_bar_index": None,
-            "entry_bar_time_bjt": bar_time,
-            "exit_bar_time_bjt": None,
-            "entry_real_time_bjt": now_iso,
-            "exit_real_time_bjt": None,
-            "entry_price_proxy": price_proxy,
-            "exit_price_proxy": None,
-            "holding_bars": None,
-            "final_return_pct": None,
-            "fill_mode": settings.fill_mode,
-            "fee_bps": settings.fee_bps,
-            "slippage_bps": settings.slippage_bps,
-            "notional_quote": settings.notional_quote,
-            "quantity": None,
-            "entry_price_raw": entry_raw_price,
-            "exit_price_raw": None,
-            "entry_fill_price": entry_fill_price,
-            "exit_fill_price": None,
-            "entry_fee_quote": entry_fee_quote,
-            "exit_fee_quote": None,
-            "gross_pnl_quote": None,
-            "net_pnl_quote": None,
-            "gross_return_pct": None,
-            "net_return_pct": None,
-            "fee_return_pct": None,
-            "created_at": now_iso,
-            "updated_at": now_iso,
-        }
-        event_row = {
-            "event_id": event_id,
-            "session_id": self.session_id,
-            "trade_id": trade_id,
-            "event_type": "OPEN",
-            "side": side,
-            "symbol": trade_row["symbol"],
-            "interval": trade_row["interval"],
-            "bar_index": int(bar["bar_index"]),
-            "bar_open_time_bjt": bar_time,
-            "real_key_time_bjt": now_iso,
-            "price_proxy": price_proxy,
-            "label_tags": tags,
-            "note": note,
-            "created_at": now_iso,
-        }
-        feature_row = self._make_feature_row(event_row)
-        window_rows = build_window_rows(self.df, int(bar["bar_index"]))
+        transaction = self.trade_controller.prepare_open(
+            self.df,
+            bar,
+            event_idx=int(bar["bar_index"]),
+            session_id=self.session_id,
+            symbol=self.symbolBox.currentText().strip().upper(),
+            interval=self.intervalBox.currentText().strip(),
+            side=side,
+            event_id=event_id,
+            trade_id=trade_id,
+            label_tags=tags,
+            note=note,
+            settings=self.execution_settings(),
+            now_iso=bjt_now_iso(),
+        )
+        trade_row = transaction.trade_row
+        event_row = transaction.event_row
 
         def do():
-            self.storage.insert_open_trade_bundle(trade_row, event_row, window_rows, feature_row)
+            self.trade_controller.commit_open(transaction)
             self._trade_by_id[trade_id] = dict(trade_row)
             self._event_by_id[event_id] = dict(event_row)
             self.trades.append(self._trade_by_id[trade_id])
@@ -1781,7 +1733,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log(f"开{('多' if side == 'LONG' else '空')}：交易ID={trade_id}")
 
         def undo():
-            self.storage.undo_open_trade_bundle(trade_id, event_id)
+            self.trade_controller.undo_open(transaction)
             self.trades = [t for t in self.trades if t["trade_id"] != trade_id]
             self.events = [e for e in self.events if e["event_id"] != event_id]
             self._trade_by_id.pop(trade_id, None)
@@ -1812,84 +1764,28 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         tags, note = self.current_tags_and_note()
         event_id = self._new_id("evt")
-        price_proxy = compute_price_proxy(bar)
-        now_iso = bjt_now_iso()
         bar_index = int(bar["bar_index"])
         entry_bar_index = int(trade["entry_bar_index"])
         if bar_index < entry_bar_index:
             QtWidgets.QMessageBox.warning(self, "平仓位置错误", "平仓K线不能早于开仓K线。请先跳到开仓之后的位置。")
             return
-        bar_time = pd.to_datetime(bar["open_time_bjt"]).tz_convert(BJT).isoformat(timespec="seconds")
-        entry_price = float(trade["entry_price_proxy"])
-        if trade["side"] == "LONG":
-            final_return_pct = ((price_proxy / entry_price) - 1.0) * 100.0 if entry_price else None
-        else:
-            final_return_pct = ((entry_price - price_proxy) / entry_price) * 100.0 if entry_price else None
-        holding_bars = bar_index - entry_bar_index
-        settings = ExecutionSettings(
-            fill_mode=str(trade.get("fill_mode") or self._fill_mode_value()).upper(),
-            fee_bps=float(trade.get("fee_bps") if trade.get("fee_bps") is not None else self.feeBpsSpin.value()),
-            slippage_bps=float(trade.get("slippage_bps") if trade.get("slippage_bps") is not None else self.slippageBpsSpin.value()),
-            notional_quote=float(trade.get("notional_quote") if trade.get("notional_quote") is not None else self.tradeNotionalSpin.value()),
+        transaction = self.trade_controller.prepare_close(
+            self.df,
+            bar,
+            event_idx=bar_index,
+            trade=trade,
+            event_id=event_id,
+            label_tags=tags,
+            note=note,
+            fallback_settings=self.execution_settings(),
+            now_iso=bjt_now_iso(),
         )
-        exit_raw_price, exit_fill_price = fill_price(bar, trade["side"], "CLOSE", settings)
-        entry_fill_price = float(trade.get("entry_fill_price") or trade.get("entry_price_proxy") or entry_price)
-        outcome = trade_outcome(trade["side"], entry_fill_price, exit_fill_price, settings)
-
-        event_row = {
-            "event_id": event_id,
-            "session_id": self.session_id,
-            "trade_id": trade["trade_id"],
-            "event_type": "CLOSE",
-            "side": trade["side"],
-            "symbol": trade["symbol"],
-            "interval": trade["interval"],
-            "bar_index": bar_index,
-            "bar_open_time_bjt": bar_time,
-            "real_key_time_bjt": now_iso,
-            "price_proxy": price_proxy,
-            "label_tags": tags,
-            "note": note,
-            "created_at": now_iso,
-        }
-        feature_row = self._make_feature_row(event_row)
-        feature_row["manual_trade_final_return_pct"] = outcome["net_return_pct"]
-        feature_row["manual_trade_holding_bars"] = holding_bars
-        window_rows = build_window_rows(self.df, bar_index)
-        close_update = {
-            "trade_id": trade["trade_id"],
-            "status": "CLOSED",
-            "exit_event_id": event_id,
-            "exit_bar_index": bar_index,
-            "exit_bar_time_bjt": bar_time,
-            "exit_real_time_bjt": now_iso,
-            "exit_price_proxy": price_proxy,
-            "holding_bars": holding_bars,
-            "final_return_pct": final_return_pct,
-            "quantity": outcome["quantity"],
-            "exit_price_raw": exit_raw_price,
-            "exit_fill_price": exit_fill_price,
-            "exit_fee_quote": outcome["exit_fee_quote"],
-            "gross_pnl_quote": outcome["gross_pnl_quote"],
-            "net_pnl_quote": outcome["net_pnl_quote"],
-            "gross_return_pct": outcome["gross_return_pct"],
-            "net_return_pct": outcome["net_return_pct"],
-            "fee_return_pct": outcome["fee_return_pct"],
-            "updated_at": now_iso,
-        }
-
-        old_trade = dict(trade)
+        event_row = transaction.event_row
+        close_update = transaction.close_update
+        old_trade = transaction.original_trade
 
         def do():
-            self.storage.close_trade_bundle(
-                event_row,
-                window_rows,
-                feature_row,
-                close_update,
-                trade["entry_event_id"],
-                outcome["net_return_pct"],
-                holding_bars,
-            )
+            self.trade_controller.commit_close(transaction)
             self._event_by_id[event_id] = dict(event_row)
             self.events.append(self._event_by_id[event_id])
             trade.update(close_update)
@@ -1900,7 +1796,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log(f"平{('多' if trade['side'] == 'LONG' else '空')}：交易ID={trade['trade_id']}")
 
         def undo():
-            self.storage.undo_close_trade_bundle(trade["trade_id"], event_id, trade["entry_event_id"], bjt_now_iso())
+            self.trade_controller.undo_close(transaction, bjt_now_iso())
             self.events = [e for e in self.events if e["event_id"] != event_id]
             self._event_by_id.pop(event_id, None)
             trade.clear()
@@ -1912,23 +1808,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log(f"撤销平仓：交易ID={trade['trade_id']}")
 
         self.execute_command(ActionCommand(name=f"close_{expected_side.lower()}", do_fn=do, undo_fn=undo))
-
-    def _make_feature_row(self, event_row: dict[str, Any]):
-        base = build_feature_row(self.df, int(event_row["bar_index"]), event_row["side"])
-        return {
-            "event_id": event_row["event_id"],
-            "session_id": self.session_id,
-            "trade_id": event_row["trade_id"],
-            "event_type": event_row["event_type"],
-            "side": event_row["side"],
-            "symbol": event_row["symbol"],
-            "interval": event_row["interval"],
-            **base,
-            "manual_trade_final_return_pct": None,
-            "manual_trade_holding_bars": None,
-            "export_version": APP_VERSION,
-            "created_at": event_row["created_at"],
-        }
 
     def selected_open_trade(self, verify_db: bool = False):
         trade_id = self._selected_id_from_table(self.openTradesTable)
@@ -1942,7 +1821,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log(f"选择的交易不是未平仓状态：交易ID={trade_id} 状态={self._status_label(trade.get('status'))}")
             return None
         if verify_db:
-            db_trade = self.storage.fetch_trade(trade_id)
+            db_trade = self.trade_controller.fetch_trade(trade_id)
             if not db_trade:
                 self._log(f"SQLite 中找不到选中的交易：交易ID={trade_id}")
                 return None

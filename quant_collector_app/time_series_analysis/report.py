@@ -5,11 +5,15 @@ from pathlib import Path
 
 import pandas as pd
 
-from i18n import tr
+if __package__ and __package__.startswith("quant_collector_app."):
+    from quant_collector_app.i18n import tr
+else:
+    from i18n import tr
 from .autocorrelation import acf, white_noise_diagnostic
 from .baseline import build_random_bar_baseline, build_random_event_baseline, compare_events_to_baseline
 from .diagnostics import descriptive_stats, normality_warning
 from .factor_model import correlation_matrix, pca_factor_model
+from .liquidity_proxy import compute_liquidity_proxy, summarize_liquidity_proxy
 from .microstructure import microstructure_diagnostics
 from .regime import build_regime_features, summarize_regime_distribution
 from .returns import annualized_log_return, annualized_return, build_return_series, summarize_return_distribution
@@ -58,6 +62,22 @@ PERIODS_PER_YEAR = {
     "4h": 365 * 6,
     "1d": 365,
 }
+LIQUIDITY_PROXY_DISCLAIMER = (
+    "This is an OHLCV-based proxy. It is not order book liquidity, bid-ask spread, "
+    "market depth, or a trading signal."
+)
+LIQUIDITY_PROXY_DISCLAIMER_ZH = (
+    "该指标仅基于 OHLCV K线数据构造，是历史流动性冲击代理指标，不代表真实订单簿深度、"
+    "bid-ask spread 或盘口流动性，也不构成交易信号。"
+)
+LIQUIDITY_STATE_LABELS_ZH = [
+    "LOW_LIQUIDITY_SHOCK：低量高冲击，疑似薄流动性冲击",
+    "EVENT_REPRICING：高量高冲击，疑似事件重定价",
+    "ABSORPTION：高量低冲击，疑似承接 / 吸收",
+    "QUIET_THIN_MARKET：低量低波动，冷清市场",
+    "NORMAL_LIQUIDITY：正常",
+    "UNKNOWN：样本不足或数据不可用",
+]
 
 
 def localized_warning(message: str, language: str = "zh_CN") -> str:
@@ -82,6 +102,30 @@ def _log_values(returns_df: pd.DataFrame) -> pd.Series:
         return pd.Series(dtype=float)
     column = "log_return" if "log_return" in returns_df.columns else "simple_return"
     return pd.to_numeric(returns_df.get(column), errors="coerce").dropna()
+
+
+def _build_liquidity_proxy_diagnostics(kline_df: pd.DataFrame, source: str = "full_session_klines") -> dict:
+    if source == "event_windows_only":
+        return {
+            "enabled": False,
+            "reason": "event_windows_only is fragmented; liquidity proxy rolling-state interpretation requires contiguous K-line data",
+            "disclaimer": LIQUIDITY_PROXY_DISCLAIMER,
+        }
+    try:
+        result_df = compute_liquidity_proxy(kline_df)
+        summary = summarize_liquidity_proxy(result_df)
+    except Exception as exc:
+        return {
+            "enabled": False,
+            "reason": str(exc),
+            "disclaimer": LIQUIDITY_PROXY_DISCLAIMER,
+        }
+    return {
+        "enabled": True,
+        "proxy_name": "Kline Liquidity Impact Proxy",
+        "disclaimer": LIQUIDITY_PROXY_DISCLAIMER,
+        "summary": summary,
+    }
 
 
 def build_time_series_report(
@@ -117,6 +161,7 @@ def build_time_series_report(
         warnings.append("scipy unavailable; Ljung-Box p-value uses a diagnostic approximation")
     microstructure = microstructure_diagnostics(kline_df if isinstance(kline_df, pd.DataFrame) else pd.DataFrame(), inferred_interval)
     warnings.extend(microstructure["warnings"])
+    liquidity_proxy = _build_liquidity_proxy_diagnostics(kline_df, source)
     limitations = [
         "Statistics are exploratory diagnostics, not investment advice or price predictions.",
         "K-line data cannot reconstruct order-book liquidity, true bid-ask spread or partial fills.",
@@ -149,6 +194,7 @@ def build_time_series_report(
         "volatility_diagnostics": volatility_diagnostics(values),
         "risk_metrics": risk_summary(values),
         "microstructure_diagnostics": microstructure,
+        "liquidity_proxy_diagnostics": liquidity_proxy,
         "regime_distribution": summarize_regime_distribution(regime_df),
         "factor_model": pca_factor_model(pd.DataFrame()),
         "correlation_matrix": None,
@@ -175,6 +221,38 @@ def _json_block(value, language: str = "zh_CN") -> list[str]:
     return ["```json", json.dumps(localized_payload(value, language), ensure_ascii=False, indent=2, default=str), "```"]
 
 
+def _liquidity_proxy_report_block(diagnostics: dict, language: str = "zh_CN") -> list[str]:
+    enabled = bool(diagnostics.get("enabled"))
+    summary = diagnostics.get("summary") or {}
+    proxy_name = diagnostics.get("proxy_name") or "Kline Liquidity Impact Proxy"
+    if language == "en_US":
+        lines = [
+            "## Kline Liquidity Impact Proxy",
+            "",
+            f"- proxy name: {proxy_name}",
+            f"- disclaimer: {diagnostics.get('disclaimer') or LIQUIDITY_PROXY_DISCLAIMER}",
+            f"- enabled: {enabled}",
+        ]
+        if not enabled:
+            lines.append(f"- reason: {diagnostics.get('reason') or 'unavailable'}")
+        else:
+            lines.extend(["", *_json_block(summary, language)])
+        return lines
+
+    lines = [
+        "## K线流动性冲击代理指标",
+        "",
+        f"- proxy name：{proxy_name}",
+        f"- 免责声明：{LIQUIDITY_PROXY_DISCLAIMER_ZH}",
+        f"- 可计算：{'是' if enabled else '否'}",
+    ]
+    if not enabled:
+        lines.append(f"- 不可用原因：{diagnostics.get('reason') or '数据不足'}")
+    else:
+        lines.extend(["- 状态释义：", *[f"  - {label}" for label in LIQUIDITY_STATE_LABELS_ZH], "", *_json_block(summary, language)])
+    return lines
+
+
 def write_time_series_report(result: dict, output_path: Path, language: str = "zh_CN") -> Path:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -184,6 +262,11 @@ def write_time_series_report(result: dict, output_path: Path, language: str = "z
     volatility = result.get("volatility_diagnostics") or {}
     risk = result.get("risk_metrics") or {}
     microstructure = result.get("microstructure_diagnostics") or {}
+    liquidity_proxy = result.get("liquidity_proxy_diagnostics") or {
+        "enabled": False,
+        "reason": "liquidity proxy diagnostics not present",
+        "disclaimer": LIQUIDITY_PROXY_DISCLAIMER,
+    }
     factor = result.get("factor_model") or {}
     warnings = result.get("warnings") or []
     limitations = result.get("limitations") or []
@@ -222,6 +305,8 @@ def write_time_series_report(result: dict, output_path: Path, language: str = "z
             "## High-Frequency Microstructure Warnings",
             "",
             *_json_block(microstructure, language),
+            "",
+            *_liquidity_proxy_report_block(liquidity_proxy, language),
             "",
             "## Multi-Asset Correlation and Factor",
             "",
@@ -271,6 +356,8 @@ def write_time_series_report(result: dict, output_path: Path, language: str = "z
             "",
             "- K 线没有逐笔 bid/ask 数据时，只能给出 proxy，不估计真实价差；负一阶自相关触发阈值 -0.15 是经验诊断阈值。",
             *_json_block(microstructure, language),
+            "",
+            *_liquidity_proxy_report_block(liquidity_proxy, language),
             "",
             "## 多资产相关性与因子",
             "",

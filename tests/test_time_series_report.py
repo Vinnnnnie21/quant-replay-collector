@@ -25,6 +25,59 @@ def _klines(n=80):
     )
 
 
+def test_time_series_report_includes_liquidity_proxy_diagnostics():
+    result = build_time_series_report(_klines())
+
+    diagnostics = result["liquidity_proxy_diagnostics"]
+    assert diagnostics["enabled"] is True
+    assert diagnostics["proxy_name"] == "Kline Liquidity Impact Proxy"
+    assert "OHLCV-based proxy" in diagnostics["disclaimer"]
+    assert "not order book liquidity" in diagnostics["disclaimer"]
+    assert {
+        "total_rows",
+        "valid_rows",
+        "state_counts",
+        "low_liquidity_shock_count",
+        "event_repricing_count",
+        "absorption_count",
+        "mean_impact_score",
+        "median_impact_score",
+    }.issubset(diagnostics["summary"])
+
+
+def test_time_series_report_disables_liquidity_proxy_when_ohlcv_is_missing():
+    result = build_time_series_report(pd.DataFrame({"bar_index": [0], "open": [100.0]}))
+
+    diagnostics = result["liquidity_proxy_diagnostics"]
+    assert diagnostics["enabled"] is False
+    assert diagnostics["reason"]
+    assert "not order book liquidity" in diagnostics["disclaimer"]
+
+
+def test_time_series_report_survives_liquidity_proxy_summary_failure(monkeypatch):
+    import time_series_analysis.report as report_module
+
+    def fail_summary(_):
+        raise RuntimeError("summary failed")
+
+    monkeypatch.setattr(report_module, "summarize_liquidity_proxy", fail_summary)
+
+    result = report_module.build_time_series_report(_klines())
+
+    diagnostics = result["liquidity_proxy_diagnostics"]
+    assert diagnostics["enabled"] is False
+    assert "summary failed" in diagnostics["reason"]
+
+
+def test_event_window_only_report_does_not_claim_liquidity_proxy_state():
+    result = build_time_series_report(_klines(), source="event_windows_only")
+
+    diagnostics = result["liquidity_proxy_diagnostics"]
+    assert diagnostics["enabled"] is False
+    assert "event_windows_only" in diagnostics["reason"]
+    assert "contiguous" in diagnostics["reason"]
+
+
 def test_time_series_report_generates_markdown(tmp_path):
     result = build_time_series_report(_klines())
     path = write_time_series_report(result, tmp_path / "time_series_report.md")
@@ -40,6 +93,10 @@ def test_time_series_report_supports_english(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert "Return Definition" in text
     assert "Volatility Regime" in text
+    assert "Kline Liquidity Impact Proxy" in text
+    assert "OHLCV-based proxy" in text
+    assert "not order book liquidity" in text
+    assert '"state_counts"' in text
     assert "Research Limitations" in text
 
 

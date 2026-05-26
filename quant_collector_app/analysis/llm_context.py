@@ -6,7 +6,10 @@ from typing import Any
 
 import pandas as pd
 
-from performance import build_performance_summary
+if __package__ and __package__.startswith("quant_collector_app."):
+    from quant_collector_app.performance import build_performance_summary
+else:
+    from performance import build_performance_summary
 
 
 RISK_RULES = [

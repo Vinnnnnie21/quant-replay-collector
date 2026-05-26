@@ -3,6 +3,7 @@ from __future__ import annotations
 from .baseline import build_random_bar_baseline, build_random_event_baseline, compare_events_to_baseline
 from .diagnostics import descriptive_stats, jarque_bera_test
 from .factor_model import correlation_matrix, pca_factor_model, rolling_correlation
+from .liquidity_proxy import classify_liquidity_state, compute_liquidity_proxy, summarize_liquidity_proxy
 from .microstructure import microstructure_diagnostics
 from .regime import build_regime_features, summarize_regime_distribution
 from .report import build_time_series_report, write_time_series_report
@@ -39,6 +40,9 @@ __all__ = [
     "annualized_log_return",
     "volatility_diagnostics",
     "risk_summary",
+    "classify_liquidity_state",
+    "compute_liquidity_proxy",
+    "summarize_liquidity_proxy",
     "microstructure_diagnostics",
     "correlation_matrix",
     "rolling_correlation",

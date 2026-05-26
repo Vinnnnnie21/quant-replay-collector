@@ -5,7 +5,7 @@ import json
 import pandas as pd
 
 from strategy_consistency.consistency import analyze_strategy_consistency
-from strategy_consistency.profile import StrategyProfile
+from strategy_consistency.profile import StrategyProfile, default_reversal_long_profile
 from strategy_consistency.report import write_strategy_consistency_report
 
 
@@ -77,6 +77,19 @@ def test_declared_long_only_does_not_lose_direction_points():
     assert result["directional_coverage_warning"] is False
 
 
+def test_explicit_default_template_is_scored_and_identified():
+    events, features, trades = _data()
+    result = analyze_strategy_consistency(events, features, trades, default_reversal_long_profile())
+    assert result["profile_status"] == "DEFAULT_REVERSAL_LONG_TEMPLATE"
+    assert result["strategy_consistency_score"] is not None
+
+
+def test_custom_profile_is_identified_as_user_defined():
+    events, features, trades = _data()
+    result = analyze_strategy_consistency(events, features, trades, _long_profile())
+    assert result["profile_status"] == "CUSTOM"
+
+
 def test_leakage_failure_invalidates_score():
     events, features, trades = _data()
     result = analyze_strategy_consistency(events, features, trades, _long_profile(), leakage_audit_status="FAIL")
@@ -84,10 +97,12 @@ def test_leakage_failure_invalidates_score():
     assert result["recommendation"] == "invalid_due_to_leakage"
 
 
-def test_no_profile_single_direction_receives_only_limited_direction_points():
+def test_no_profile_returns_statistics_without_discipline_score():
     events, features, trades = _data()
     result = analyze_strategy_consistency(events, features, trades, profile=None)
-    assert result["component_scores"]["direction_discipline"] == 3.0
+    assert result["component_scores"] == {}
+    assert result["strategy_consistency_score"] is None
+    assert result["recommendation"] == "descriptive_only"
     assert "direction discipline cannot be fully evaluated without a strategy profile" in result["warnings"]
 
 
@@ -105,6 +120,9 @@ def test_report_explains_single_direction_and_behavior_proxy(tmp_path):
     result = analyze_strategy_consistency(events, features, trades, profile=None)
     path = write_strategy_consistency_report(result, tmp_path / "consistency.md")
     text = path.read_text(encoding="utf-8")
+    assert "未声明 StrategyProfile" in text
+    assert "当前只输出行为统计和样本结构" in text
+    assert "不输出基于模板的纪律评分" in text
     assert "只做多/只做空不是一致性问题" in text
     assert "无 StrategyProfile 时，方向纪律无法充分评价" in text
     assert "行为稳定性近似诊断" in text

@@ -8,7 +8,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .profile import StrategyProfile, profile_to_dict
+from .profile import StrategyProfile, profile_to_dict, strategy_profile_status
 from .scoring import (
     apply_score_caps,
     profile_completeness_score,
@@ -348,7 +348,7 @@ def apply_consistency_gates(result: dict, profile: StrategyProfile | None) -> di
     if int(output.get("forbidden_tag_hit_count", 0)) > 0:
         failures.append("forbidden_tag_hit_count > 0")
     output["gate_failures"] = failures
-    if output.get("total_score") is None:
+    if output.get("total_score") is None and output.get("audit_mode") != "DESCRIPTIVE_ONLY":
         output["recommendation"] = "invalid_due_to_leakage"
     elif failures and output.get("recommendation") == "suitable_for_analysis":
         output["recommendation"] = "needs_manual_review"
@@ -367,6 +367,7 @@ def analyze_strategy_consistency(
     data_quality_status: str = "PASS",
 ) -> dict:
     profile_provided = profile is not None
+    profile_status = strategy_profile_status(profile)
     active_profile = profile or StrategyProfile(name="Unspecified Strategy")
     events = _to_df(events)
     features = _to_df(features)
@@ -427,22 +428,30 @@ def analyze_strategy_consistency(
             "data_quality_audit": quality_score,
         }
     )
-    raw_score = round(sum(components.values()), 2)
-    total_score, caps = apply_score_caps(
-        raw_score,
-        profile_provided=profile_provided,
-        closed_trades=closed_trades,
-        has_labels=has_labels,
-        has_risk_metadata=has_risk,
-        has_exit_metadata=has_exit,
-        leakage_audit_status=leakage_audit_status,
-        data_quality_status=data_quality_status,
-    )
+    if profile_provided:
+        raw_score = round(sum(components.values()), 2)
+        total_score, caps = apply_score_caps(
+            raw_score,
+            profile_provided=True,
+            closed_trades=closed_trades,
+            has_labels=has_labels,
+            has_risk_metadata=has_risk,
+            has_exit_metadata=has_exit,
+            leakage_audit_status=leakage_audit_status,
+            data_quality_status=data_quality_status,
+        )
+        reported_components = components
+    else:
+        raw_score = None
+        total_score = None
+        caps = []
+        reported_components = {}
     warnings = list(direction_warnings)
     if closed_trades < 30:
         warnings.append("closed trade sample is insufficient for a strong consistency conclusion")
     if not profile_provided:
         warnings.append("no StrategyProfile is declared; direction concentration is descriptive only")
+        warnings.append("behavior statistics and sample structure only; template-based discipline scoring is disabled")
     if not has_labels:
         warnings.append("entry labels are missing")
     if not has_risk:
@@ -466,6 +475,8 @@ def analyze_strategy_consistency(
 
     result = {
         "model_version": "v2",
+        "audit_mode": "DECLARED_PROFILE_SCORING" if profile_provided else "DESCRIPTIVE_ONLY",
+        "profile_status": profile_status,
         "sample_count": sample_count,
         "open_event_count": int(event_types.str.contains("OPEN").sum()),
         "close_event_count": close_count,
@@ -501,18 +512,18 @@ def analyze_strategy_consistency(
         "directional_coverage_warning": any("directional_coverage_warning" in warning for warning in direction_warnings),
         "high_untagged_warning": untagged_pct > 50.0,
         "high_missing_note_warning": missing_note_pct > active_profile.max_missing_note_pct,
-        "possible_random_trading_warning": total_score is None or total_score < 60.0,
+        "possible_random_trading_warning": None if not profile_provided else total_score is None or total_score < 60.0,
         "possible_selection_bias_warning": selection_bias,
         "leakage_audit_status": leakage_audit_status,
         "data_quality_status": data_quality_status,
         "raw_score": raw_score,
         "total_score": total_score,
         "strategy_consistency_score": total_score,
-        "component_scores": components,
-        "score_components": components,
+        "component_scores": reported_components,
+        "score_components": reported_components,
         "caps_applied": caps,
-        "recommendation": "invalid_due_to_leakage" if total_score is None else "suitable_for_analysis" if total_score >= 80 else "needs_manual_review" if total_score >= 60 else "not_suitable_for_rule_mining",
-        "interpretation": score_interpretation(total_score),
+        "recommendation": "descriptive_only" if not profile_provided else "invalid_due_to_leakage" if total_score is None else "suitable_for_analysis" if total_score >= 80 else "needs_manual_review" if total_score >= 60 else "not_suitable_for_rule_mining",
+        "interpretation": "behavior statistics and sample structure only" if not profile_provided else score_interpretation(total_score),
         "suggested_actions": suggested_actions,
         "profile": profile_to_dict(active_profile) if profile_provided else None,
         "warnings": warnings,
