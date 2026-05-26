@@ -6,6 +6,12 @@ from pathlib import Path
 from typing import Any
 
 
+PROFILE_STATUS_UNDECLARED = "UNDECLARED"
+PROFILE_STATUS_DEFAULT_REVERSAL_LONG_TEMPLATE = "DEFAULT_REVERSAL_LONG_TEMPLATE"
+PROFILE_STATUS_CUSTOM = "CUSTOM"
+DEFAULT_REVERSAL_LONG_STRATEGY_ID = "reversal_long_after_drop"
+
+
 @dataclass
 class StrategyProfile:
     strategy_id: str = "generic_strategy"
@@ -55,7 +61,7 @@ class StrategyProfile:
 
 def default_reversal_long_profile() -> StrategyProfile:
     return StrategyProfile(
-        strategy_id="reversal_long_after_drop",
+        strategy_id=DEFAULT_REVERSAL_LONG_STRATEGY_ID,
         name="大跌后的反转 K 线做多",
         description="用于审计人工标注样本是否集中在大跌后的反转做多逻辑。",
         allowed_sides=["LONG"],
@@ -80,8 +86,16 @@ def profile_to_dict(profile: StrategyProfile) -> dict[str, Any]:
     return asdict(profile)
 
 
+def strategy_profile_status(profile: StrategyProfile | None) -> str:
+    if profile is None:
+        return PROFILE_STATUS_UNDECLARED
+    if profile.strategy_id == DEFAULT_REVERSAL_LONG_STRATEGY_ID:
+        return PROFILE_STATUS_DEFAULT_REVERSAL_LONG_TEMPLATE
+    return PROFILE_STATUS_CUSTOM
+
+
 def _profile_from_dict(data: dict[str, Any]) -> StrategyProfile:
-    default = default_reversal_long_profile()
+    default = StrategyProfile()
     values = profile_to_dict(default)
     values.update({key: value for key, value in (data or {}).items() if key in values})
     if "allowed_sides" not in data and "expected_direction" in data:
@@ -116,15 +130,15 @@ def _profile_from_dict(data: dict[str, Any]) -> StrategyProfile:
     return StrategyProfile(**values)
 
 
-def load_strategy_profile(path: Path) -> StrategyProfile:
+def load_strategy_profile(path: Path) -> StrategyProfile | None:
     path = Path(path)
     if not path.exists():
-        return default_reversal_long_profile()
+        return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        data = {}
-    return _profile_from_dict(data if isinstance(data, dict) else {})
+        return None
+    return _profile_from_dict(data) if isinstance(data, dict) and data else None
 
 
 def save_strategy_profile(profile: StrategyProfile, path: Path) -> None:

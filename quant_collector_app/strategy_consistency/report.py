@@ -40,6 +40,8 @@ TEXT_MAP = {
     "suitable_for_analysis": "可进入后续研究审查",
     "needs_manual_review": "需要人工复核",
     "not_suitable_for_rule_mining": "不适合进行规则挖掘",
+    "descriptive_only": "仅输出行为统计和样本结构",
+    "behavior statistics and sample structure only": "当前只输出行为统计和样本结构。",
     "behavior appears repeatable; continue with out-of-sample audit": "行为具有一定可重复性，应继续进行样本外审计。",
     "partially defined behavior; manual review is required": "行为规则仅部分明确，需要人工复核。",
     "insufficient evidence of a repeatable audited strategy": "缺少足够证据证明存在可重复、可审计的策略行为。",
@@ -71,27 +73,53 @@ def write_strategy_consistency_report(result: dict, output_path: Path) -> Path:
     gates = result.get("gate_failures") or []
     actions = result.get("suggested_actions") or []
     top_tags = result.get("top_tags") or {}
+    profile_status = result.get("profile_status")
+    descriptive_only = result.get("audit_mode") == "DESCRIPTIVE_ONLY" or profile_status == "UNDECLARED"
+    profile_status_text = {
+        "UNDECLARED": "未声明 StrategyProfile",
+        "DEFAULT_REVERSAL_LONG_TEMPLATE": "使用默认反转做多模板（用户显式选择）",
+        "CUSTOM": "使用用户自定义 StrategyProfile",
+    }.get(profile_status, "未记录")
     lines = [
         "# 策略一致性审计报告",
         "",
         "## 策略一致性结论",
         "",
         f"- 评分模型：{result.get('model_version', 'legacy')}",
-        f"- 一致性评分：{_fmt(result.get('total_score', result.get('strategy_consistency_score')))}",
+        f"- StrategyProfile 状态：{profile_status_text}",
         f"- 结论：{_zh(result.get('recommendation', 'unknown'))}",
         f"- 解释：{_zh(result.get('interpretation', ''))}",
         "- 策略一致性不等于策略有效性。",
         "- 策略一致性不是盈利评分，也不是收益预测。",
         "- 只做多/只做空不是一致性问题。只有当策略声明要求双向交易时，方向覆盖不足才是问题。",
         "- 无 StrategyProfile 时，方向纪律无法充分评价，因此不应获得高分。",
-        "",
-        "## 分项评分",
-        "",
     ]
-    lines.extend([f"- {COMPONENT_LABELS.get(key, key)}: {_fmt(value)}" for key, value in components.items()] or ["- 无"])
-    lines.extend(["- result_stability：行为稳定性近似诊断，不是完整样本外绩效验证。"])
-    lines.extend(["", "## 分数上限", ""])
-    lines.extend([f"- {_zh(item)}" for item in caps] or ["- 无"])
+    if descriptive_only:
+        lines.extend(
+            [
+                "- 当前只输出行为统计和样本结构。",
+                "- 未显式声明策略时，不输出基于模板的纪律评分。",
+                "",
+                "## 行为统计范围",
+                "",
+                "- 输出样本量、标签覆盖、方向分布和相似场景动作统计。",
+                "- 不对任何预设策略模板进行匹配评分。",
+                "- result_stability：行为稳定性近似诊断，不是完整样本外绩效验证。",
+            ]
+        )
+    else:
+        lines.extend(
+            [
+                f"- 一致性评分：{_fmt(result.get('total_score', result.get('strategy_consistency_score')))}",
+                "",
+                "## 分项评分",
+                "",
+            ]
+        )
+        lines.extend([f"- {COMPONENT_LABELS.get(key, key)}: {_fmt(value)}" for key, value in components.items()] or ["- 无"])
+        lines.extend(["- result_stability：行为稳定性近似诊断，不是完整样本外绩效验证。"])
+        lines.extend(["", "## 分数上限", ""])
+        lines.extend([f"- {_zh(item)}" for item in caps] or ["- 无"])
     lines.extend(["", "## 硬性门槛失败项", ""])
     lines.extend([f"- {_zh(item)}" for item in gates] or ["- 无"])
     lines.extend(
@@ -104,7 +132,7 @@ def write_strategy_consistency_report(result: dict, output_path: Path) -> Path:
             f"- LONG 样本数：{result.get('long_count', 0)}",
             f"- SHORT 样本数：{result.get('short_count', 0)}",
             f"- 方向集中度：{_fmt(result.get('side_concentration_pct'))}%",
-            f"- 声明方向命中率：{_fmt(result.get('direction_consistency_pct'))}%",
+            f"- {'方向分布描述值' if descriptive_only else '声明方向命中率'}：{_fmt(result.get('direction_consistency_pct'))}%",
             "",
             "## 标签与入场设置",
             "",
@@ -113,12 +141,13 @@ def write_strategy_consistency_report(result: dict, output_path: Path) -> Path:
             f"- 必需标签命中率：{_fmt(result.get('required_tag_coverage_pct'))}%",
             f"- 禁止标签命中数：{result.get('forbidden_tag_hit_count', 0)}",
             f"- 标签熵：{_fmt(result.get('label_entropy'))}",
-            f"- Profile 全条件命中率：{_fmt(result.get('profile_feature_match_all_pct'))}%",
             f"- 相似市场设置动作一致率：{_fmt(result.get('similar_context_agreement_pct'))}%",
             "",
             "Top 标签：",
         ]
     )
+    if not descriptive_only:
+        lines.insert(lines.index("Top 标签：") - 1, f"- Profile 全条件命中率：{_fmt(result.get('profile_feature_match_all_pct'))}%")
     lines.extend([f"- {tag}: {count}" for tag, count in top_tags.items()] or ["- 无"])
     lines.extend(["", "## 审计警告", ""])
     lines.extend([f"- {_zh(warning)}" for warning in warnings] or ["- 无"])

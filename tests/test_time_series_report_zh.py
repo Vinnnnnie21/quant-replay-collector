@@ -26,3 +26,15 @@ def test_chinese_time_series_report_is_generated(tmp_path):
     assert "不是交易信号" in text
     assert "需要多币种收益矩阵" in text
     assert "Ljung-Box p 值" in text
+    assert "K线流动性冲击代理指标" in text
+    assert "Kline Liquidity Impact Proxy" in text
+    assert "该指标仅基于 OHLCV K线数据构造，是历史流动性冲击代理指标" in text
+    assert "LOW_LIQUIDITY_SHOCK：低量高冲击，疑似薄流动性冲击" in text
+    assert '"total_rows"' in text
+    assert '"valid_rows"' in text
+    assert '"state_counts"' in text
+    assert '"low_liquidity_shock_count"' in text
+    assert '"event_repricing_count"' in text
+    assert '"absorption_count"' in text
+    assert '"mean_impact_score"' in text
+    assert '"median_impact_score"' in text

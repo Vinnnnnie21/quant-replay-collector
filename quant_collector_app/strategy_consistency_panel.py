@@ -9,7 +9,13 @@ from PySide6 import QtWidgets
 from app_i18n import tr
 from analysis.feature_engineering import build_enhanced_event_features
 from strategy_consistency.consistency import analyze_strategy_consistency
-from strategy_consistency.profile import default_reversal_long_profile
+from strategy_consistency.profile import (
+    PROFILE_STATUS_CUSTOM,
+    PROFILE_STATUS_DEFAULT_REVERSAL_LONG_TEMPLATE,
+    PROFILE_STATUS_UNDECLARED,
+    StrategyProfile,
+    default_reversal_long_profile,
+)
 from strategy_consistency.report import write_strategy_consistency_report
 from ui_style import style_primary_button, style_secondary_button
 
@@ -23,6 +29,9 @@ WARNING_CODE_PATTERNS = [
     ("possible_selection_bias", ("possible_selection_bias", "selection bias")),
     ("forbidden_tags", ("forbidden_tag_hit_count", "forbidden tag")),
 ]
+PROFILE_MODE_UNDECLARED = PROFILE_STATUS_UNDECLARED
+PROFILE_MODE_DEFAULT_REVERSAL_LONG = PROFILE_STATUS_DEFAULT_REVERSAL_LONG_TEMPLATE
+PROFILE_MODE_CUSTOM = PROFILE_STATUS_CUSTOM
 
 
 def warning_code_to_text(code_or_text: str, language: str = "zh_CN") -> str:
@@ -39,6 +48,7 @@ class StrategyConsistencyPanel(QtWidgets.QWidget):
         super().__init__(parent)
         self.app_window = app_window
         self.last_result: dict | None = None
+        self.custom_profile: StrategyProfile | None = getattr(app_window, "strategy_profile", None)
         self._build_ui()
 
     def _build_ui(self):
@@ -47,10 +57,12 @@ class StrategyConsistencyPanel(QtWidgets.QWidget):
         self.summaryText.setReadOnly(True)
 
         row = QtWidgets.QHBoxLayout()
+        self.profileModeBox = QtWidgets.QComboBox()
         self.btnRun = QtWidgets.QPushButton()
         self.btnExport = QtWidgets.QPushButton()
         self.btnRun.setStyleSheet(style_primary_button())
         self.btnExport.setStyleSheet(style_secondary_button())
+        row.addWidget(self.profileModeBox, stretch=1)
         row.addWidget(self.btnRun)
         row.addWidget(self.btnExport)
 
@@ -67,6 +79,14 @@ class StrategyConsistencyPanel(QtWidgets.QWidget):
         return tr(key, self._language(), default)
 
     def retranslate_ui(self):
+        current_mode = self.profileModeBox.currentData()
+        self.profileModeBox.clear()
+        self.profileModeBox.addItem(self._tr("strategy_profile_undeclared"), PROFILE_MODE_UNDECLARED)
+        self.profileModeBox.addItem(self._tr("strategy_profile_default_reversal_long"), PROFILE_MODE_DEFAULT_REVERSAL_LONG)
+        custom_key = "strategy_profile_custom" if self.custom_profile is not None else "strategy_profile_custom_unconfigured"
+        self.profileModeBox.addItem(self._tr(custom_key), PROFILE_MODE_CUSTOM)
+        selected_index = self.profileModeBox.findData(current_mode or PROFILE_MODE_UNDECLARED)
+        self.profileModeBox.setCurrentIndex(selected_index if selected_index >= 0 else 0)
         self.btnRun.setText(self._tr("run_consistency_audit"))
         self.btnExport.setText(self._tr("export_consistency_report"))
         if self.last_result:
@@ -98,24 +118,47 @@ class StrategyConsistencyPanel(QtWidgets.QWidget):
         except Exception as exc:
             return fallback, [f"enhanced_event_features failed; fallback to event_features: {type(exc).__name__}: {exc}"], "event_features_fallback"
 
+    def set_custom_profile(self, profile: StrategyProfile) -> None:
+        self.custom_profile = profile
+        self.retranslate_ui()
+        self.profileModeBox.setCurrentIndex(self.profileModeBox.findData(PROFILE_MODE_CUSTOM))
+
+    def _selected_profile(self) -> StrategyProfile | None:
+        mode = self.profileModeBox.currentData()
+        if mode == PROFILE_MODE_DEFAULT_REVERSAL_LONG:
+            return default_reversal_long_profile()
+        if mode == PROFILE_MODE_CUSTOM:
+            return self.custom_profile
+        return None
+
     def _format_result(self, result: dict) -> str:
         warnings = result.get("warnings") or []
         gates = result.get("gate_failures") or []
+        profile_status = result.get("profile_status", PROFILE_MODE_UNDECLARED)
+        status_text = {
+            PROFILE_MODE_UNDECLARED: self._tr("strategy_profile_undeclared"),
+            PROFILE_MODE_DEFAULT_REVERSAL_LONG: self._tr("strategy_profile_default_reversal_long"),
+            PROFILE_MODE_CUSTOM: self._tr("strategy_profile_custom"),
+        }.get(profile_status, str(profile_status))
+        descriptive_only = result.get("audit_mode") == "DESCRIPTIVE_ONLY"
         lines = [
             self._tr("consistency_audit_title"),
             "",
-            f"{self._tr('consistency_score')}: {result.get('strategy_consistency_score')}",
+            f"{self._tr('strategy_profile')}: {status_text}",
+            f"{self._tr('consistency_output_mode')}: {self._tr('descriptive_only_mode') if descriptive_only else self._tr('consistency_score')}",
             f"{self._tr('recommendation')}: {result.get('recommendation')}",
             f"{self._tr('sample_count')}: {result.get('sample_count')}",
             f"{self._tr('direction_consistency_pct')}: {result.get('direction_consistency_pct')}",
             f"{self._tr('untagged_pct')}: {result.get('untagged_pct')}",
             f"{self._tr('missing_note_pct')}: {result.get('missing_note_pct')}",
             f"{self._tr('similar_context_agreement_pct')}: {result.get('similar_context_agreement_pct')}",
-            f"{self._tr('profile_feature_match_all_pct')}: {result.get('profile_feature_match_all_pct')}",
             f"{self._tr('feature_source')}: {result.get('feature_source')}",
             "",
             f"{self._tr('gate_failures')}:",
         ]
+        if not descriptive_only:
+            lines.insert(4, f"{self._tr('consistency_score')}: {result.get('strategy_consistency_score')}")
+            lines.insert(10, f"{self._tr('profile_feature_match_all_pct')}: {result.get('profile_feature_match_all_pct')}")
         language = self._language()
         lines.extend([f"- {warning_code_to_text(g, language)}" for g in gates] or [f"- {self._tr('none')}"])
         lines.extend(["", f"{self._tr('warnings')}:"])
@@ -128,8 +171,12 @@ class StrategyConsistencyPanel(QtWidgets.QWidget):
             events = self._table("trade_events")
             trades = self._table("trades")
             features, feature_warnings, source = self._features_for_audit(events)
-            result = analyze_strategy_consistency(events, features, trades, default_reversal_long_profile())
+            selected_profile = self._selected_profile()
+            result = analyze_strategy_consistency(events, features, trades, selected_profile)
             result["feature_source"] = source
+            result["profile_selection_mode"] = self.profileModeBox.currentData()
+            if self.profileModeBox.currentData() == PROFILE_MODE_CUSTOM and selected_profile is None:
+                result.setdefault("warnings", []).append("custom StrategyProfile selected but not configured")
             if feature_warnings:
                 result.setdefault("warnings", [])
                 result["warnings"].extend(feature_warnings)

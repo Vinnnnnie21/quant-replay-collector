@@ -43,6 +43,16 @@ def test_legacy_profile_direction_maps_to_allowed_sides(tmp_path):
     assert loaded.required_entry_tags == ["A"]
 
 
-def test_load_profile_missing_file_returns_default(tmp_path):
+def test_load_profile_missing_file_returns_undeclared(tmp_path):
     loaded = load_strategy_profile(tmp_path / "missing.json")
-    assert loaded.strategy_id == "reversal_long_after_drop"
+    assert loaded is None
+
+
+def test_partial_custom_profile_does_not_inherit_reversal_template(tmp_path):
+    path = tmp_path / "custom.json"
+    path.write_text('{"strategy_id": "custom", "name": "Custom"}', encoding="utf-8")
+    loaded = load_strategy_profile(path)
+    assert loaded is not None
+    assert loaded.strategy_id == "custom"
+    assert loaded.allowed_sides is None
+    assert loaded.expected_entry_features == {}

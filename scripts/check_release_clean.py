@@ -8,32 +8,43 @@ EXCLUDED_DIRECTORY_NAMES = {
     ".venv",
     "__pycache__",
     ".pytest_cache",
+    ".codex_pytest_tmp",
     "Backup",
     ".codex-backups",
     "backup_old",
     "performance_reports",
     "dist",
 }
+EXCLUDED_DIRECTORY_NAMES_CASEFOLDED = {name.casefold() for name in EXCLUDED_DIRECTORY_NAMES}
 
 
 def contamination_reason(relative_path: Path) -> str | None:
-    parts = relative_path.parts
-    if any(part in EXCLUDED_DIRECTORY_NAMES for part in parts):
+    parts = tuple(part.casefold() for part in relative_path.parts)
+    if any(part in EXCLUDED_DIRECTORY_NAMES_CASEFOLDED for part in parts):
         return "excluded runtime, backup, or nested distribution directory"
-    posix = relative_path.as_posix()
-    if posix.startswith("quant_collector_app/data/cache/") or posix == "quant_collector_app/data/cache":
-        return "market-data cache directory"
-    if posix.startswith("quant_collector_app/data/exports/") or posix == "quant_collector_app/data/exports":
+    if any(parts[index : index + 2] == ("data", "cache") for index in range(len(parts) - 1)):
+        return "runtime data cache directory"
+    if any(parts[index : index + 2] == ("data", "exports") for index in range(len(parts) - 1)):
         return "local export directory"
+    if "cache" in parts:
+        return "cache directory"
+    posix = relative_path.as_posix().casefold()
     if posix in {
         "quant_collector_app/data/theme_settings.json",
         "quant_collector_app/data/app_settings.json",
     }:
         return "local settings file"
-    if relative_path.name.endswith((".db", ".db-wal", ".db-shm")):
+    name = relative_path.name.casefold()
+    if name.endswith((".db", ".db-wal", ".db-shm", ".sqlite", ".sqlite-wal", ".sqlite-shm")):
         return "local SQLite database"
-    if relative_path.name.endswith(".log"):
+    if name.endswith((".pyc", ".pyo")):
+        return "compiled Python file"
+    if name.endswith(".zip"):
+        return "archive file"
+    if name.endswith(".log"):
         return "runtime log file"
+    if "logs" in parts:
+        return "runtime log directory"
     return None
 
 

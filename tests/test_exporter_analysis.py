@@ -6,6 +6,7 @@ import pandas as pd
 
 from exporter import Exporter
 from storage import StorageManager
+from strategy_consistency.profile import default_reversal_long_profile
 from test_storage_trade_flow import (
     INTERVAL,
     NOW,
@@ -154,3 +155,27 @@ def test_export_session_writes_analysis_outputs_and_keeps_ml_features_clean(tmp_
     assert manifest["files"]["research_pack"]["experiment_id"].startswith("exp_")
     summary = json.loads((export_dir / "time_series_summary.json").read_text(encoding="utf-8"))
     assert any("fragmented" in warning for warning in summary["warnings"])
+    consistency = json.loads((export_dir / "strategy_consistency.json").read_text(encoding="utf-8"))
+    consistency_text = (export_dir / "strategy_consistency_report.md").read_text(encoding="utf-8")
+    assert consistency["profile"] is None
+    assert consistency["profile_status"] == "UNDECLARED"
+    assert consistency["strategy_consistency_score"] is None
+    assert "未声明 StrategyProfile" in consistency_text
+    assert "当前只输出行为统计和样本结构" in consistency_text
+
+
+def test_export_session_scores_default_template_only_when_explicitly_provided(tmp_path):
+    storage = _storage(tmp_path)
+    _insert_session(storage)
+    _insert_trade_with_labels(storage)
+
+    export_dir = Exporter(storage).export_session(
+        SESSION_ID,
+        tmp_path / "exports",
+        strategy_profile=default_reversal_long_profile(),
+    )
+
+    consistency = json.loads((export_dir / "strategy_consistency.json").read_text(encoding="utf-8"))
+    assert consistency["profile_status"] == "DEFAULT_REVERSAL_LONG_TEMPLATE"
+    assert consistency["profile"]["strategy_id"] == "reversal_long_after_drop"
+    assert consistency["strategy_consistency_score"] is not None

@@ -20,7 +20,7 @@ from event_study import build_event_study_summary
 from performance import build_performance_summary, flatten_performance_summary
 from research.dataset import run_research_pack
 from strategy_consistency.consistency import analyze_strategy_consistency
-from strategy_consistency.profile import default_reversal_long_profile
+from strategy_consistency.profile import StrategyProfile, strategy_profile_status
 from strategy_consistency.report import write_strategy_consistency_report
 from time_series_analysis.regime import build_regime_features
 from time_series_analysis.report import build_time_series_report, write_time_series_report
@@ -290,6 +290,7 @@ class Exporter:
         export_root: Path | str | None = None,
         language: str = "zh_CN",
         selected_label: str = "fwd_ret_10_side_adj",
+        strategy_profile: StrategyProfile | None = None,
     ):
         export_root = Path(export_root or EXPORT_DIR)
         export_dir = export_root / f"session_{session_id}"
@@ -399,14 +400,17 @@ class Exporter:
                 events,
                 consistency_features,
                 trades,
-                default_reversal_long_profile(),
+                strategy_profile,
             )
         except Exception as e:
             logger.warning("策略一致性审计生成失败：%s", e, exc_info=True)
             strategy_consistency = {
                 "sample_count": 0,
-                "strategy_consistency_score": 0.0,
-                "recommendation": "not_suitable_for_rule_mining",
+                "profile": None if strategy_profile is None else {},
+                "profile_status": strategy_profile_status(strategy_profile),
+                "audit_mode": "DESCRIPTIVE_ONLY" if strategy_profile is None else "DECLARED_PROFILE_SCORING",
+                "strategy_consistency_score": None,
+                "recommendation": "descriptive_only" if strategy_profile is None else "not_suitable_for_rule_mining",
                 "warnings": [f"strategy consistency skipped: {type(e).__name__}: {e}"],
             }
         performance_row = flatten_performance_summary(

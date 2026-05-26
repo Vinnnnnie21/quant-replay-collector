@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = REPO_ROOT / "dist" / "QuantReplayCollector-v1.2"
+DEFAULT_OUTPUT = REPO_ROOT / "dist" / "QuantReplayCollector-v1.3"
 ROOT_CONTENT = (
     "README.md",
     "LICENSE",

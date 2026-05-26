@@ -5,11 +5,15 @@ from test_strategy_consistency_scoring_v2 import _data, _long_profile
 from strategy_consistency.consistency import analyze_strategy_consistency
 
 
-def test_missing_strategy_profile_caps_score_at_65():
+def test_missing_strategy_profile_disables_discipline_scoring():
     events, features, trades = _data()
     result = analyze_strategy_consistency(events, features, trades, profile=None)
-    assert result["total_score"] <= 65.0
-    assert "no StrategyProfile: cap 65" in result["caps_applied"]
+    assert result["profile"] is None
+    assert result["profile_status"] == "UNDECLARED"
+    assert result["audit_mode"] == "DESCRIPTIVE_ONLY"
+    assert result["strategy_consistency_score"] is None
+    assert result["total_score"] is None
+    assert result["component_scores"] == {}
 
 
 def test_small_closed_sample_caps_score_at_60():
