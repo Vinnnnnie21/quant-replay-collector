@@ -10,6 +10,17 @@ The goal is not to claim that a strategy is profitable. The goal is to make subj
 
 > This is a research and replay tool, not a live trading system. Backtest results and AI summaries do not represent investment advice or future performance.
 
+## v1.3.0 Research Diagnostics & Transaction Boundaries Release
+
+Version `1.3.0` expands historical research diagnostics and tightens transaction and release boundaries without introducing live trading execution.
+
+- Added `Kline Liquidity Impact Proxy`, an OHLCV-based historical diagnostic displayed in time-series analysis. It is not order book liquidity, bid-ask spread, market depth, or a trading signal.
+- Strategy consistency reports no longer apply the reversal-long template when no `StrategyProfile` has been explicitly selected.
+- Open, close, undo and redo transaction orchestration is consolidated in `TradeController`, while SQLite remains the persistence boundary.
+- Release cleanliness checks now reject local cache, database, log, archive and pytest temporary artifacts.
+- Pure analysis module imports are package-compatible, and API tests now execute with the declared `httpx` dependency.
+
+
 ## v1.2 Stability & Research Quality Release
 
 Version `1.2.0` tightens the research data path without changing the product into a trading system or web application.
