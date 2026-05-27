@@ -479,14 +479,6 @@ http://127.0.0.1:8765
 - `GET /api/session/{session_id}/llm-context`
 - `POST /api/session/{session_id}/llm-analysis/mock`
 
-安全边界：
-
-- 只绑定 `127.0.0.1`。
-- 只读接口。
-- 不执行用户传入 SQL。
-- 不修改数据库。
-- 不返回数据库绝对路径。
-- 不要暴露到公网。
 
 ## LLM 接入说明
 
