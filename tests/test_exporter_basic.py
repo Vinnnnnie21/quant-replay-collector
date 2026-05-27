@@ -91,6 +91,8 @@ def test_export_session_writes_core_files(tmp_path):
         "sample_index.csv",
         "sessions.csv",
         "usdt_premium_history.csv",
+        "event_context_features.csv",
+        "research_outcome_labels.csv",
     ]:
         assert (export_dir / name).exists(), name
 
@@ -113,6 +115,20 @@ def test_export_session_writes_core_files(tmp_path):
     assert "performance_summary" in manifest["files"]
     assert "ml_features" in manifest["files"]
     assert "event_study_summary" in manifest["files"]
+    dictionary = dictionary_path.read_text(encoding="utf-8")
+    assert "event_context_features" in dictionary
+    assert "research_outcome_labels" in dictionary
+    assert "next_open" in dictionary
+    assert "legacy_mid" in dictionary
+    assert "does not represent executable fill" in dictionary
+    assert "matched baseline is not a trading signal" in dictionary
+    assert "p-value" in dictionary
+    assert "sparse matched controls" in dictionary
+    assert "Behavior consistency does not establish strategy effectiveness" in dictionary
+    assert "Benjamini-Hochberg FDR" in dictionary
+    assert "validated_candidate" in dictionary
+    assert "out-of-sample degradation" in dictionary
+    assert "not live trading advice" in dictionary
 
 
 def test_export_session_passes_selected_research_label(tmp_path):

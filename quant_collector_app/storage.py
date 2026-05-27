@@ -11,8 +11,12 @@ from errors import DatabaseError
 
 
 class StorageManager:
-    SCHEMA_VERSION = 3
+    SCHEMA_VERSION = 5
     MANUAL_RESEARCH_TABLES = (
+        "research_outcome_labels",
+        "event_context_features",
+        "strategy_samples",
+        "observation_universe",
         "account_equity",
         "event_features",
         "event_windows",
@@ -30,6 +34,11 @@ class StorageManager:
         "usdt_premium_history",
         "klines",
         "data_quality_reports",
+        "strategy_profiles",
+        "observation_universe",
+        "strategy_samples",
+        "event_context_features",
+        "research_outcome_labels",
     }
     TRADE_COLUMNS = [
         "trade_id", "session_id", "symbol", "interval", "side", "status",
@@ -88,6 +97,8 @@ class StorageManager:
         if version < 2:
             self._migrate_to_v2()
         self._migrate_to_v3()
+        self._migrate_to_v4()
+        self._migrate_to_v5()
         with self.connect() as conn:
             conn.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
 
@@ -392,6 +403,153 @@ class StorageManager:
                     ON event_windows(session_id, event_id);
                 CREATE INDEX IF NOT EXISTS idx_event_features_symbol_interval
                     ON event_features(symbol, interval);
+                """
+            )
+
+    def _migrate_to_v4(self):
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS strategy_profiles (
+                    profile_id TEXT PRIMARY KEY,
+                    profile_version TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    allowed_sides_json TEXT,
+                    allowed_symbols_json TEXT,
+                    allowed_intervals_json TEXT,
+                    entry_setup_rules_json TEXT,
+                    entry_filter_rules_json TEXT,
+                    risk_rules_json TEXT,
+                    exit_rules_json TEXT,
+                    invalidation_rules_json TEXT,
+                    expected_holding_bars INTEGER,
+                    selected_label TEXT,
+                    profile_payload_json TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_profiles_mode_updated
+                    ON strategy_profiles(mode, updated_at);
+
+                CREATE TABLE IF NOT EXISTS observation_universe (
+                    sample_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    profile_id TEXT,
+                    source_type TEXT NOT NULL CHECK (
+                        source_type IN (
+                            'USER_TRADE', 'USER_EVENT', 'AUTO_CANDIDATE',
+                            'SCHEDULED_BAR', 'MATCHED_CONTROL'
+                        )
+                    ),
+                    symbol TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    bar_index INTEGER NOT NULL,
+                    event_time_bjt TEXT,
+                    user_action TEXT NOT NULL CHECK (
+                        user_action IN (
+                            'OPEN_LONG', 'OPEN_SHORT', 'CLOSE_LONG',
+                            'CLOSE_SHORT', 'HOLD', 'NO_ACTION'
+                        )
+                    ),
+                    side TEXT,
+                    linked_trade_id TEXT,
+                    linked_event_id TEXT,
+                    is_user_trade INTEGER NOT NULL DEFAULT 0,
+                    is_candidate INTEGER NOT NULL DEFAULT 0,
+                    is_matched_control INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_observation_session_market_bar
+                    ON observation_universe(session_id, symbol, interval, bar_index);
+                CREATE INDEX IF NOT EXISTS idx_observation_profile_action
+                    ON observation_universe(profile_id, user_action);
+
+                CREATE TABLE IF NOT EXISTS strategy_samples (
+                    strategy_sample_id TEXT PRIMARY KEY,
+                    sample_id TEXT NOT NULL,
+                    experiment_id TEXT NOT NULL,
+                    profile_id TEXT,
+                    profile_version TEXT,
+                    feature_version TEXT NOT NULL,
+                    label_version TEXT NOT NULL,
+                    dataset_hash TEXT NOT NULL,
+                    sample_role TEXT NOT NULL CHECK (
+                        sample_role IN (
+                            'USER_ACTION', 'NO_ACTION', 'CANDIDATE',
+                            'CONTROL', 'TRAIN', 'TEST'
+                        )
+                    ),
+                    created_at TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_strategy_samples_experiment
+                    ON strategy_samples(experiment_id, sample_role);
+                CREATE INDEX IF NOT EXISTS idx_strategy_samples_sample
+                    ON strategy_samples(sample_id);
+                """
+            )
+
+    def _migrate_to_v5(self):
+        with self.connect() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS event_context_features (
+                    context_feature_id TEXT PRIMARY KEY,
+                    sample_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    feature_version TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    bar_index INTEGER NOT NULL,
+                    lookback_bars INTEGER NOT NULL CHECK (lookback_bars IN (20, 50, 100)),
+                    feature_name TEXT NOT NULL CHECK (
+                        instr(lower(feature_name), 'fwd') = 0 AND
+                        instr(lower(feature_name), 'post') = 0 AND
+                        instr(lower(feature_name), 'future') = 0 AND
+                        instr(lower(feature_name), 'mfe') = 0 AND
+                        instr(lower(feature_name), 'mae') = 0 AND
+                        instr(lower(feature_name), 'hit_tp') = 0 AND
+                        instr(lower(feature_name), 'hit_sl') = 0 AND
+                        instr(lower(feature_name), 'pnl') = 0 AND
+                        instr(lower(feature_name), 'exit') = 0 AND
+                        instr(lower(feature_name), 'label') = 0
+                    ),
+                    feature_value REAL,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (sample_id, feature_version, lookback_bars, feature_name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_context_features_sample_version
+                    ON event_context_features(sample_id, feature_version, lookback_bars);
+                CREATE INDEX IF NOT EXISTS idx_context_features_session_market
+                    ON event_context_features(session_id, symbol, interval, bar_index);
+
+                CREATE TABLE IF NOT EXISTS research_outcome_labels (
+                    outcome_label_id TEXT PRIMARY KEY,
+                    sample_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    label_version TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    interval TEXT NOT NULL,
+                    bar_index INTEGER NOT NULL,
+                    horizon_bars INTEGER NOT NULL CHECK (horizon_bars IN (5, 10, 20, 50)),
+                    pricing_basis TEXT NOT NULL CHECK (
+                        pricing_basis IN ('next_open', 'event_close', 'legacy_mid', 'worst_case_same_bar')
+                    ),
+                    fwd_ret REAL,
+                    mfe REAL,
+                    mae REAL,
+                    hit_tp INTEGER,
+                    hit_sl INTEGER,
+                    r_multiple REAL,
+                    insufficient_future_bars INTEGER NOT NULL DEFAULT 0,
+                    pricing_note TEXT,
+                    created_at TEXT NOT NULL,
+                    UNIQUE (sample_id, label_version, horizon_bars, pricing_basis)
+                );
+                CREATE INDEX IF NOT EXISTS idx_outcome_labels_sample_version
+                    ON research_outcome_labels(sample_id, label_version, horizon_bars);
+                CREATE INDEX IF NOT EXISTS idx_outcome_labels_session_market
+                    ON research_outcome_labels(session_id, symbol, interval, bar_index);
                 """
             )
 
@@ -958,6 +1116,207 @@ class StorageManager:
                     row.get("report_json"),
                 ),
             )
+
+    def save_event_context_feature(self, row: dict[str, Any]) -> None:
+        self.save_event_context_features([row])
+
+    def save_event_context_features(self, rows: Iterable[dict[str, Any]]) -> None:
+        columns = [
+            "context_feature_id", "sample_id", "session_id", "feature_version",
+            "symbol", "interval", "bar_index", "lookback_bars", "feature_name",
+            "feature_value", "created_at",
+        ]
+        payload = list(rows)
+        if not payload:
+            return
+        placeholders = ", ".join(["?"] * len(columns))
+        assignments = ", ".join(
+            f"{column}=excluded.{column}"
+            for column in columns
+            if column != "context_feature_id"
+        )
+        with self.connect() as conn:
+            conn.executemany(
+                f"""
+                INSERT INTO event_context_features ({", ".join(columns)})
+                VALUES ({placeholders})
+                ON CONFLICT(context_feature_id) DO UPDATE SET {assignments}
+                """,
+                [tuple(row.get(column) for column in columns) for row in payload],
+            )
+
+    def list_event_context_features(
+        self,
+        sample_id: str | None = None,
+        session_id: str | None = None,
+        feature_version: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conditions = []
+        params: list[Any] = []
+        for column, value in (
+            ("sample_id", sample_id),
+            ("session_id", session_id),
+            ("feature_version", feature_version),
+        ):
+            if value is not None:
+                conditions.append(f"{column}=?")
+                params.append(value)
+        query = "SELECT * FROM event_context_features"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY sample_id, lookback_bars, feature_name"
+        with self.connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+            return [dict(row) for row in rows]
+
+    def save_research_outcome_label(self, row: dict[str, Any]) -> None:
+        self.save_research_outcome_labels([row])
+
+    def save_research_outcome_labels(self, rows: Iterable[dict[str, Any]]) -> None:
+        columns = [
+            "outcome_label_id", "sample_id", "session_id", "label_version",
+            "symbol", "interval", "bar_index", "horizon_bars", "pricing_basis",
+            "fwd_ret", "mfe", "mae", "hit_tp", "hit_sl", "r_multiple",
+            "insufficient_future_bars", "pricing_note", "created_at",
+        ]
+        payload = list(rows)
+        if not payload:
+            return
+        placeholders = ", ".join(["?"] * len(columns))
+        assignments = ", ".join(
+            f"{column}=excluded.{column}"
+            for column in columns
+            if column != "outcome_label_id"
+        )
+        with self.connect() as conn:
+            conn.executemany(
+                f"""
+                INSERT INTO research_outcome_labels ({", ".join(columns)})
+                VALUES ({placeholders})
+                ON CONFLICT(outcome_label_id) DO UPDATE SET {assignments}
+                """,
+                [tuple(row.get(column) for column in columns) for row in payload],
+            )
+
+    def list_research_outcome_labels(
+        self,
+        sample_id: str | None = None,
+        session_id: str | None = None,
+        label_version: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conditions = []
+        params: list[Any] = []
+        for column, value in (
+            ("sample_id", sample_id),
+            ("session_id", session_id),
+            ("label_version", label_version),
+        ):
+            if value is not None:
+                conditions.append(f"{column}=?")
+                params.append(value)
+        query = "SELECT * FROM research_outcome_labels"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY sample_id, horizon_bars, pricing_basis"
+        with self.connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+            return [dict(row) for row in rows]
+
+    def save_strategy_profile(self, row: dict[str, Any]) -> None:
+        columns = [
+            "profile_id", "profile_version", "name", "mode",
+            "allowed_sides_json", "allowed_symbols_json", "allowed_intervals_json",
+            "entry_setup_rules_json", "entry_filter_rules_json", "risk_rules_json",
+            "exit_rules_json", "invalidation_rules_json", "expected_holding_bars",
+            "selected_label", "profile_payload_json", "created_at", "updated_at",
+        ]
+        updated = [column for column in columns if column != "profile_id"]
+        placeholders = ", ".join(["?"] * len(columns))
+        assignments = ", ".join(f"{column}=excluded.{column}" for column in updated)
+        with self.connect() as conn:
+            conn.execute(
+                f"""
+                INSERT INTO strategy_profiles ({", ".join(columns)})
+                VALUES ({placeholders})
+                ON CONFLICT(profile_id) DO UPDATE SET {assignments}
+                """,
+                tuple(row.get(column) for column in columns),
+            )
+
+    def load_strategy_profile(self, profile_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM strategy_profiles WHERE profile_id=?",
+                (profile_id,),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_strategy_profiles(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM strategy_profiles ORDER BY updated_at DESC, profile_id"
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def save_observation_sample(self, row: dict[str, Any]) -> None:
+        columns = [
+            "sample_id", "session_id", "profile_id", "source_type", "symbol",
+            "interval", "bar_index", "event_time_bjt", "user_action", "side",
+            "linked_trade_id", "linked_event_id", "is_user_trade",
+            "is_candidate", "is_matched_control", "created_at",
+        ]
+        placeholders = ", ".join(["?"] * len(columns))
+        with self.connect() as conn:
+            conn.execute(
+                f"INSERT INTO observation_universe ({', '.join(columns)}) VALUES ({placeholders})",
+                tuple(row.get(column) for column in columns),
+            )
+
+    def list_observation_samples(
+        self,
+        session_id: str | None = None,
+        profile_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        conditions = []
+        params: list[Any] = []
+        if session_id is not None:
+            conditions.append("session_id=?")
+            params.append(session_id)
+        if profile_id is not None:
+            conditions.append("profile_id=?")
+            params.append(profile_id)
+        query = "SELECT * FROM observation_universe"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY bar_index, created_at, sample_id"
+        with self.connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+            return [dict(row) for row in rows]
+
+    def save_strategy_sample(self, row: dict[str, Any]) -> None:
+        columns = [
+            "strategy_sample_id", "sample_id", "experiment_id", "profile_id",
+            "profile_version", "feature_version", "label_version", "dataset_hash",
+            "sample_role", "created_at",
+        ]
+        placeholders = ", ".join(["?"] * len(columns))
+        with self.connect() as conn:
+            conn.execute(
+                f"INSERT INTO strategy_samples ({', '.join(columns)}) VALUES ({placeholders})",
+                tuple(row.get(column) for column in columns),
+            )
+
+    def list_strategy_samples_for_experiment(self, experiment_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM strategy_samples
+                WHERE experiment_id=?
+                ORDER BY created_at, strategy_sample_id
+                """,
+                (experiment_id,),
+            ).fetchall()
+            return [dict(row) for row in rows]
 
     def fetch_table(self, table: str, where: str = "", params: tuple[Any, ...] = ()):
         if table not in self.ALLOWED_TABLES:

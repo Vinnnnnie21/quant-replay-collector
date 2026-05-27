@@ -66,6 +66,8 @@ class Exporter:
             "event_features": ["created_at", "event_id"],
             "event_labels": ["event_id"],
             "event_features_full": ["created_at", "event_id"],
+            "event_context_features": ["sample_id", "lookback_bars", "feature_name"],
+            "research_outcome_labels": ["sample_id", "horizon_bars", "pricing_basis"],
             "performance_summary": ["session_id"],
             "account_equity": ["sequence_no", "trade_id"],
             "event_study_summary": ["label_tag", "event_type", "side"],
@@ -281,8 +283,34 @@ class Exporter:
             "- 说明：包含 feature/label registry、泄漏审计、事件研究、因子分箱、IC、候选规则、walk-forward、manifest 和研究报告。\n"
             "- 注意：research/factor_values.csv 只包含事件当根及之前可见的模型输入；未来结果仅在 label_values.csv 和 research_samples.csv 中用于评估。\n"
         )
+        separation_notes = (
+            "\n## v1.5 Research Feature and Outcome Separation\n\n"
+            "- `event_context_features.csv` is the canonical context-feature input table. It cannot contain future or outcome fields.\n"
+            "- `research_outcome_labels.csv` contains post-event outcomes only; it is not an input feature table.\n"
+            "- Legacy `event_features.csv` and `event_features_full.csv` remain for compatibility and audit review; they are not recommended as the core input for new research.\n"
+            "- `next_open` is the default strategy-evaluation pricing basis: a signal is formed at t and evaluated as entered at t+1 open.\n"
+            "- `legacy_mid` is retained only for legacy replay compatibility and does not represent executable fill.\n"
+        )
+        matched_baseline_notes = (
+            "\n## v1.6 Matched Baseline and Behavior Model Boundaries\n\n"
+            "- A matched baseline is not a trading signal. Controls are selected from similar context features only, before outcomes are compared.\n"
+            "- Effect size is the primary comparison statistic; a bootstrap CI or permutation p-value is sample-internal evidence and does not imply future return.\n"
+            "- Results with sparse matched controls or low sample counts are insufficient for a usable conclusion.\n"
+            "- Behavior consistency does not establish strategy effectiveness. `descriptive_only` is not a discipline-pass decision.\n"
+        )
+        validation_notes = (
+            "\n## v1.7 Rule Validation and Overfitting Controls\n\n"
+            "- Candidate rules are hypotheses pending validation. Searching many thresholds increases false discoveries.\n"
+            "- Benjamini-Hochberg FDR adjusts candidate-rule p-values; rules failing FDR cannot be presented as effective strategies.\n"
+            "- Rules with low sample counts or severe out-of-sample degradation cannot be marked `validated_candidate`.\n"
+            "- Purged chronological splits with embargo reduce boundary leakage; they do not guarantee future performance.\n"
+            "- A `validated_candidate` remains sample-based evidence only and is not live trading advice.\n"
+        )
         path = export_dir / "data_dictionary.md"
-        path.write_text(path.read_text(encoding="utf-8") + notes, encoding="utf-8")
+        path.write_text(
+            path.read_text(encoding="utf-8") + notes + separation_notes + matched_baseline_notes + validation_notes,
+            encoding="utf-8",
+        )
 
     def export_session(
         self,
@@ -304,12 +332,16 @@ class Exporter:
         sessions = self._to_df(self.storage.fetch_table("sessions", "session_id=?", (session_id,)))
         equity = self._to_df(self.storage.fetch_table("account_equity", "session_id=?", (session_id,)))
         premium = self._to_df(self.storage.fetch_table("usdt_premium_history"))
+        context_features = self._to_df(self.storage.fetch_table("event_context_features", "session_id=?", (session_id,)))
+        outcome_labels = self._to_df(self.storage.fetch_table("research_outcome_labels", "session_id=?", (session_id,)))
 
         raw_tables = {
             "trades": trades,
             "trade_events": events,
             "event_windows_long": windows,
             "event_features_full": features,
+            "event_context_features": context_features,
+            "research_outcome_labels": outcome_labels,
             "account_equity": equity,
             "sessions": sessions,
             "usdt_premium_history": premium,
@@ -321,6 +353,8 @@ class Exporter:
         events = raw_tables["trade_events"]
         windows = raw_tables["event_windows_long"]
         features = raw_tables["event_features_full"]
+        context_features = raw_tables["event_context_features"]
+        outcome_labels = raw_tables["research_outcome_labels"]
         sessions = raw_tables["sessions"]
         equity = raw_tables["account_equity"]
         premium = raw_tables["usdt_premium_history"]
@@ -433,6 +467,8 @@ class Exporter:
             "event_features": model_features,
             "event_labels": labels,
             "event_features_full": features,
+            "event_context_features": context_features,
+            "research_outcome_labels": outcome_labels,
             "event_wide_full": wide_full,
             "account_equity": equity,
             "event_study_summary": event_study,

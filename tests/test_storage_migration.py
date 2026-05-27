@@ -26,6 +26,6 @@ def test_v3_adds_query_indexes_without_removing_rows(tmp_path):
         indexes = {row[1] for row in conn.execute("PRAGMA index_list(trade_events)").fetchall()}
         session_count = conn.execute("SELECT COUNT(*) FROM sessions WHERE session_id='s1'").fetchone()[0]
 
-    assert upgraded.schema_version() == 3
+    assert upgraded.schema_version() == StorageManager.SCHEMA_VERSION
     assert {"idx_trade_events_trade_time", "idx_trade_events_symbol_interval"} <= indexes
     assert session_count == 1

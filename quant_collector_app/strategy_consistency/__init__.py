@@ -8,7 +8,9 @@ from .profile import (
     load_strategy_profile,
     profile_to_dict,
     save_strategy_profile,
+    strategy_profile_from_storage_row,
     strategy_profile_status,
+    strategy_profile_to_storage_row,
 )
 from .report import write_strategy_consistency_report
 
@@ -22,6 +24,8 @@ __all__ = [
     "load_strategy_profile",
     "profile_to_dict",
     "save_strategy_profile",
+    "strategy_profile_from_storage_row",
     "strategy_profile_status",
+    "strategy_profile_to_storage_row",
     "write_strategy_consistency_report",
 ]

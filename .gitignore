@@ -70,3 +70,7 @@ Backup/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local manual test artifacts
+pytest_manual_full_*/
+docs/agents/

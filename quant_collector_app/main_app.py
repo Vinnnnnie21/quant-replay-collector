@@ -45,6 +45,13 @@ from market_data import (
 from premium_monitor import PremiumWorker
 from premium_controller import PremiumController
 from replay_controller import ReplayController
+from multi_timeframe_panel import MultiTimeframePanel
+from timeframe_switcher import (
+    build_time_centered_xrange,
+    capture_time_anchor,
+    capture_view_time_span,
+    find_bar_index_by_time,
+)
 from state import AppState
 from startup import bootstrap_runtime_dirs, configure_logging
 from storage import StorageManager
@@ -121,6 +128,20 @@ class MainWindow(QtWidgets.QMainWindow):
         self.manual_xrange: tuple[float, float] | None = None
         self._programmatic_view_update = False
         self._loading_data = False
+        self._loaded_market_key: tuple[str, str, str, str] | None = None
+        self._pending_market_key: tuple[str, str, str, str] | None = None
+        self._display_market_key: tuple[str, str, str, str] | None = None
+        self._sample_market_key: tuple[str, str, str, str] | None = None
+        self._sample_cursor_bar_index = 0
+        self.market_dirty = False
+        self._timeframe_switch_pending = False
+        self._pending_time_anchor_bjt = None
+        self._pending_view_time_span_seconds: float | None = None
+        self._pending_was_playing = False
+        self._pending_follow_latest = False
+        self._pending_switch_from_interval: str | None = None
+        self._pending_switch_to_interval: str | None = None
+        self._queued_dynamic_interval: str | None = None
         self._render_dirty = True
         self.theme_settings = load_theme_settings()
         self.app_settings = load_app_settings()
@@ -187,6 +208,8 @@ class MainWindow(QtWidgets.QMainWindow):
                 t.wait(1000)
             except Exception:
                 pass
+        if hasattr(self, "multiTimeframePanel"):
+            self.multiTimeframePanel.shutdown()
         if self._export_thread is not None:
             try:
                 self._export_worker.cancel()
@@ -331,7 +354,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btnStep = QtWidgets.QPushButton("下一根 (→)")
         self.btnToEnd = QtWidgets.QPushButton("跳到末尾")
         self.btnFollow = QtWidgets.QPushButton("跟随最新 (F)")
-        self.btnResetView = QtWidgets.QPushButton("重置视图 (K)")
+        self.btnResetView = QtWidgets.QPushButton("重置缩放 (K)")
         self.btnLoadPlay.setStyleSheet(style_primary_button())
         for btn in (self.btnStep, self.btnToEnd, self.btnFollow, self.btnResetView):
             btn.setStyleSheet(style_secondary_button())
@@ -592,6 +615,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rightTabs = tabs
         tabs.addTab(self.openTradesTable, "当前仓位")
         tabs.addTab(self.eventTab, "事件")
+        self.multiTimeframePanel = MultiTimeframePanel(language=self.current_language, parent=self)
+        tabs.addTab(self.multiTimeframePanel, "多周期上下文")
         self.backtestPanel = None
         self.strategyConsistencyPanel = None
 
@@ -725,6 +750,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btnToEnd.setText(self.tr("jump_to_end"))
         self.btnFollow.setText(f"{self.tr('follow_latest')} (F)")
         self.btnResetView.setText(f"{self.tr('reset_view')} (K)")
+        self.btnResetView.setToolTip(self.tr("reset_view_hint"))
         self.btnOpenLong.setText(f"{self.tr('open_long')} (B)")
         self.btnOpenShort.setText(f"{self.tr('open_short')} (S)")
         self.btnCloseLong.setText(f"{self.tr('close_long')} (C)")
@@ -737,7 +763,9 @@ class MainWindow(QtWidgets.QMainWindow):
         self.btnSettings.setText(self.tr("settings"))
         self.rightTabs.setTabText(self.rightTabs.indexOf(self.openTradesTable), self.tr("current_positions"))
         self.rightTabs.setTabText(self.rightTabs.indexOf(self.eventTab), self.tr("events"))
+        self.rightTabs.setTabText(self.rightTabs.indexOf(self.multiTimeframePanel), self.tr("multi_timeframe_context"))
         self.rightTabs.setTabText(self.rightTabs.indexOf(self.detailBox), self.tr("details"))
+        self.multiTimeframePanel.retranslate_ui(self.current_language)
         if hasattr(self, "backtestPanel") and hasattr(self.backtestPanel, "retranslate_ui"):
             self.backtestPanel.retranslate_ui()
         if hasattr(self, "strategyConsistencyPanel") and hasattr(self.strategyConsistencyPanel, "retranslate_ui"):
@@ -1006,8 +1034,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.symbolSearchEdit.textChanged.connect(self.filter_symbol_list)
         self.symbolList.itemClicked.connect(self.on_symbol_item_selected)
         self.symbolList.itemActivated.connect(self.on_symbol_item_selected)
-        self.symbolBox.currentTextChanged.connect(lambda _: self._update_header())
-        self.intervalBox.currentTextChanged.connect(lambda _: self._update_header())
+        self.symbolBox.currentTextChanged.connect(self.on_market_params_changed)
+        self.intervalBox.currentTextChanged.connect(self.on_interval_changed_for_dynamic_switch)
+        self.startDate.dateChanged.connect(self.on_market_params_changed)
+        self.endDate.dateChanged.connect(self.on_market_params_changed)
         self.speedSlider.valueChanged.connect(self.on_speed_changed)
         for widget in (self.fillModeBox, self.feeBpsSpin, self.slippageBpsSpin, self.tradeNotionalSpin, self.initialEquitySpin):
             try:
@@ -1017,6 +1047,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.requestLoad.connect(self.loader.load, QtCore.Qt.QueuedConnection)
         self.loader.progress.connect(self.on_load_progress)
         self.loader.finished.connect(self.on_loaded)
+        self.multiTimeframePanel.loadFailed.connect(self.on_multi_timeframe_load_failed)
         self.requestPremium.connect(self.premium_worker.fetch_once, QtCore.Qt.QueuedConnection)
         self.premium_worker.finished.connect(self.on_premium_sample)
         self.vb_price.userInteracted.connect(self.on_user_interaction)
@@ -1070,6 +1101,15 @@ class MainWindow(QtWidgets.QMainWindow):
     def persist_session_state(self):
         if not self.session_id:
             return
+        protects_samples = bool(self.trades or self.events) and not self._is_display_interval_same_as_sample_interval()
+        if not protects_samples:
+            self._sample_cursor_bar_index = int(self.cursor)
+        cursor_bar_index = int(self._sample_cursor_bar_index) if protects_samples else int(self.cursor)
+        session_market_key = (
+            self._sample_market_key
+            if (self.trades or self.events) and self._sample_market_key
+            else self._current_market_key()
+        )
         latest_session = self.storage.get_latest_session()
         if latest_session and latest_session.get("session_id") == self.session_id:
             last_opened_at = latest_session.get("last_opened_at") or bjt_now_iso()
@@ -1078,11 +1118,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.storage.upsert_session(
             {
                 "session_id": self.session_id,
-                "symbol": self.symbolBox.currentText().strip().upper(),
-                "interval": self.intervalBox.currentText().strip(),
-                "start_date_bjt": self.startDate.date().toString("yyyy-MM-dd"),
-                "end_date_bjt": self.endDate.date().toString("yyyy-MM-dd"),
-                "cursor_bar_index": int(self.cursor),
+                "symbol": session_market_key[0],
+                "interval": session_market_key[1],
+                "start_date_bjt": session_market_key[2],
+                "end_date_bjt": session_market_key[3],
+                "cursor_bar_index": cursor_bar_index,
                 "follow_latest": 1 if self.follow_latest else 0,
                 "speed": self.current_speed(),
                 "last_opened_at": last_opened_at,
@@ -1174,7 +1214,118 @@ class MainWindow(QtWidgets.QMainWindow):
             return None
         return symbol
 
-    def load_data(self, restore: bool = False, use_cache: bool | None = None):
+    def _current_market_key(self) -> tuple[str, str, str, str]:
+        return (
+            self.symbolBox.currentText().strip().upper(),
+            self.intervalBox.currentText().strip(),
+            self.startDate.date().toString("yyyy-MM-dd"),
+            self.endDate.date().toString("yyyy-MM-dd"),
+        )
+
+    def _is_market_params_dirty(self) -> bool:
+        if self.df.empty:
+            return False
+        return self._loaded_market_key != self._current_market_key()
+
+    def _accept_loaded_market_key(self, df: pd.DataFrame, successful: bool = True) -> None:
+        if successful and isinstance(df, pd.DataFrame) and not df.empty:
+            self._loaded_market_key = self._pending_market_key or self._current_market_key()
+            self._display_market_key = self._loaded_market_key
+            if not getattr(self, "trades", []) and not getattr(self, "events", []):
+                self._sample_market_key = self._display_market_key
+        self._pending_market_key = None
+        self.market_dirty = self._is_market_params_dirty()
+
+    def _show_market_dirty_feedback(self) -> None:
+        self.status.setText(self.tr("market_params_changed"))
+        self._update_load_play_button()
+
+    def _refresh_multi_timeframe_context(self) -> None:
+        if not hasattr(self, "multiTimeframePanel") or self.df.empty:
+            return
+        index = int(clamp(self.cursor, 0, len(self.df) - 1))
+        self.multiTimeframePanel.refresh_for_primary_row(self.df.iloc[index])
+
+    def _load_multi_timeframe_context(self) -> None:
+        if not hasattr(self, "multiTimeframePanel") or self.df.empty or self.market_dirty:
+            return
+        loaded_key = self._loaded_market_key
+        if not loaded_key:
+            return
+        symbol, primary_interval, start_date, end_date = loaded_key
+        start_dt = pd.Timestamp(start_date, tz=BJT).to_pydatetime()
+        end_dt = (pd.Timestamp(end_date, tz=BJT) + pd.Timedelta(hours=23, minutes=59, seconds=59)).to_pydatetime()
+        self.multiTimeframePanel.request_context_load(symbol, primary_interval, start_dt, end_dt)
+
+    def on_multi_timeframe_load_failed(self, interval: str, error: str) -> None:
+        symbol = self._loaded_market_key[0] if self._loaded_market_key else self.symbolBox.currentText().strip().upper()
+        self._log(f"高周期上下文加载失败：{symbol} {interval} {error}")
+
+    def on_interval_changed_for_dynamic_switch(self, new_interval: str) -> None:
+        self._update_header()
+        if self.df.empty:
+            return
+        if self._loading_data:
+            self._queued_dynamic_interval = str(new_interval).strip()
+            return
+        display_key = getattr(self, "_display_market_key", None) or getattr(self, "_loaded_market_key", None)
+        previous_interval = display_key[1] if display_key else None
+        next_interval = str(new_interval).strip()
+        if previous_interval == next_interval:
+            return
+        if (getattr(self, "trades", []) or getattr(self, "events", [])) and self._display_interval() == self._sample_interval():
+            self._sample_cursor_bar_index = int(self.cursor)
+        self._pending_time_anchor_bjt = capture_time_anchor(self.df, self.cursor)
+        self._pending_view_time_span_seconds = capture_view_time_span(self.df, self.manual_xrange)
+        self._pending_was_playing = bool(self.playing)
+        self._pending_follow_latest = bool(self.follow_latest)
+        self._pending_switch_from_interval = previous_interval
+        self._pending_switch_to_interval = next_interval
+        self._timeframe_switch_pending = True
+        self.playing = False
+        self.replay_controller.playing = False
+        self.replay_controller.accumulated_bars = 0.0
+        if hasattr(self, "multiTimeframePanel"):
+            self.multiTimeframePanel.mark_stale()
+        self.load_data(
+            dynamic_switch=True,
+            preserve_time_anchor=True,
+            auto_resume_after_load=self._pending_was_playing,
+            reset_session=False,
+            use_cache=True,
+        )
+
+    def on_market_params_changed(self, *_args) -> None:
+        self.market_dirty = self._is_market_params_dirty()
+        if self.market_dirty:
+            self.playing = False
+            self._accum = 0.0
+            self.replay_controller.playing = False
+            self.replay_controller.accumulated_bars = 0.0
+            if hasattr(self, "multiTimeframePanel"):
+                self.multiTimeframePanel.mark_stale()
+        self._update_header()
+        if self.market_dirty:
+            self._show_market_dirty_feedback()
+
+    def _clear_timeframe_switch_pending(self) -> None:
+        self._timeframe_switch_pending = False
+        self._pending_time_anchor_bjt = None
+        self._pending_view_time_span_seconds = None
+        self._pending_was_playing = False
+        self._pending_follow_latest = False
+        self._pending_switch_from_interval = None
+        self._pending_switch_to_interval = None
+
+    def load_data(
+        self,
+        restore: bool = False,
+        use_cache: bool | None = None,
+        dynamic_switch: bool = False,
+        preserve_time_anchor: bool = False,
+        auto_resume_after_load: bool = False,
+        reset_session: bool | None = None,
+    ):
         self.playing = False
         self._accum = 0.0
         self.replay_controller.load_state(self.cursor, False, self.follow_latest, 0.0)
@@ -1188,13 +1339,15 @@ class MainWindow(QtWidgets.QMainWindow):
         if d0 > d1:
             QtWidgets.QMessageBox.warning(self, "日期范围错误", "开始日期不能晚于结束日期。")
             return
+        self._pending_market_key = self._current_market_key()
         start_dt = QtCore.QDateTime(d0, QtCore.QTime(0, 0)).toPython().replace(tzinfo=BJT)
         end_dt = QtCore.QDateTime(d1, QtCore.QTime(23, 59, 59)).toPython().replace(tzinfo=BJT)
         use_cache = bool(restore) if use_cache is None else bool(use_cache)
+        reset_session = (not restore and not dynamic_switch) if reset_session is None else bool(reset_session)
 
         if restore and self.restoring_session_id:
             self.session_id = self.restoring_session_id
-        else:
+        elif reset_session:
             self.session_id = self._new_id("sess")
             self.trades.clear()
             self.events.clear()
@@ -1204,8 +1357,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.redo_stack.clear()
             self.restore_snapshot_pending = False
 
-        self.persist_session_state()
-        self.status.setText(f"{symbol} {interval} 加载中...")
+        if not dynamic_switch:
+            self.persist_session_state()
+        self.status.setText(self.tr("dynamic_switch_loading") if dynamic_switch else f"{symbol} {interval} 加载中...")
         self._loading_data = True
         self.app_state.data_load.loading = True
         self.app_state.data_load.status_message = f"Loading {symbol} {interval}"
@@ -1222,28 +1376,60 @@ class MainWindow(QtWidgets.QMainWindow):
         self._loading_data = False
         self.app_state.data_load.loading = False
         self._log(message)
-        if message.startswith("加载失败"):
+        load_failed = message.startswith("加载失败")
+        dynamic_switch = bool(getattr(self, "_timeframe_switch_pending", False))
+        dynamic_success = dynamic_switch and not load_failed and isinstance(df, pd.DataFrame) and not df.empty
+        if load_failed:
             logger.error("数据加载失败：%s", message)
         elif "在线刷新失败" in message or "缓存不可用" in message:
             logger.warning("数据加载警告：%s", message)
+        if dynamic_switch and not dynamic_success:
+            previous_interval = getattr(self, "_pending_switch_from_interval", None)
+            if previous_interval and hasattr(self.intervalBox, "setCurrentText"):
+                blocked = self.intervalBox.blockSignals(True)
+                self.intervalBox.setCurrentText(previous_interval)
+                self.intervalBox.blockSignals(blocked)
+            self._pending_market_key = None
+            self.market_dirty = False
+            MainWindow._clear_timeframe_switch_pending(self)
+            self._update_load_play_button()
+            self._render(force=True)
+            self.status.setText(self.tr("dynamic_switch_failed"))
+            self._log(self.tr("dynamic_switch_failed"))
+            return
+        anchor_time = getattr(self, "_pending_time_anchor_bjt", None)
+        visible_span_seconds = getattr(self, "_pending_view_time_span_seconds", None)
+        resume_playing = bool(getattr(self, "_pending_was_playing", False))
+        resume_follow = bool(getattr(self, "_pending_follow_latest", False))
+        switched_to = getattr(self, "_pending_switch_to_interval", None)
         incoming_attrs = dict(getattr(df, "attrs", {}))
         self.df = df.reset_index(drop=True) if isinstance(df, pd.DataFrame) else pd.DataFrame()
         self.df.attrs.update(incoming_attrs)
+        self._accept_loaded_market_key(self.df, successful=not load_failed)
         self.app_state.data_load.bar_count = len(self.df)
         self.app_state.data_load.source = str(self.df.attrs.get("data_source", "-"))
         quality_report = self.df.attrs.get("data_quality_report", {})
         self.app_state.data_load.quality_status = (
             str(quality_report.get("data_quality_status", "-")) if isinstance(quality_report, dict) else "-"
         )
-        self.cursor = 0
+        self.cursor = (
+            find_bar_index_by_time(self.df, anchor_time, switched_to or self.intervalBox.currentText().strip())
+            if dynamic_switch
+            else 0
+        )
         self._drawn_n = -1
         self._last_cursor_for_series = -1
         self._accum = 0.0
-        self.replay_controller.reset()
-        self.replay_controller.follow_latest = self.follow_latest
+        if dynamic_switch:
+            self.playing = resume_playing
+            self.follow_latest = resume_follow
+            self.replay_controller.load_state(self.cursor, self.playing, self.follow_latest, 0.0)
+        else:
+            self.replay_controller.reset()
+            self.replay_controller.follow_latest = self.follow_latest
         self._render_dirty = True
 
-        if self.df.empty and message.startswith("加载失败"):
+        if self.df.empty and load_failed:
             QtWidgets.QMessageBox.critical(self, "K线加载失败", message)
         elif not self.df.empty:
             self._persist_loaded_market_data()
@@ -1255,7 +1441,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.axis_price.set_times([])
             self.axis_vol.set_times([])
 
-        if not self.restore_snapshot_pending:
+        if not self.restore_snapshot_pending and not dynamic_switch:
             self.trades.clear()
             self.events.clear()
             self._trade_by_id.clear()
@@ -1269,8 +1455,9 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
 
         self._rebuild_items()
+        restored_xrange = build_time_centered_xrange(self.df, self.cursor, visible_span_seconds) if dynamic_switch else None
         default_span = min(self.window_bars, max(40, min(len(self.df), 80))) if len(self.df) else 40
-        self.manual_xrange = (-0.5, max(20.0, float(default_span)))
+        self.manual_xrange = restored_xrange or (-0.5, max(20.0, float(default_span)))
         self._set_xrange(*self.manual_xrange, force=True)
         self.status.setText(f"{self.symbolBox.currentText().strip().upper()} {self.intervalBox.currentText().strip()} K线={len(self.df)}")
         self._update_load_play_button()
@@ -1292,6 +1479,21 @@ class MainWindow(QtWidgets.QMainWindow):
             self._refresh_tables()
             self._render(force=True)
             self._log(f"已恢复交易={len(self.trades)}，事件={len(self.events)}")
+        if self.market_dirty:
+            self._show_market_dirty_feedback()
+            if hasattr(self, "multiTimeframePanel"):
+                self.multiTimeframePanel.mark_stale()
+        elif not self.df.empty:
+            self._load_multi_timeframe_context()
+            self._refresh_multi_timeframe_context()
+        if dynamic_switch:
+            MainWindow._clear_timeframe_switch_pending(self)
+            self._update_load_play_button()
+            self.status.setText(self.tr("dynamic_switch_success"))
+        queued_interval = getattr(self, "_queued_dynamic_interval", None)
+        self._queued_dynamic_interval = None
+        if queued_interval and not self.df.empty and queued_interval != self._display_interval():
+            QtCore.QTimer.singleShot(0, lambda interval=queued_interval: self.on_interval_changed_for_dynamic_switch(interval))
 
     def _persist_loaded_market_data(self):
         report = self.df.attrs.get("data_quality_report")
@@ -1299,13 +1501,14 @@ class MainWindow(QtWidgets.QMainWindow):
         if not isinstance(report, dict):
             return
         try:
+            loaded_key = self._loaded_market_key or self._current_market_key()
             self.storage.save_data_quality_report({**report, "report_json": json.dumps(report, ensure_ascii=False)})
             downloaded_at = report.get("created_at")
             quality_status = report.get("data_quality_status")
             self.storage.upsert_klines(
                 {
-                    "symbol": self.symbolBox.currentText().strip().upper(),
-                    "interval": self.intervalBox.currentText().strip(),
+                    "symbol": loaded_key[0],
+                    "interval": loaded_key[1],
                     "open_time_utc_ms": int(row["open_time_ms"]),
                     "open_time_bjt": pd.to_datetime(row["open_time_bjt"]).isoformat(),
                     "close_time_utc_ms": int(row["close_time_ms"]),
@@ -1330,6 +1533,8 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if self.df.empty:
             self.load_data()
+        elif self._is_market_params_dirty():
+            self.load_data(restore=False, use_cache=True)
         else:
             self.toggle_play()
 
@@ -1341,6 +1546,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.btnLoadPlay.setEnabled(False)
         elif self.df.empty:
             self.btnLoadPlay.setText(self.tr("load_klines"))
+            self.btnLoadPlay.setEnabled(True)
+        elif self._is_market_params_dirty():
+            self.market_dirty = True
+            self.btnLoadPlay.setText(self.tr("reload_klines"))
             self.btnLoadPlay.setEnabled(True)
         elif self.playing:
             self.btnLoadPlay.setText(f"{self.tr('pause')} (Space)")
@@ -1407,6 +1616,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def toggle_play(self):
         if len(self.df) == 0:
             return
+        if self._is_market_params_dirty():
+            self.on_market_params_changed()
+            return
         self.replay_controller.load_state(self.cursor, self.playing, self.follow_latest, self._accum)
         self.playing = self.replay_controller.toggle_play(len(self.df))
         self._log("播放" if self.playing else "暂停")
@@ -1467,7 +1679,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.user_view_lock = False
         self._set_xrange(x0, x1, force=True)
         self._render(force=True)
-        self._log("已重置视图。")
+        self._log(self.tr("reset_zoom_done"))
 
     def _rebuild_items(self, n=None):
         if self.df.empty:
@@ -1560,7 +1772,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def _sync_markers(self):
         cur = self.cursor
         open_long, open_short, close_long, close_short = [], [], [], []
+        display_interval = self._display_interval()
+        sample_interval = self._sample_interval()
         for ev in self.events:
+            event_interval = str(ev.get("interval") or sample_interval or "").strip()
+            if event_interval and event_interval != display_interval:
+                continue
             idx = ev.get("bar_index")
             if idx is None or idx > cur or idx >= len(self.df):
                 continue
@@ -1603,6 +1820,7 @@ class MainWindow(QtWidgets.QMainWindow):
         short_session = self._short_id(self.session_id) if self.session_id else "-"
         self.headerSessionBadge.setText(f"{self.tr('session')} {short_session}")
         self._update_load_play_button()
+        self._update_trade_buttons_enabled()
 
     def _render(self, force=False):
         if not force and not self._render_dirty:
@@ -1640,6 +1858,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._autoscale_y(vx0, vx1)
         self._sync_markers()
         self._update_current_price_line(vx0, vx1)
+        self._refresh_multi_timeframe_context()
         bar_time = self.df.iloc[int(clamp(self.cursor, 0, len(self.df) - 1))]["open_time_bjt"]
         bar_time = pd.to_datetime(bar_time).tz_convert(BJT).strftime("%Y-%m-%d %H:%M:%S")
         bar = self.df.iloc[int(clamp(self.cursor, 0, len(self.df) - 1))]
@@ -1655,6 +1874,8 @@ class MainWindow(QtWidgets.QMainWindow):
             f"源={data_source} 质量={quality} 样本={len(self.events)} 会话={self._short_id(self.session_id) if self.session_id else '-'} | "
             f"{'跟随最新' if self.follow_latest else '自由浏览'}"
         )
+        if self._is_market_params_dirty():
+            self.status.setText(self.tr("market_params_changed"))
         self._update_header()
         self._render_dirty = False
 
@@ -1668,6 +1889,60 @@ class MainWindow(QtWidgets.QMainWindow):
         tags = [cb.text() for cb in self.tag_checks if cb.isChecked()]
         note = self.noteEdit.toPlainText().strip()
         return tags, note
+
+    def _display_interval(self) -> str:
+        key = getattr(self, "_display_market_key", None)
+        if key:
+            return str(key[1])
+        return self.intervalBox.currentText().strip()
+
+    def _sample_interval(self) -> str:
+        key = getattr(self, "_sample_market_key", None)
+        if key:
+            return str(key[1])
+        for row in [*getattr(self, "trades", []), *getattr(self, "events", [])]:
+            interval = row.get("interval")
+            if interval:
+                return str(interval)
+        return self._display_interval()
+
+    def _is_display_interval_same_as_sample_interval(self) -> bool:
+        if not self.trades and not self.events:
+            return True
+        return self._display_interval() == self._sample_interval()
+
+    def _is_trade_recording_allowed(self) -> bool:
+        return self._is_display_interval_same_as_sample_interval()
+
+    def _warn_trade_interval_mismatch(self) -> None:
+        message = self.tr("trade_disabled_due_to_display_interval")
+        self._log(message)
+        QtWidgets.QMessageBox.warning(self, self.tr("trade_actions"), message)
+
+    def _update_trade_buttons_enabled(self) -> None:
+        allowed = self._is_trade_recording_allowed()
+        tooltip = "" if allowed else self.tr("trade_disabled_due_to_display_interval")
+        for button_name in ("btnOpenLong", "btnOpenShort", "btnCloseLong", "btnCloseShort"):
+            button = getattr(self, button_name, None)
+            if button is not None:
+                button.setEnabled(allowed)
+                button.setToolTip(tooltip)
+
+    def start_new_session_for_current_display_interval(self) -> None:
+        self.playing = False
+        self._accum = 0.0
+        self.trades.clear()
+        self.events.clear()
+        self._trade_by_id.clear()
+        self._event_by_id.clear()
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self.session_id = self._new_id("sess")
+        self._sample_market_key = self._display_market_key or self._current_market_key()
+        self.persist_session_state()
+        self._refresh_tables()
+        self._update_trade_buttons_enabled()
+        self._render(force=True)
 
     def _selected_id_from_table(self, table: QtWidgets.QTableWidget):
         selection = table.selectionModel()
@@ -1690,6 +1965,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def request_open_trade(self, side: str):
         if self.df.empty:
+            return
+        if not self._is_trade_recording_allowed():
+            self._warn_trade_interval_mismatch()
             return
         if side not in {"LONG", "SHORT"}:
             self._log(f"忽略未知开仓方向：{side}")
@@ -1728,6 +2006,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self._event_by_id[event_id] = dict(event_row)
             self.trades.append(self._trade_by_id[trade_id])
             self.events.append(self._event_by_id[event_id])
+            self._sample_market_key = self._display_market_key or self._current_market_key()
+            self._sample_cursor_bar_index = int(self.cursor)
+            self.persist_session_state()
             self._refresh_tables()
             self._render(force=True)
             self._log(f"开{('多' if side == 'LONG' else '空')}：交易ID={trade_id}")
@@ -1747,6 +2028,9 @@ class MainWindow(QtWidgets.QMainWindow):
     def request_close_trade(self, expected_side: str):
         if expected_side not in {"LONG", "SHORT"}:
             self._log(f"忽略未知平仓方向：{expected_side}")
+            return
+        if not self._is_trade_recording_allowed():
+            self._warn_trade_interval_mismatch()
             return
         trade = self.selected_open_trade(verify_db=True)
         if not trade:
@@ -1790,6 +2074,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.events.append(self._event_by_id[event_id])
             trade.update(close_update)
             self._trade_by_id[trade["trade_id"]] = trade
+            self._sample_cursor_bar_index = int(self.cursor)
+            self.persist_session_state()
             self._sync_equity_curve()
             self._refresh_tables()
             self._render(force=True)
