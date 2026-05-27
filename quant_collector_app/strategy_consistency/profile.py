@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -92,6 +93,103 @@ def strategy_profile_status(profile: StrategyProfile | None) -> str:
     if profile.strategy_id == DEFAULT_REVERSAL_LONG_STRATEGY_ID:
         return PROFILE_STATUS_DEFAULT_REVERSAL_LONG_TEMPLATE
     return PROFILE_STATUS_CUSTOM
+
+
+def strategy_profile_to_storage_row(
+    profile: StrategyProfile,
+    *,
+    profile_id: str | None = None,
+    profile_version: str = "1",
+    mode: str | None = None,
+    selected_label: str | None = None,
+    created_at: str | None = None,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    timestamp = datetime.now(UTC).isoformat(timespec="seconds")
+    return {
+        "profile_id": profile_id or profile.strategy_id,
+        "profile_version": str(profile_version),
+        "name": profile.name,
+        "mode": mode or strategy_profile_status(profile),
+        "allowed_sides_json": json.dumps(profile.allowed_sides, ensure_ascii=False),
+        "allowed_symbols_json": json.dumps(profile.allowed_symbols, ensure_ascii=False),
+        "allowed_intervals_json": json.dumps(profile.allowed_intervals, ensure_ascii=False),
+        "entry_setup_rules_json": json.dumps(profile.expected_entry_features, ensure_ascii=False),
+        "entry_filter_rules_json": json.dumps(
+            {
+                "required_entry_tags": profile.required_entry_tags,
+                "optional_entry_tags": profile.optional_entry_tags,
+                "forbidden_tags": profile.forbidden_tags,
+                "allowed_regimes": profile.allowed_regimes,
+            },
+            ensure_ascii=False,
+        ),
+        "risk_rules_json": json.dumps(
+            {
+                "risk_model": profile.risk_model,
+                "stop_loss_pct": profile.stop_loss_pct,
+                "take_profit_pct": profile.take_profit_pct,
+            },
+            ensure_ascii=False,
+        ),
+        "exit_rules_json": json.dumps(
+            {
+                "exit_rules_required": profile.exit_rules_required,
+                "min_holding_bars": profile.min_holding_bars,
+                "max_holding_bars": profile.max_holding_bars,
+            },
+            ensure_ascii=False,
+        ),
+        "invalidation_rules_json": json.dumps({}, ensure_ascii=False),
+        "expected_holding_bars": profile.max_holding_bars,
+        "selected_label": selected_label,
+        # Preserve existing JSON-file fields while SQLite profile fields mature.
+        "profile_payload_json": json.dumps(profile_to_dict(profile), ensure_ascii=False),
+        "created_at": created_at or timestamp,
+        "updated_at": updated_at or timestamp,
+    }
+
+
+def strategy_profile_from_storage_row(row: dict[str, Any] | None) -> StrategyProfile | None:
+    if not row:
+        return None
+    try:
+        payload = json.loads(row.get("profile_payload_json") or "")
+    except (TypeError, json.JSONDecodeError):
+        payload = None
+    if isinstance(payload, dict) and payload:
+        return _profile_from_dict(payload)
+
+    def load_json(field_name: str, default):
+        try:
+            value = json.loads(row.get(field_name) or "null")
+        except (TypeError, json.JSONDecodeError):
+            return default
+        return default if value is None else value
+
+    entry_filters = load_json("entry_filter_rules_json", {})
+    risk_rules = load_json("risk_rules_json", {})
+    exit_rules = load_json("exit_rules_json", {})
+    return _profile_from_dict(
+        {
+            "strategy_id": row.get("profile_id") or "generic_strategy",
+            "name": row.get("name") or "Generic Strategy",
+            "allowed_sides": load_json("allowed_sides_json", None),
+            "allowed_symbols": load_json("allowed_symbols_json", None),
+            "allowed_intervals": load_json("allowed_intervals_json", None),
+            "expected_entry_features": load_json("entry_setup_rules_json", {}),
+            "required_entry_tags": entry_filters.get("required_entry_tags", []),
+            "optional_entry_tags": entry_filters.get("optional_entry_tags", []),
+            "forbidden_tags": entry_filters.get("forbidden_tags", []),
+            "allowed_regimes": entry_filters.get("allowed_regimes"),
+            "risk_model": risk_rules.get("risk_model"),
+            "stop_loss_pct": risk_rules.get("stop_loss_pct"),
+            "take_profit_pct": risk_rules.get("take_profit_pct"),
+            "exit_rules_required": exit_rules.get("exit_rules_required", True),
+            "min_holding_bars": exit_rules.get("min_holding_bars"),
+            "max_holding_bars": exit_rules.get("max_holding_bars", row.get("expected_holding_bars")),
+        }
+    )
 
 
 def _profile_from_dict(data: dict[str, Any]) -> StrategyProfile:

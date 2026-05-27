@@ -10,16 +10,28 @@ The goal is not to claim that a strategy is profitable. The goal is to make subj
 
 > This is a research and replay tool, not a live trading system. Backtest results and AI summaries do not represent investment advice or future performance.
 
-## v1.2 Stability & Research Quality Release
+## v1.4.0 Dynamic Timeframe & Research Dataset Release
 
-Version `1.2.0` tightens the research data path without changing the product into a trading system or web application.
+Version `1.4.0` extends replay research without turning the product into a live trading system:
+
+- Dynamic timeframe switching with timestamp anchoring keeps the main chart near the current market time when changing intervals.
+- Display interval and sample interval are separated so existing trade samples are not silently recorded against a different bar index.
+- Multi-timeframe read-only context shows higher-timeframe state without changing the primary replay session.
+- Research schema supports an observation universe and strategy samples for later behavior analysis.
+- Context features and outcome labels are physically separated to reduce future-data leakage risk.
+- Matched baseline and behavior model outputs support descriptive comparison against similar observed states.
+- Rule validation includes FDR adjustment, purged chronological split, embargo handling and out-of-sample degradation gates.
+
+The tool does not connect to Binance order APIs, does not place live orders and does not provide investment advice.
+
+### Retained Stability Foundations
 
 - Stable launch entry points: `python run_app.py`, `python -m quant_collector_app`, and the existing `cd quant_collector_app && python main_app.py`.
 - Versioned SQLite migration using `PRAGMA user_version`, with `PRAGMA foreign_keys=ON` enabled per connection and a five-second busy timeout. This does not assert that every legacy table has a declared foreign-key constraint.
-- Persistent `klines` and `data_quality_reports` tables for market-data provenance and audit results.
-- Reusable Binance Futures HTTP sessions, bounded retry/backoff for rate-limit, server and connection failures, cache fallback, and cache manifest files.
-- Rendering is throttled to 16 ms and large histories render the current working region instead of rebuilding the full series on each replay step.
-- Replay, premium sampling and export orchestration have isolated controller boundaries; UI layout and the PySide6/pyqtgraph desktop stack are retained.
+- Persistent market-data provenance and data-quality audit records.
+- Reusable Binance Futures market-data HTTP sessions, bounded retry/backoff, cache fallback and cache manifest files.
+- Rendering remains throttled for large chart histories.
+- Replay, premium sampling and export orchestration retain isolated controller boundaries; the PySide6/pyqtgraph desktop stack is unchanged.
 
 ### Data Quality Audit
 
@@ -59,8 +71,8 @@ Reports are written to `performance_reports/`. A missing GUI dependency or unava
 Build a distribution directory without local caches, databases, logs, settings, Python cache directories or backup folders:
 
 ```powershell
-python scripts/clean_release.py --output dist/QuantReplayCollector-Clean
-python scripts/check_release_clean.py dist/QuantReplayCollector-Clean
+python scripts/clean_release.py --output dist/QuantReplayCollector-v1.4.0-Clean
+python scripts/check_release_clean.py dist/QuantReplayCollector-v1.4.0-Clean
 ```
 
 The clean directory contains source code, documentation, tests, launcher files and audit reports named `clean_release_report.json` and `clean_release_report.md`. `check_release_clean.py` must pass before a package is uploaded. Local runtime data in the working directory is not deleted. Virtual environments, prior `dist` output, performance reports, databases, cache, exports, logs, local settings and backup folders are not copied.

@@ -11,7 +11,8 @@ import pandas as pd
 from .bootstrap import bootstrap_mean_ci
 from .factor_audit import forbidden_feature_columns
 from .feature_registry import feature_registry_frame, model_input_features
-from .walk_forward import chronological_train_test_split
+from .multiple_testing import add_fdr_results
+from .validation import purged_embargo_split, validate_candidate_rule
 
 
 OPS = {"<=": operator.le, ">=": operator.ge, "<": operator.lt, ">": operator.gt, "==": operator.eq}
@@ -49,15 +50,25 @@ def _rule_metrics(data: pd.DataFrame, conditions: list[dict], label: str) -> dic
     ci = bootstrap_mean_ci(values)
     positive, negative = values[values > 0], values[values < 0]
     profit_factor = float(positive.sum() / abs(negative.sum())) if len(negative) and negative.sum() != 0 else math.nan
+    mean = float(values.mean()) if len(values) else math.nan
+    p_value = math.nan
+    if len(values) >= 2 and math.isfinite(mean):
+        std = float(values.std(ddof=1))
+        if math.isfinite(std) and std > 0:
+            z_value = abs(mean) / (std / math.sqrt(len(values)))
+            p_value = float(math.erfc(z_value / math.sqrt(2.0)))
+        elif std == 0:
+            p_value = 0.0 if mean != 0 else 1.0
     return {
         "sample_count": int(len(values)),
         "coverage": float(len(values) / max(len(data), 1) * 100.0),
-        "mean_return": float(values.mean()) if len(values) else math.nan,
+        "mean_return": mean,
         "median_return": float(values.median()) if len(values) else math.nan,
         "win_rate": float((values > 0).mean() * 100.0) if len(values) else math.nan,
         "profit_factor": profit_factor,
         "bootstrap_ci_low": ci["ci_low"],
         "bootstrap_ci_high": ci["ci_high"],
+        "p_value": p_value,
     }
 
 
@@ -86,13 +97,21 @@ def search_rules(
     min_samples: int = 30,
     max_depth: int = 3,
     max_rules: int = 200,
+    fdr_alpha: float = 0.1,
+    train_ratio: float = 0.7,
+    purge_bars: int | None = None,
+    embargo_bars: int = 0,
+    horizon_bars: int = 10,
+    max_degradation_ratio: float = 0.5,
 ) -> pd.DataFrame:
     if features.empty or labels.empty or label not in labels.columns:
         return pd.DataFrame()
     samples = features.merge(labels[["event_id", label]], on="event_id", how="inner")
     selected = factors or [factor for factor in DEFAULT_RULE_FACTORS if factor in samples.columns]
     validate_rule_features(selected)
-    train, test = chronological_train_test_split(samples)
+    effective_purge = max(int(horizon_bars), int(purge_bars) if purge_bars is not None else int(horizon_bars))
+    split = purged_embargo_split(samples, "event_time_bjt", train_ratio, effective_purge, embargo_bars)
+    train, test = split["train"], split["test"]
     base_conditions = _thresholds(train, selected)
     candidates = []
     maximum_depth = min(3, max(1, int(max_depth)))
@@ -109,8 +128,6 @@ def search_rules(
     rows = []
     for conditions in candidates:
         train_metrics = _rule_metrics(train, conditions, label)
-        if train_metrics["sample_count"] < int(min_samples):
-            continue
         test_metrics = _rule_metrics(test, conditions, label)
         train_score = train_metrics["mean_return"] * math.sqrt(train_metrics["sample_count"]) if math.isfinite(train_metrics["mean_return"]) else math.nan
         test_score = test_metrics["mean_return"] * math.sqrt(test_metrics["sample_count"]) if math.isfinite(test_metrics["mean_return"]) else math.nan
@@ -127,12 +144,19 @@ def search_rules(
                 "conditions_json": conditions_json,
                 "readable_rule": _readable(conditions, label),
                 **train_metrics,
+                "raw_p_value": test_metrics["p_value"],
                 "train_score": train_score,
                 "test_sample_count": test_metrics["sample_count"],
                 "test_mean_return": test_metrics["mean_return"],
                 "test_win_rate": test_metrics["win_rate"],
                 "test_score": test_score,
                 "degradation_pct": degradation,
+                "n_train": train_metrics["sample_count"],
+                "n_test": test_metrics["sample_count"],
+                "insample_metric": train_metrics["mean_return"],
+                "oos_metric": test_metrics["mean_return"],
+                "purge_bars": effective_purge,
+                "embargo_bars": int(embargo_bars),
                 "stability_score": (
                     test_metrics["mean_return"] / train_metrics["mean_return"]
                     if math.isfinite(test_metrics["mean_return"]) and train_metrics["mean_return"] not in (0, math.nan)
@@ -147,4 +171,27 @@ def search_rules(
         )
     if not rows:
         return pd.DataFrame()
-    return pd.DataFrame(rows).sort_values(["train_score", "sample_count"], ascending=[False, False]).head(max_rules).reset_index(drop=True)
+    result = add_fdr_results(pd.DataFrame(rows), p_value_key="raw_p_value", alpha=fdr_alpha)
+    validations = [
+        validate_candidate_rule(
+            n_train=int(row["n_train"]),
+            n_test=int(row["n_test"]),
+            insample_metric=row["insample_metric"],
+            oos_metric=row["oos_metric"],
+            fdr_pass=bool(row["fdr_pass"]) if row["fdr_status"] == "available" else None,
+            q_value=row["q_value"],
+            min_samples=min_samples,
+            max_degradation_ratio=max_degradation_ratio,
+        )
+        for _, row in result.iterrows()
+    ]
+    result["validation_status"] = [validation["validation_status"] for validation in validations]
+    result["validation_warnings"] = [
+        json.dumps(validation["validation_warnings"], ensure_ascii=False) for validation in validations
+    ]
+    result["degradation_ratio"] = [validation["degradation_ratio"] for validation in validations]
+    return (
+        result.sort_values(["train_score", "sample_count"], ascending=[False, False], na_position="last")
+        .head(max_rules)
+        .reset_index(drop=True)
+    )

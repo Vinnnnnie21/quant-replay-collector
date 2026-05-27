@@ -166,6 +166,10 @@ def run_research_pack(
     premium_history: pd.DataFrame | None = None,
     selected_label: str = "fwd_ret_10_side_adj",
     language: str = "zh_CN",
+    profile_id: str | None = None,
+    profile_version: str | None = None,
+    baseline_spec: dict | str | None = None,
+    split_spec: dict | str | None = None,
 ) -> dict:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -202,7 +206,15 @@ def run_research_pack(
     _write_audit_markdown(output_dir, audit, language)
     (output_dir / "leakage_audit.json").write_text(json.dumps(_safe_json(leakage), ensure_ascii=False, indent=2), encoding="utf-8")
     files.extend(["data_audit.json", "data_audit.md", "leakage_audit.json"])
-    manifest = create_manifest(samples, selected_label, [*files, "research_report.md", "research_manifest.json"])
+    manifest = create_manifest(
+        samples,
+        selected_label,
+        [*files, "research_report.md", "research_manifest.json"],
+        profile_id=profile_id,
+        profile_version=profile_version,
+        baseline_spec=baseline_spec,
+        split_spec=split_spec,
+    )
     write_research_report(
         output_dir / "research_report.md",
         manifest,

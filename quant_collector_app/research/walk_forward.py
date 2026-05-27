@@ -6,6 +6,7 @@ import operator
 
 import pandas as pd
 
+from .validation import minimum_sample_gate, oos_degradation_gate
 
 OPS = {"<=": operator.le, ">=": operator.ge, "<": operator.lt, ">": operator.gt, "==": operator.eq}
 
@@ -18,12 +19,20 @@ def _sort_time(data: pd.DataFrame, time_col: str) -> pd.DataFrame:
     return result.reset_index(drop=True)
 
 
-def chronological_train_test_split(data: pd.DataFrame, train_ratio: float = 0.7, time_col: str = "event_time_bjt") -> tuple[pd.DataFrame, pd.DataFrame]:
+def chronological_train_test_split(
+    data: pd.DataFrame,
+    train_ratio: float = 0.7,
+    time_col: str = "event_time_bjt",
+    purge_bars: int = 0,
+    embargo_bars: int = 0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     sorted_data = _sort_time(data, time_col)
     if sorted_data.empty:
         return sorted_data.copy(), sorted_data.copy()
     split = min(len(sorted_data) - 1, max(1, int(len(sorted_data) * float(train_ratio)))) if len(sorted_data) > 1 else 1
-    return sorted_data.iloc[:split].copy(), sorted_data.iloc[split:].copy()
+    train_end = max(0, split - max(0, int(purge_bars)))
+    test_start = min(len(sorted_data), split + max(0, int(embargo_bars)))
+    return sorted_data.iloc[:train_end].copy(), sorted_data.iloc[test_start:].copy()
 
 
 def walk_forward_splits(
@@ -31,6 +40,8 @@ def walk_forward_splits(
     n_splits: int = 3,
     train_ratio: float = 0.5,
     time_col: str = "event_time_bjt",
+    purge_bars: int = 0,
+    embargo_bars: int = 0,
 ) -> list[tuple[str, pd.DataFrame, pd.DataFrame]]:
     sorted_data = _sort_time(data, time_col)
     if len(sorted_data) < 2:
@@ -43,7 +54,13 @@ def walk_forward_splits(
         test_end = len(sorted_data) if index == n_splits - 1 else min(len(sorted_data), train_end + test_size)
         if train_end >= len(sorted_data) or test_end <= train_end:
             break
-        splits.append((f"period_{index + 1}", sorted_data.iloc[:train_end].copy(), sorted_data.iloc[train_end:test_end].copy()))
+        purged_train_end = max(0, train_end - max(0, int(purge_bars)))
+        embargoed_test_start = min(test_end, train_end + max(0, int(embargo_bars)))
+        train = sorted_data.iloc[:purged_train_end].copy()
+        test = sorted_data.iloc[embargoed_test_start:test_end].copy()
+        if train.empty or test.empty:
+            continue
+        splits.append((f"period_{index + 1}", train, test))
     return splits
 
 
@@ -77,6 +94,10 @@ def evaluate_rule_on_split(
     label: str = "fwd_ret_10_side_adj",
     period: str = "period_1",
     time_col: str = "event_time_bjt",
+    min_samples: int = 30,
+    max_degradation_ratio: float = 0.5,
+    purge_bars: int = 0,
+    embargo_bars: int = 0,
 ) -> dict:
     train_metrics = _metrics(train, conditions, label)
     test_metrics = _metrics(test, conditions, label)
@@ -86,6 +107,17 @@ def evaluate_rule_on_split(
         if math.isfinite(train_mean) and train_mean != 0 and math.isfinite(test_mean)
         else math.nan
     )
+    train_gate = minimum_sample_gate(train_metrics["sample_count"], min_samples)
+    test_gate = minimum_sample_gate(test_metrics["sample_count"], min_samples)
+    oos_gate = oos_degradation_gate(train_mean, test_mean, max_degradation_ratio)
+    if not train_gate["passed"] or not test_gate["passed"]:
+        validation_status = "rejected_low_sample"
+    elif oos_gate["status"] == "unavailable":
+        validation_status = "unavailable"
+    elif not oos_gate["passed"]:
+        validation_status = "rejected_oos_degradation"
+    else:
+        validation_status = "exploratory_candidate"
     def boundary(frame: pd.DataFrame, first: bool):
         if frame.empty or time_col not in frame.columns:
             return None
@@ -105,6 +137,20 @@ def evaluate_rule_on_split(
         "train_win_rate": train_metrics["win_rate"],
         "test_win_rate": test_metrics["win_rate"],
         "degradation_pct": degradation,
+        "degradation_ratio": oos_gate["degradation_ratio"],
+        "validation_status": validation_status,
+        "split_method": "purged_chronological_split",
+        "purge_bars": int(purge_bars),
+        "embargo_bars": int(embargo_bars),
+        "split_spec_json": json.dumps(
+            {
+                "method": "purged_chronological_split",
+                "purge_bars": int(purge_bars),
+                "embargo_bars": int(embargo_bars),
+                "time_col": time_col,
+            },
+            sort_keys=True,
+        ),
         "warning": "insufficient test rule samples" if test_metrics["sample_count"] < 30 else "",
     }
 
@@ -134,15 +180,39 @@ def build_walk_forward_results(
     rules: pd.DataFrame,
     label: str = "fwd_ret_10_side_adj",
     n_splits: int = 3,
+    purge_bars: int | None = None,
+    embargo_bars: int = 0,
+    horizon_bars: int = 10,
+    min_samples: int = 30,
+    max_degradation_ratio: float = 0.5,
 ) -> pd.DataFrame:
     if samples.empty or rules.empty:
         return pd.DataFrame()
+    effective_purge = max(int(horizon_bars), int(purge_bars) if purge_bars is not None else int(horizon_bars))
     rows = []
-    for period, train, test in walk_forward_splits(samples, n_splits=n_splits):
+    for period, train, test in walk_forward_splits(
+        samples,
+        n_splits=n_splits,
+        purge_bars=effective_purge,
+        embargo_bars=embargo_bars,
+    ):
         for _, rule in rules.iterrows():
             try:
                 conditions = json.loads(rule.get("conditions_json") or "[]")
             except Exception:
                 continue
-            rows.append(evaluate_rule_on_split(train, test, str(rule.get("rule_id")), conditions, label, period))
+            rows.append(
+                evaluate_rule_on_split(
+                    train,
+                    test,
+                    str(rule.get("rule_id")),
+                    conditions,
+                    label,
+                    period,
+                    min_samples=min_samples,
+                    max_degradation_ratio=max_degradation_ratio,
+                    purge_bars=effective_purge,
+                    embargo_bars=embargo_bars,
+                )
+            )
     return pd.DataFrame(rows)
