@@ -5,7 +5,10 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 
-from app_config import BJT, UTC
+try:
+    from app_config import BJT, UTC
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import BJT, UTC
 from .types import PRICE_COLUMNS, interval_to_ms, validate_date_range
 
 

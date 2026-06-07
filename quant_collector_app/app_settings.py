@@ -7,7 +7,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from app_config import DATA_DIR
+try:
+    from app_config import DATA_DIR
+except ImportError:  # pragma: no cover - package import path
+    from .app_config import DATA_DIR
 
 
 APP_SETTINGS_PATH = DATA_DIR / "app_settings.json"
@@ -42,6 +45,34 @@ def sanitize_app_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
                 continue
             merged[key] = value
     return merged
+
+
+def build_app_settings_update(
+    current: dict[str, Any] | None,
+    *,
+    language: str,
+    llm_provider: str,
+    local_api_url: str,
+    fill_mode: str,
+    fee_bps: float,
+    slippage_bps: float,
+    trade_notional: float,
+    initial_equity: float,
+) -> dict[str, Any]:
+    settings = sanitize_app_settings(current)
+    settings.update(
+        {
+            "language": language,
+            "llm_provider": llm_provider,
+            "local_api_url": local_api_url,
+            "fill_mode": fill_mode,
+            "fee_bps": fee_bps,
+            "slippage_bps": slippage_bps,
+            "trade_notional": trade_notional,
+            "initial_equity": initial_equity,
+        }
+    )
+    return sanitize_app_settings(settings)
 
 
 def load_app_settings(path: Path | None = None) -> dict[str, Any]:

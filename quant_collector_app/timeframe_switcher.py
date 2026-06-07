@@ -7,7 +7,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from market_data import interval_to_ms
+try:
+    from market_data import interval_to_ms
+except ImportError:  # pragma: no cover - package import path
+    from .market_data import interval_to_ms
 
 
 def normalize_bjt_timestamp(value: Any) -> pd.Timestamp | None:

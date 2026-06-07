@@ -3,7 +3,10 @@ from __future__ import annotations
 import numpy as np
 import pyqtgraph as pg
 
-from market_data.types import make_bjt
+try:
+    from market_data.types import make_bjt
+except ImportError:  # pragma: no cover - package import path
+    from ..market_data.types import make_bjt
 
 
 class IndexTimeAxis(pg.AxisItem):

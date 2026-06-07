@@ -5,7 +5,7 @@ import json
 import pytest
 
 import app_config
-from app_settings import load_app_settings, save_app_settings
+from app_settings import build_app_settings_update, load_app_settings, save_app_settings
 
 
 def test_app_settings_save_and_load(tmp_path):
@@ -35,6 +35,33 @@ def test_app_settings_missing_file_uses_defaults(tmp_path):
     loaded = load_app_settings(tmp_path / "missing.json")
     assert loaded["language"] == "zh_CN"
     assert loaded["llm_provider"] == "mock"
+
+
+def test_build_app_settings_update_preserves_existing_safe_values_and_drops_secrets():
+    settings = build_app_settings_update(
+        {
+            "language": "zh_CN",
+            "llm_provider": "mock",
+            "custom_setting": "keep",
+            "api_key": "secret",
+        },
+        language="en_US",
+        llm_provider="local",
+        local_api_url="http://127.0.0.1:8765",
+        fill_mode="CLOSE",
+        fee_bps=5.0,
+        slippage_bps=2.0,
+        trade_notional=2_000.0,
+        initial_equity=20_000.0,
+    )
+
+    assert settings["language"] == "en_US"
+    assert settings["llm_provider"] == "local"
+    assert settings["custom_setting"] == "keep"
+    assert settings["fill_mode"] == "CLOSE"
+    assert settings["fee_bps"] == 5.0
+    assert settings["trade_notional"] == 2_000.0
+    assert "api_key" not in settings
 
 
 def test_broken_app_settings_are_backed_up_and_defaulted(tmp_path):

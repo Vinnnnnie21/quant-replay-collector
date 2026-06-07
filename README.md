@@ -10,6 +10,42 @@ The goal is not to claim that a strategy is profitable. The goal is to make subj
 
 > This is a research and replay tool, not a live trading system. Backtest results and AI summaries do not represent investment advice or future performance.
 
+## v1.4.1 Stability And Backtesting Hotfix
+
+Version `1.4.1` is a focused hotfix for replay stability, engineering hygiene and a research-only backtesting workflow:
+
+- Premium chart refresh reads only recent premium samples.
+- Manual trade actions pause playback, prevent duplicate trade transactions, and defer heavier research-summary refreshes.
+- Replay rendering rebuilds chart items against the target visible range instead of repeatedly rebuilding unchanged historical windows.
+- Multi-timeframe read-only context reuses summaries while the cursor remains inside the same higher-timeframe bar.
+- A background UI freeze watchdog can write local `freeze_dump_*.log` diagnostics if the main thread stops heartbeating.
+- `StrategyRuleParams` keeps the current Deep V reversal hypothesis reproducible and explicitly long-only.
+- The backtest panel accepts a symbol, interval, historical date range and editable rule parameters.
+- Analysis thresholds can be mapped into backtest parameters for review before simulation.
+- `BacktestService` produces historical summary, trade, equity and descriptive manual-vs-rule comparison output.
+
+The backtest panel layout is expanded with parameter, date-range and result controls. Manual trade semantics, SQLite schema and research schema are unchanged. No Binance live-order API, automatic order execution or live-trading behavior is added. Backtest results are historical rule-hypothesis diagnostics, not trading signals, future-return predictions or investment advice.
+
+### Architecture Boundaries
+
+The hotfix also tightens existing internal boundaries without claiming that the
+Qt window is fully decomposed:
+
+- `presenters/` owns table population and display formatting.
+- `services/trade_use_cases.py` owns Qt-free open/close transaction orchestration.
+- `render_state.py`, `render/visible_window.py` and `render/marker_renderer.py`
+  isolate dirty flags, visible-window slicing and marker payload calculation.
+- Heavy event-study, dataset-summary and performance-summary calculations run
+  in `AnalysisRefreshWorker`; results return through queued Qt slots before the
+  main thread updates widgets.
+- `StorageManager` remains the compatible public entry point while
+  `storage_core/` repositories own SQL by domain.
+
+`main_app.py` is now below 1,200 lines. It remains the Qt shell and compatibility
+surface, while focused presenters, controllers, services, workers and render
+adapters own the extracted responsibilities. The optional long-term target of
+roughly 800 lines has not been pursued in this hotfix.
+
 ## v1.4.0 Dynamic Timeframe & Research Dataset Release
 
 Version `1.4.0` extends replay research without turning the product into a live trading system:
@@ -71,11 +107,11 @@ Reports are written to `performance_reports/`. A missing GUI dependency or unava
 Build a distribution directory without local caches, databases, logs, settings, Python cache directories or backup folders:
 
 ```powershell
-python scripts/clean_release.py --output dist/QuantReplayCollector-v1.4.0-Clean
-python scripts/check_release_clean.py dist/QuantReplayCollector-v1.4.0-Clean
+python scripts/clean_release.py --output dist/QuantReplayCollector-v1.4.1-Clean
+python scripts/check_release_clean.py dist/QuantReplayCollector-v1.4.1-Clean
 ```
 
-The clean directory contains source code, documentation, tests, launcher files and audit reports named `clean_release_report.json` and `clean_release_report.md`. `check_release_clean.py` must pass before a package is uploaded. Local runtime data in the working directory is not deleted. Virtual environments, prior `dist` output, performance reports, databases, cache, exports, logs, local settings and backup folders are not copied.
+The clean directory contains source code, public documentation, tests, launcher files and audit reports named `clean_release_report.json` and `clean_release_report.md`. Public reports contain aggregate exclusion counts, not local absolute paths or skipped file names. `check_release_clean.py` must pass before a package is uploaded. Local runtime data in the working directory is not deleted. Virtual environments, prior `dist` output, performance reports, databases, cache, exports, logs, local settings, backup folders and local agent workflow directories are not copied.
 
 ### Feature And Label Separation
 
@@ -106,10 +142,10 @@ The time-series methodology is limited to explanatory diagnostics commonly used 
 From the repository root, after installing `quant_collector_app/requirements.txt`:
 
 ```powershell
-$env:PYTHONPATH = ".;quant_collector_app"
 python -m compileall quant_collector_app scripts
 python -m pytest -q
 python quant_collector_app/self_check.py --core
+python -m quant_collector_app.self_check --core
 ```
 
 See `docs/testing.md` for the full local release-validation command set.
@@ -310,10 +346,10 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name QuantRepla
 在项目根目录运行：
 
 ```powershell
-$env:PYTHONPATH = ".;quant_collector_app"
 python -m compileall quant_collector_app scripts
 python -m pytest -q
 python quant_collector_app/self_check.py --core
+python -m quant_collector_app.self_check --core
 ```
 
 ## 数据源说明：Binance Futures Kline API

@@ -5,8 +5,12 @@ from typing import Callable
 
 import pandas as pd
 
-from app_config import CACHE_DIR
-from app_logger import get_logger
+try:
+    from app_config import CACHE_DIR
+    from app_logger import get_logger
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import CACHE_DIR
+    from ..app_logger import get_logger
 from .cache import KlineCache
 from .client import MarketDataClient, format_request_error
 from .quality import DataQualityReport, assess_data_quality

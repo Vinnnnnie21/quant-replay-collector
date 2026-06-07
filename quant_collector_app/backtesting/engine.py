@@ -6,9 +6,14 @@ from typing import Any
 
 import pandas as pd
 
-from analytics.trade_analysis import analyze_trades
-from backtesting.types import BacktestConfig, BacktestResult, Signal
-from execution import ExecutionSettings, apply_slippage, fill_price, order_action, trade_outcome
+try:
+    from analytics.trade_analysis import analyze_trades
+    from backtesting.types import BacktestConfig, BacktestResult, Signal
+    from execution import ExecutionSettings, apply_slippage, fill_price, order_action, trade_outcome
+except ImportError:  # pragma: no cover - package import path
+    from ..analytics.trade_analysis import analyze_trades
+    from ..execution import ExecutionSettings, apply_slippage, fill_price, order_action, trade_outcome
+    from .types import BacktestConfig, BacktestResult, Signal
 
 
 REQUIRED_COLUMNS = {"bar_index", "open_time_bjt", "open", "high", "low", "close", "volume"}

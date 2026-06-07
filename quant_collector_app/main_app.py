@@ -2,14 +2,12 @@ from __future__ import annotations
 
 import json
 import math
-import re
 import sys
+import time
 import uuid
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Any
+from typing import Any
 
-import numpy as np
 import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
@@ -17,78 +15,158 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from app_config import (
     APP_NAME,
     APP_VERSION,
-    DEFAULT_INTERVAL,
-    DEFAULT_SYMBOL,
+    LOG_DIR,
     DEFAULT_INITIAL_EQUITY,
     DEFAULT_TRADE_NOTIONAL,
     DEFAULT_FEE_BPS,
     DEFAULT_SLIPPAGE_BPS,
     DEFAULT_FILL_MODE,
-    EVENT_TAGS,
     BINANCE_TOP_MARKET_CAP_SYMBOLS,
-    BJT,
     EXPORT_DIR,
-    DEFAULT_THEME,
-    THEME_PRESETS,
     load_theme_settings,
-    save_theme_settings,
 )
 from app_logger import get_logger, install_exception_hook
 from app_i18n import tr as i18n_tr
 from app_settings import load_app_settings, save_app_settings
-from execution import ExecutionSettings, FILL_MODES
-from market_data import (
-    LoadRequest,
-    bjt_now_iso,
-    clamp,
-)
+from execution import ExecutionSettings
+from market_data import bjt_now_iso, clamp
 from premium_monitor import PremiumWorker
 from premium_controller import PremiumController
-from replay_controller import ReplayController
-from multi_timeframe_panel import MultiTimeframePanel
-from timeframe_switcher import (
-    build_time_centered_xrange,
-    capture_time_anchor,
-    capture_view_time_span,
-    find_bar_index_by_time,
+from presenters.formatters import (
+    fill_mode_label,
+    format_event_detail,
+    format_trade_detail,
 )
+from presenters.table_presenter import (
+    populate_equity_table,
+    populate_event_study_table,
+    populate_event_table,
+    populate_trade_tables,
+)
+from presenters.status_presenter import (
+    refresh_premium_plot,
+    show_market_dirty_feedback,
+    update_current_price_line,
+    update_header,
+    update_load_play_button,
+    update_trade_buttons_enabled,
+)
+from replay_controller import ReplayController
+from render_state import RenderState
+from render.chart_render_adapter import (
+    autoscale_y,
+    clamp_xrange,
+    current_xrange,
+    mark_rendered,
+    on_price_view_range_changed as apply_price_view_range_change,
+    rebuild_items,
+    refresh_multi_timeframe_context,
+    render_chart,
+    set_xrange,
+    should_render_now,
+    soft_follow_should_apply,
+    sync_markers,
+)
+from controllers.analysis_controller import AnalysisRefreshController
+from controllers.export_task_controller import ExportTaskController
+from controllers.market_data_controller import (
+    accept_loaded_market_key as apply_loaded_market_key,
+    clear_timeframe_switch_pending,
+    current_market_key,
+    is_market_params_dirty,
+    load_data as request_market_data_load,
+    load_multi_timeframe_context,
+    load_or_toggle_play as apply_load_or_toggle_play,
+    normalized_symbol,
+    on_interval_changed_for_dynamic_switch as apply_dynamic_interval_change,
+    on_load_progress as apply_load_progress,
+    on_loaded as apply_loaded_market_data,
+    on_market_params_changed as apply_market_params_change,
+    on_multi_timeframe_load_failed as apply_multi_timeframe_load_failure,
+    persist_loaded_market_data,
+)
+from controllers.replay_ui_controller import (
+    current_speed as replay_current_speed,
+    jump_to_end as replay_jump_to_end,
+    on_speed_changed as apply_speed_change,
+    on_timer as apply_replay_timer,
+    on_user_interaction as apply_user_chart_interaction,
+    reset_view as reset_replay_view,
+    step_once as replay_step_once,
+    toggle_follow as replay_toggle_follow,
+    toggle_play as replay_toggle_play,
+)
+from controllers.trade_action_controller import (
+    ActionCommand,
+    apply_close_trade_result,
+    apply_open_trade_result,
+    current_bar as current_trade_bar,
+    current_tags_and_note as current_trade_tags_and_note,
+    display_interval,
+    execute_command as execute_trade_command,
+    is_display_interval_same_as_sample_interval,
+    is_trade_recording_allowed,
+    pause_replay_for_manual_trade,
+    raise_trade_action_error,
+    redo as redo_trade_command,
+    request_close_trade as apply_close_trade_request,
+    request_open_trade as apply_open_trade_request,
+    sample_interval,
+    selected_open_trade as find_selected_open_trade,
+    start_new_session_for_current_display_interval as start_trade_sample_session,
+    trade_use_case,
+    undo as undo_trade_command,
+    undo_close_trade_result,
+    undo_open_trade_result,
+    warn_trade_interval_mismatch,
+)
+from controllers.trade_record_controller import (
+    confirm_clear_trade_records as apply_clear_trade_records,
+)
+from services.analysis_refresh import (
+    AnalysisRefreshResult,
+    AnalysisRefreshSnapshot,
+    build_dataset_summary_text,
+    build_event_study_summary_frame,
+    build_performance_summary_text,
+)
+from services.session_service import (
+    SessionSaveInput,
+    build_session_restore_plan,
+    save_session_state,
+    should_autosave,
+)
+from services.export_service import build_export_task_request
+from services.trade_use_cases import TradeActionResult, TradeUseCase
+from ui_watchdog import UiFreezeWatchdog
 from state import AppState
 from startup import bootstrap_runtime_dirs, configure_logging
 from storage import StorageManager
-from views.candlestick_item import CandlestickItem
-from views.chart_axis import IndexTimeAxis
 from trade_controller import TradeController
-from views.chart_view import visible_bar_bounds
-from views.k_view_box import KViewBox
-from views.theme_dialog import ThemeDialog
-from views.volume_item import VolumeItem
-from workers.loader_worker import LoaderWorker
-from ui_style import (
-    COLORS,
-    SPACING,
-    build_app_qss,
-    style_danger_button,
-    style_primary_button,
-    style_secondary_button,
-    style_success_button,
+from render.marker_renderer import MarkerPayloadCache
+from views.main_window_layout import build_main_window_ui
+from views.main_window_connections import (
+    add_window_shortcut,
+    connect_main_window_signals,
+    focus_is_text_entry,
+    setup_table,
 )
+from views.main_window_presentation import (
+    apply_main_window_theme,
+    retranslate_main_window_ui,
+)
+from views.theme_dialog import ThemeDialog
+from workers.loader_worker import LoaderWorker
 
 
 ROLE_ID = QtCore.Qt.UserRole
 logger = get_logger(__name__)
 
 
-@dataclass
-class ActionCommand:
-    name: str
-    do_fn: Callable[[], None]
-    undo_fn: Callable[[], None]
-
-    def do(self):
-        self.do_fn()
-
-    def undo(self):
-        self.undo_fn()
+def _maybe_log_slow_operation(target: Any, name: str, started: float) -> None:
+    log_slow = getattr(target, "_log_slow_operation", None)
+    if callable(log_slow):
+        log_slow(name, started)
 
 
 class MainWindow(QtWidgets.QMainWindow):
@@ -102,18 +180,18 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.storage = StorageManager()
         self.trade_controller = TradeController(self.storage, export_version=APP_VERSION)
+        self.trade_use_cases = TradeUseCase(self.trade_controller)
         self.exporter = None
         self.export_controller = None
         self.premium_controller = PremiumController()
         self.replay_controller = ReplayController()
         self.app_state = AppState()
-        self._export_thread = None
-        self._export_worker = None
         self._export_success_callback = None
 
         self.df = pd.DataFrame()
         self.cursor = 0
         self._drawn_n = -1
+        self._last_rebuild_key = None
         self._last_cursor_for_series = -1
         self._accum = 0.0
         self._last_tick = QtCore.QElapsedTimer()
@@ -143,6 +221,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._pending_switch_to_interval: str | None = None
         self._queued_dynamic_interval: str | None = None
         self._render_dirty = True
+        self.render_state = RenderState()
+        self._marker_payload_cache = MarkerPayloadCache()
+        self._last_marker_sync_key = None
+        self._last_multi_timeframe_refresh_key = None
+        self._last_render_msec = 0
+        self._render_interval_ms = 50
+        self._trade_transaction_active = False
+        self._last_autosave_msec = 0
         self.theme_settings = load_theme_settings()
         self.app_settings = load_app_settings()
         self.current_language = str(self.app_settings.get("language") or "zh_CN")
@@ -160,6 +246,17 @@ class MainWindow(QtWidgets.QMainWindow):
         self._trade_by_id: dict[str, dict[str, Any]] = {}
         self._shortcuts: list[QtGui.QShortcut] = []
         self._analysis_workspace = None
+        self.analysis_refresh_controller = AnalysisRefreshController(
+            snapshot_factory=self._analysis_refresh_snapshot,
+            is_playing=lambda: bool(self.playing),
+            parent=self,
+        )
+        self.analysis_refresh_controller.resultReady.connect(self._apply_analysis_refresh_result)
+        self.analysis_refresh_controller.failed.connect(self._on_analysis_refresh_failed)
+        self.export_task_controller = ExportTaskController(parent=self)
+        self.export_task_controller.finished.connect(self._on_export_finished)
+        self.export_task_controller.failed.connect(self._on_export_failed)
+        self.export_task_controller.cancelled.connect(self._on_export_cancelled)
 
         self.loader_thread = QtCore.QThread(self)
         self.loader = LoaderWorker()
@@ -172,6 +269,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.premium_thread.start()
 
         self._build_ui()
+        self.export_task_controller.progress.connect(self.status.setText)
         self._connect()
         self._install_theme()
         self.apply_theme(self.theme_settings)
@@ -182,13 +280,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer.start(16)
 
         self.autosave_timer = QtCore.QTimer(self)
-        self.autosave_timer.timeout.connect(self.persist_session_state)
+        self.autosave_timer.timeout.connect(self._on_autosave_timer)
         self.autosave_timer.start(2000)
 
         self.premium_timer = QtCore.QTimer(self)
         self.premium_timer.timeout.connect(self.request_premium_sample)
         self.premium_timer.start(30_000)
         self.request_premium_sample()
+        self.ui_watchdog = UiFreezeWatchdog(log_dir=LOG_DIR, parent=self)
 
         self._restore_latest_session_if_any()
 
@@ -210,511 +309,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 pass
         if hasattr(self, "multiTimeframePanel"):
             self.multiTimeframePanel.shutdown()
-        if self._export_thread is not None:
-            try:
-                self._export_worker.cancel()
-                self._export_thread.quit()
-                self._export_thread.wait(1000)
-            except Exception:
-                pass
+        if hasattr(self, "ui_watchdog"):
+            self.ui_watchdog.shutdown()
+        self.export_task_controller.shutdown()
+        self.analysis_refresh_controller.shutdown()
         super().closeEvent(event)
 
     # ---------- UI ----------
     def _build_ui(self):
-        central = QtWidgets.QWidget()
-        self.setCentralWidget(central)
-        root = QtWidgets.QVBoxLayout(central)
-        root.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        root.setSpacing(SPACING["md"])
-
-        header = QtWidgets.QFrame()
-        header.setProperty("role", "header")
-        header.setFixedHeight(56)
-        header_l = QtWidgets.QHBoxLayout(header)
-        header_l.setContentsMargins(SPACING["lg"], SPACING["sm"], SPACING["lg"], SPACING["sm"])
-        header_l.setSpacing(SPACING["lg"])
-
-        title = QtWidgets.QLabel("Quant Replay Collector")
-        title.setProperty("role", "appTitle")
-        header_l.addWidget(title)
-
-        self.headerMetricLabels = {}
-
-        def metric_block(key: str, label: str, value: str):
-            frame = QtWidgets.QFrame()
-            frame.setProperty("role", "metricBlock")
-            frame_l = QtWidgets.QVBoxLayout(frame)
-            frame_l.setContentsMargins(SPACING["md"], SPACING["xs"], SPACING["md"], SPACING["xs"])
-            frame_l.setSpacing(0)
-            label_widget = QtWidgets.QLabel(label)
-            label_widget.setProperty("role", "muted")
-            value_widget = QtWidgets.QLabel(value)
-            value_widget.setProperty("role", "metric")
-            frame_l.addWidget(label_widget)
-            frame_l.addWidget(value_widget)
-            self.headerMetricLabels[key] = label_widget
-            return frame, value_widget
-
-        symbol_block, self.headerSymbolValue = metric_block("symbol", "品种", DEFAULT_SYMBOL)
-        interval_block, self.headerIntervalValue = metric_block("time_interval", "周期", DEFAULT_INTERVAL)
-        price_block, self.headerCloseValue = metric_block("price_close", "收盘价", "-")
-        time_block, self.headerTimeValue = metric_block("kline_time", "K线时间", "-")
-        cursor_block, self.headerCursorValue = metric_block("cursor_position", "位置", "0 / 0")
-        for block in (symbol_block, interval_block, price_block, time_block, cursor_block):
-            header_l.addWidget(block)
-
-        header_l.addStretch(1)
-        self.headerPlayBadge = QtWidgets.QLabel("暂停")
-        self.headerPlayBadge.setProperty("role", "pillMuted")
-        self.headerViewBadge = QtWidgets.QLabel("自由浏览")
-        self.headerViewBadge.setProperty("role", "pill")
-        self.headerSessionBadge = QtWidgets.QLabel("会话 -")
-        self.headerSessionBadge.setProperty("role", "pill")
-        header_l.addWidget(self.headerPlayBadge)
-        header_l.addWidget(self.headerViewBadge)
-        header_l.addWidget(self.headerSessionBadge)
-        root.addWidget(header)
-
-        body = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        body.setChildrenCollapsible(False)
-        root.addWidget(body, stretch=1)
-
-        left = QtWidgets.QFrame()
-        left.setProperty("role", "sidebar")
-        left.setMinimumWidth(330)
-        left.setMaximumWidth(380)
-        left_l = QtWidgets.QVBoxLayout(left)
-        left_l.setContentsMargins(SPACING["sm"], SPACING["sm"], SPACING["sm"], SPACING["sm"])
-        left_l.setSpacing(SPACING["md"])
-
-        sidebar_scroll = QtWidgets.QScrollArea()
-        sidebar_scroll.setWidgetResizable(True)
-        sidebar_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        sidebar_content = QtWidgets.QWidget()
-        sidebar_l = QtWidgets.QVBoxLayout(sidebar_content)
-        sidebar_l.setContentsMargins(SPACING["xs"], SPACING["xs"], SPACING["xs"], SPACING["xs"])
-        sidebar_l.setSpacing(SPACING["lg"])
-
-        def new_card(title_text: str):
-            box = QtWidgets.QGroupBox(title_text)
-            layout = QtWidgets.QVBoxLayout(box)
-            layout.setContentsMargins(SPACING["lg"], SPACING["sm"], SPACING["lg"], SPACING["lg"])
-            layout.setSpacing(SPACING["sm"])
-            return box, layout
-
-        data_box, data_l = new_card("行情数据")
-        self.dataBox = data_box
-        form = QtWidgets.QFormLayout()
-        form.setLabelAlignment(QtCore.Qt.AlignLeft)
-        form.setSpacing(SPACING["sm"])
-        self.symbolBox = QtWidgets.QComboBox()
-        self.symbolBox.setProperty("role", "symbolSelector")
-        self.symbolBox.setEditable(False)
-        self.symbolBox.addItems(BINANCE_TOP_MARKET_CAP_SYMBOLS)
-        self.symbolBox.setCurrentText(DEFAULT_SYMBOL)
-        self.symbolBox.installEventFilter(self)
-
-        self.intervalBox = QtWidgets.QComboBox()
-        self.intervalBox.addItems(["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"])
-        self.intervalBox.setCurrentText(DEFAULT_INTERVAL)
-
-        self.startDate = QtWidgets.QDateEdit()
-        self.startDate.setCalendarPopup(True)
-        self.startDate.setDate(QtCore.QDate.currentDate().addDays(-2))
-
-        self.endDate = QtWidgets.QDateEdit()
-        self.endDate.setCalendarPopup(True)
-        self.endDate.setDate(QtCore.QDate.currentDate())
-
-        form.addRow("当前品种", self.symbolBox)
-        form.addRow("周期", self.intervalBox)
-        form.addRow("开始日期", self.startDate)
-        form.addRow("结束日期", self.endDate)
-        data_l.addLayout(form)
-        self.symbolPanel = QtWidgets.QFrame()
-        self.symbolPanel.setProperty("role", "metricBlock")
-        symbol_panel_l = QtWidgets.QVBoxLayout(self.symbolPanel)
-        symbol_panel_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        symbol_panel_l.setSpacing(SPACING["sm"])
-        self.symbolSearchEdit = QtWidgets.QLineEdit()
-        self.symbolSearchEdit.setPlaceholderText("搜索品种，例如 BTC、ETH、1000PEPE")
-        self.symbolList = QtWidgets.QListWidget()
-        self.symbolList.setMaximumHeight(140)
-        self.symbolList.addItems(BINANCE_TOP_MARKET_CAP_SYMBOLS)
-        self.symbolPanel.setVisible(False)
-        symbol_panel_l.addWidget(self.symbolSearchEdit)
-        symbol_panel_l.addWidget(self.symbolList)
-        data_l.addWidget(self.symbolPanel)
-
-        sidebar_l.addWidget(data_box)
-
-        replay_box, replay_l = new_card("回放控制")
-        self.replayBox = replay_box
-        self.btnLoadPlay = QtWidgets.QPushButton("加载K线")
-        self.btnStep = QtWidgets.QPushButton("下一根 (→)")
-        self.btnToEnd = QtWidgets.QPushButton("跳到末尾")
-        self.btnFollow = QtWidgets.QPushButton("跟随最新 (F)")
-        self.btnResetView = QtWidgets.QPushButton("重置缩放 (K)")
-        self.btnLoadPlay.setStyleSheet(style_primary_button())
-        for btn in (self.btnStep, self.btnToEnd, self.btnFollow, self.btnResetView):
-            btn.setStyleSheet(style_secondary_button())
-
-        grid = QtWidgets.QGridLayout()
-        grid.setHorizontalSpacing(SPACING["sm"])
-        grid.setVerticalSpacing(SPACING["sm"])
-        grid.addWidget(self.btnLoadPlay, 0, 0, 1, 2)
-        grid.addWidget(self.btnStep, 1, 0)
-        grid.addWidget(self.btnToEnd, 1, 1)
-        grid.addWidget(self.btnFollow, 2, 0)
-        grid.addWidget(self.btnResetView, 2, 1)
-        replay_l.addLayout(grid)
-        self.speedLabel = QtWidgets.QLabel("速度: 1.0x")
-        self.speedLabel.setProperty("role", "muted")
-        self.speedSlider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.speedSlider.setMinimum(1)
-        self.speedSlider.setMaximum(1000)
-        self.speedSlider.setValue(10)
-        replay_l.addWidget(self.speedLabel)
-        replay_l.addWidget(self.speedSlider)
-        sidebar_l.addWidget(replay_box)
-
-        trade_box, trade_l = new_card("交易操作")
-        self.tradeBox = trade_box
-        trade_grid = QtWidgets.QGridLayout()
-        trade_grid.setContentsMargins(0, 0, 0, 0)
-        trade_grid.setHorizontalSpacing(SPACING["sm"])
-        trade_grid.setVerticalSpacing(SPACING["sm"])
-        self.btnOpenLong = QtWidgets.QPushButton("开多 (B)")
-        self.btnOpenShort = QtWidgets.QPushButton("开空 (S)")
-        self.btnCloseLong = QtWidgets.QPushButton("平多 (C)")
-        self.btnCloseShort = QtWidgets.QPushButton("平空 (X)")
-        self.btnUndo = QtWidgets.QPushButton("撤销 (Ctrl+Z)")
-        self.btnRedo = QtWidgets.QPushButton("重做 (Ctrl+Y)")
-        self.btnClearTradeRecords = QtWidgets.QPushButton("清空全部交易样本")
-        self.btnOpenLong.setStyleSheet(style_success_button())
-        self.btnOpenShort.setStyleSheet(style_danger_button())
-        for btn in (self.btnCloseLong, self.btnCloseShort, self.btnUndo, self.btnRedo):
-            btn.setStyleSheet(style_secondary_button())
-        self.btnClearTradeRecords.setStyleSheet(style_danger_button())
-        trade_grid.addWidget(self.btnOpenLong, 0, 0)
-        trade_grid.addWidget(self.btnOpenShort, 0, 1)
-        trade_grid.addWidget(self.btnCloseLong, 1, 0)
-        trade_grid.addWidget(self.btnCloseShort, 1, 1)
-        trade_grid.addWidget(self.btnUndo, 2, 0)
-        trade_grid.addWidget(self.btnRedo, 2, 1)
-        trade_grid.addWidget(self.btnClearTradeRecords, 3, 0, 1, 2)
-        trade_l.addLayout(trade_grid)
-        sidebar_l.addWidget(trade_box)
-
-        exec_box, exec_l = new_card("交易成本设置")
-        exec_form = QtWidgets.QFormLayout()
-        exec_form.setContentsMargins(0, 0, 0, 0)
-        exec_form.setSpacing(SPACING["sm"])
-        self.fillModeBox = QtWidgets.QComboBox()
-        for mode in FILL_MODES:
-            self.fillModeBox.addItem(self._fill_mode_label(mode), mode)
-        self._set_fill_mode_value(DEFAULT_FILL_MODE)
-        self.feeBpsSpin = QtWidgets.QDoubleSpinBox()
-        self.feeBpsSpin.setRange(0.0, 100.0)
-        self.feeBpsSpin.setDecimals(2)
-        self.feeBpsSpin.setValue(DEFAULT_FEE_BPS)
-        self.slippageBpsSpin = QtWidgets.QDoubleSpinBox()
-        self.slippageBpsSpin.setRange(0.0, 100.0)
-        self.slippageBpsSpin.setDecimals(2)
-        self.slippageBpsSpin.setValue(DEFAULT_SLIPPAGE_BPS)
-        self.tradeNotionalSpin = QtWidgets.QDoubleSpinBox()
-        self.tradeNotionalSpin.setRange(1.0, 1_000_000_000.0)
-        self.tradeNotionalSpin.setDecimals(2)
-        self.tradeNotionalSpin.setValue(DEFAULT_TRADE_NOTIONAL)
-        self.initialEquitySpin = QtWidgets.QDoubleSpinBox()
-        self.initialEquitySpin.setRange(1.0, 1_000_000_000.0)
-        self.initialEquitySpin.setDecimals(2)
-        self.initialEquitySpin.setValue(DEFAULT_INITIAL_EQUITY)
-        exec_form.addRow("成交模式", self.fillModeBox)
-        exec_form.addRow("手续费 bps", self.feeBpsSpin)
-        exec_form.addRow("滑点 bps", self.slippageBpsSpin)
-        exec_form.addRow("每笔名义金额", self.tradeNotionalSpin)
-        exec_form.addRow("初始权益", self.initialEquitySpin)
-        exec_l.addLayout(exec_form)
-        self.executionSettingsBox = exec_box
-        self.executionSettingsBox.setVisible(False)
-
-        tag_box, tag_l = new_card("事件标签与备注")
-        self.tagBox = tag_box
-        self.tag_checks = []
-        tag_grid = QtWidgets.QGridLayout()
-        tag_grid.setHorizontalSpacing(SPACING["sm"])
-        tag_grid.setVerticalSpacing(SPACING["sm"])
-        for idx, tag in enumerate(EVENT_TAGS):
-            cb = QtWidgets.QCheckBox(tag)
-            cb.setProperty("role", "tagChip")
-            self.tag_checks.append(cb)
-            tag_grid.addWidget(cb, idx // 2, idx % 2)
-        tag_l.addLayout(tag_grid)
-        self.noteEdit = QtWidgets.QPlainTextEdit()
-        self.noteEdit.setPlaceholderText("这条备注会写入选中的事件，或随新建的交易事件一起保存。")
-        self.noteEdit.setFixedHeight(82)
-        self.eventHintLabel = QtWidgets.QLabel("先选择事件可编辑标签；未选择事件时，当前标签会随下一次开仓或平仓写入。")
-        self.eventHintLabel.setProperty("role", "muted")
-        self.eventHintLabel.setWordWrap(True)
-        self.btnApplyEventMeta = QtWidgets.QPushButton("应用标签 / 备注")
-        self.btnApplyEventMeta.setStyleSheet(style_secondary_button())
-        tag_l.addWidget(self.noteEdit)
-        tag_l.addWidget(self.eventHintLabel)
-        tag_l.addWidget(self.btnApplyEventMeta)
-        sidebar_l.addWidget(tag_box)
-
-        export_box, export_l = new_card("底部工具")
-        self.toolsBox = export_box
-        self.btnExport = QtWidgets.QPushButton("导出会话 (E)")
-        self.btnAnalysis = QtWidgets.QPushButton("数据分析")
-        self.btnSettings = QtWidgets.QPushButton("设置")
-        self.btnTheme = self.btnSettings
-        self.btnExport.setStyleSheet(style_primary_button())
-        self.btnAnalysis.setStyleSheet(style_secondary_button())
-        self.btnSettings.setStyleSheet(style_secondary_button())
-        export_l.addWidget(self.btnExport)
-        export_l.addWidget(self.btnAnalysis)
-        export_l.addWidget(self.btnSettings)
-        sidebar_l.addWidget(export_box)
-        sidebar_l.addStretch(1)
-
-        sidebar_scroll.setWidget(sidebar_content)
-        left_l.addWidget(sidebar_scroll)
-
-        center = QtWidgets.QFrame()
-        center.setProperty("role", "chartCard")
-        center_l = QtWidgets.QVBoxLayout(center)
-        center_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        center_l.setSpacing(SPACING["sm"])
-        self.status = QtWidgets.QLabel("未加载数据")
-        self.status.setProperty("role", "muted")
-        center_l.addWidget(self.status)
-
-        self.glw = pg.GraphicsLayoutWidget()
-        center_l.addWidget(self.glw, stretch=1)
-
-        self.axis_price = IndexTimeAxis('bottom')
-        self.axis_vol = IndexTimeAxis('bottom')
-        self.vb_price = KViewBox()
-        self.vb_vol = KViewBox()
-        self.pricePlot = self.glw.addPlot(row=0, col=0, viewBox=self.vb_price, axisItems={'bottom': self.axis_price})
-        self.volPlot = self.glw.addPlot(row=1, col=0, viewBox=self.vb_vol, axisItems={'bottom': self.axis_vol})
-        self.volPlot.setXLink(self.pricePlot)
-        self.volPlot.setMaximumHeight(220)
-        self.pricePlot.showGrid(x=True, y=True, alpha=0.25)
-        self.volPlot.showGrid(x=True, y=True, alpha=0.25)
-        self.pricePlot.hideButtons()
-        self.volPlot.hideButtons()
-        for plot in (self.pricePlot, self.volPlot):
-            try:
-                plot.buttonsHidden = True
-                plot.autoBtn.hide()
-                plot.autoBtn.setEnabled(False)
-            except Exception:
-                pass
-            try:
-                plot.getViewBox().enableAutoRange(x=False, y=False)
-            except Exception:
-                pass
-
-        self.currentPriceLine = pg.InfiniteLine(angle=0, movable=False, pen=pg.mkPen('#FF5252', style=QtCore.Qt.DashLine, width=1))
-        self.currentPriceLabel = pg.TextItem(
-            '',
-            anchor=(1, 0.5),
-            color='#06110c',
-            fill=pg.mkBrush('#2fd182'),
-            border=pg.mkPen('#2fd182'),
-        )
-        self.pricePlot.addItem(self.currentPriceLine, ignoreBounds=True)
-        self.pricePlot.addItem(self.currentPriceLabel, ignoreBounds=True)
-
-        self.candleItem = CandlestickItem()
-        self.volItem = VolumeItem()
-        self.pricePlot.addItem(self.candleItem)
-        self.volPlot.addItem(self.volItem)
-
-        self.scatter_open_long = pg.ScatterPlotItem(symbol='t1', size=14, brush=pg.mkBrush('#00C853'), pen=pg.mkPen('#00C853'))
-        self.scatter_open_short = pg.ScatterPlotItem(symbol='t', size=14, brush=pg.mkBrush('#FF9800'), pen=pg.mkPen('#FF9800'))
-        self.scatter_close_long = pg.ScatterPlotItem(symbol='x', size=12, brush=pg.mkBrush('#26C6DA'), pen=pg.mkPen('#26C6DA'))
-        self.scatter_close_short = pg.ScatterPlotItem(symbol='x', size=12, brush=pg.mkBrush('#AB47BC'), pen=pg.mkPen('#AB47BC'))
-        for item in (self.scatter_open_long, self.scatter_open_short, self.scatter_close_long, self.scatter_close_short):
-            self.pricePlot.addItem(item)
-
-        right = QtWidgets.QFrame()
-        right.setProperty("role", "rightPanel")
-        right_l = QtWidgets.QVBoxLayout(right)
-        right_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        right_l.setSpacing(SPACING["sm"])
-
-        self.openTradesTable = QtWidgets.QTableWidget()
-        self.openTradesTable.setColumnCount(10)
-        self.openTradesTable.setHorizontalHeaderLabels([
-            "交易ID", "方向", "入场时间", "代理价", "成交价",
-            "手续费", "名义金额", "K线", "状态", "成交模式",
-        ])
-        self._setup_table(self.openTradesTable)
-
-        self.closedTradesTable = QtWidgets.QTableWidget()
-        self.closedTradesTable.setColumnCount(13)
-        self.closedTradesTable.setHorizontalHeaderLabels([
-            "交易ID", "方向", "入场", "出场", "入场成交", "出场成交",
-            "毛收益%", "净收益%", "手续费", "净盈亏", "持仓K线", "状态", "成交模式",
-        ])
-        self._setup_table(self.closedTradesTable)
-
-        self.eventTable = QtWidgets.QTableWidget()
-        self.eventTable.setColumnCount(8)
-        self.eventTable.setHorizontalHeaderLabels(["事件ID", "交易ID", "事件", "方向", "K线时间", "代理价", "标签", "备注"])
-        self._setup_table(self.eventTable)
-        self.eventFilterTag = QtWidgets.QComboBox()
-        self.eventFilterTag.addItems(["全部标签", *EVENT_TAGS])
-        self.eventFilterSide = QtWidgets.QComboBox()
-        self.eventFilterSide.addItem("全部方向", "")
-        self.eventFilterSide.addItem("多", "LONG")
-        self.eventFilterSide.addItem("空", "SHORT")
-        self.eventFilterType = QtWidgets.QComboBox()
-        self.eventFilterType.addItem("全部事件", "")
-        self.eventFilterType.addItem("开仓", "OPEN")
-        self.eventFilterType.addItem("平仓", "CLOSE")
-        event_filters = QtWidgets.QHBoxLayout()
-        event_filters.addWidget(self.eventFilterTag)
-        event_filters.addWidget(self.eventFilterSide)
-        event_filters.addWidget(self.eventFilterType)
-        self.eventTab = QtWidgets.QWidget()
-        event_tab_layout = QtWidgets.QVBoxLayout(self.eventTab)
-        event_tab_layout.setContentsMargins(0, 0, 0, 0)
-        event_tab_layout.addLayout(event_filters)
-        event_tab_layout.addWidget(self.eventTable)
-
-        self.performanceText = QtWidgets.QPlainTextEdit()
-        self.performanceText.setReadOnly(True)
-        self.performanceText.setMinimumHeight(160)
-        self.performanceText.setPlainText("暂无交易统计")
-
-        self.equityTable = QtWidgets.QTableWidget()
-        self.equityTable.setColumnCount(8)
-        self.equityTable.setHorizontalHeaderLabels([
-            "序号", "交易ID", "权益前", "净盈亏", "手续费", "权益后", "收益%", "回撤%",
-        ])
-        self._setup_table(self.equityTable)
-
-        self.eventStudyTable = QtWidgets.QTableWidget()
-        self.eventStudyTable.setColumnCount(9)
-        self.eventStudyTable.setHorizontalHeaderLabels([
-            "标签", "事件", "方向", "样本数", "未来1均值", "未来3均值", "未来5均值", "未来10均值", "未来1胜率",
-        ])
-        self._setup_table(self.eventStudyTable)
-
-        self.datasetText = QtWidgets.QPlainTextEdit()
-        self.datasetText.setReadOnly(True)
-        self.datasetText.setMinimumHeight(160)
-        self.datasetText.setPlainText("暂无机器学习样本信息。导出后会生成特征表、标签表和样本索引。")
-
-        tabs = QtWidgets.QTabWidget()
-        self.rightTabs = tabs
-        tabs.addTab(self.openTradesTable, "当前仓位")
-        tabs.addTab(self.eventTab, "事件")
-        self.multiTimeframePanel = MultiTimeframePanel(language=self.current_language, parent=self)
-        tabs.addTab(self.multiTimeframePanel, "多周期上下文")
-        self.backtestPanel = None
-        self.strategyConsistencyPanel = None
-
-        detail_box = QtWidgets.QGroupBox("选中对象详情")
-        self.detailBox = detail_box
-        detail_l = QtWidgets.QVBoxLayout(detail_box)
-        self.btnToggleDetail = QtWidgets.QPushButton("隐藏详情")
-        self.btnToggleDetail.setCheckable(True)
-        self.btnToggleDetail.setStyleSheet(style_secondary_button())
-        self.detailText = QtWidgets.QPlainTextEdit()
-        self.detailText.setReadOnly(True)
-        self.detailText.setPlainText("无")
-        self.detailText.setMinimumHeight(260)
-        detail_l.addWidget(self.btnToggleDetail)
-        detail_l.addWidget(self.detailText)
-        tabs.addTab(detail_box, "详情")
-
-        self.premiumBox = QtWidgets.QWidget()
-        premium_l = QtWidgets.QVBoxLayout(self.premiumBox)
-        premium_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        premium_l.setSpacing(SPACING["sm"])
-        self.premiumStatus = QtWidgets.QLabel("等待采样...")
-        self.premiumStatus.setProperty("role", "pill")
-        self.premiumStats = QtWidgets.QPlainTextEdit()
-        self.premiumStats.setReadOnly(True)
-        self.premiumStats.setMaximumHeight(110)
-        self.premiumStats.setPlainText("-")
-        self.premiumPlot = pg.PlotWidget()
-        self.premiumPlot.showGrid(x=True, y=True, alpha=0.25)
-        self.premiumPlot.addLegend(offset=(8, 8))
-        self.premiumBuyCurve = self.premiumPlot.plot([], [], pen=pg.mkPen('#42A5F5', width=1.5, style=QtCore.Qt.DashLine), symbol='o', symbolSize=4, name='买入溢价')
-        self.premiumSellCurve = self.premiumPlot.plot([], [], pen=pg.mkPen('#FFB300', width=1.5, style=QtCore.Qt.DotLine), symbol='t', symbolSize=4, name='卖出溢价')
-        self.premiumAvgCurve = self.premiumPlot.plot([], [], pen=pg.mkPen('#AB47BC', width=1.8), symbol='s', symbolSize=4, name='均价溢价')
-        premium_l.addWidget(self.premiumStatus)
-        premium_l.addWidget(self.premiumStats)
-        premium_l.addWidget(self.premiumPlot, stretch=1)
-        right_l.addWidget(tabs, stretch=1)
-
-        body.addWidget(left)
-        body.addWidget(center)
-        body.addWidget(right)
-        body.setStretchFactor(0, 0)
-        body.setStretchFactor(1, 2)
-        body.setStretchFactor(2, 1)
-        body.setSizes([350, 1040, 520])
-
-        self.logDrawer = QtWidgets.QFrame()
-        self.logDrawer.setProperty("role", "logDrawer")
-        self.logDrawer.setMaximumHeight(170)
-        log_l = QtWidgets.QVBoxLayout(self.logDrawer)
-        log_l.setContentsMargins(SPACING["md"], SPACING["sm"], SPACING["md"], SPACING["md"])
-        log_l.setSpacing(SPACING["sm"])
-        log_header = QtWidgets.QHBoxLayout()
-        log_title = QtWidgets.QLabel("操作日志")
-        log_title.setProperty("role", "muted")
-        self.btnToggleLog = QtWidgets.QPushButton("折叠")
-        self.btnToggleLog.setStyleSheet(style_secondary_button())
-        self.btnToggleLog.setCheckable(True)
-        log_header.addWidget(log_title)
-        log_header.addStretch(1)
-        log_header.addWidget(self.btnToggleLog)
-        self.log = QtWidgets.QPlainTextEdit()
-        self.log.setReadOnly(True)
-        self.log.setMaximumBlockCount(3000)
-        self.log.setMaximumHeight(105)
-        log_l.addLayout(log_header)
-        log_l.addWidget(self.log)
-        root.addWidget(self.logDrawer)
-
-        self._add_shortcut("Space", self.toggle_play)
-        self._add_shortcut(QtCore.Qt.Key_Right, self.step_once)
-        self._add_shortcut("F", self.toggle_follow)
-        self._add_shortcut("B", lambda: self.request_open_trade("LONG"))
-        self._add_shortcut("S", lambda: self.request_open_trade("SHORT"))
-        self._add_shortcut("C", lambda: self.request_close_trade("LONG"))
-        self._add_shortcut("X", lambda: self.request_close_trade("SHORT"))
-        self._add_shortcut("Ctrl+Z", self.undo)
-        self._add_shortcut("Ctrl+Y", self.redo)
-        self._add_shortcut("E", self.export_session)
-        self._add_shortcut("K", self.reset_view)
-        self._update_header()
-        self._update_load_play_button()
-        self.retranslate_ui()
+        build_main_window_ui(self)
 
     def _setup_table(self, table: QtWidgets.QTableWidget):
-        table.verticalHeader().setVisible(False)
-        table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        table.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
-        table.setAlternatingRowColors(True)
-        table.setShowGrid(False)
-        table.setWordWrap(False)
-        table.verticalHeader().setDefaultSectionSize(28)
-        header = table.horizontalHeader()
-        header.setStretchLastSection(True)
-        header.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-        header.setMinimumSectionSize(72)
-        header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
+        setup_table(table)
 
     def tr(self, key: str, default: str | None = None) -> str:
         return i18n_tr(key, self.current_language, default)
@@ -731,77 +337,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 widget.retranslate_ui()
 
     def retranslate_ui(self):
-        if not hasattr(self, "btnExport"):
-            return
-        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION} - {self.tr('trading_replay')}")
-        for key, label in getattr(self, "headerMetricLabels", {}).items():
-            label.setText(self.tr(key))
-        for widget_name, key in (
-            ("dataBox", "market_data"),
-            ("replayBox", "replay_control"),
-            ("tradeBox", "trade_actions"),
-            ("tagBox", "event_tags_notes"),
-            ("toolsBox", "tools"),
-        ):
-            widget = getattr(self, widget_name, None)
-            if widget is not None:
-                widget.setTitle(self.tr(key))
-        self.btnStep.setText(f"{self.tr('step_next')} (→)")
-        self.btnToEnd.setText(self.tr("jump_to_end"))
-        self.btnFollow.setText(f"{self.tr('follow_latest')} (F)")
-        self.btnResetView.setText(f"{self.tr('reset_view')} (K)")
-        self.btnResetView.setToolTip(self.tr("reset_view_hint"))
-        self.btnOpenLong.setText(f"{self.tr('open_long')} (B)")
-        self.btnOpenShort.setText(f"{self.tr('open_short')} (S)")
-        self.btnCloseLong.setText(f"{self.tr('close_long')} (C)")
-        self.btnCloseShort.setText(f"{self.tr('close_short')} (X)")
-        self.btnUndo.setText(f"{self.tr('undo')} (Ctrl+Z)")
-        self.btnRedo.setText(f"{self.tr('redo')} (Ctrl+Y)")
-        self.btnClearTradeRecords.setText(self.tr("clear_trade_records"))
-        self.btnExport.setText(f"{self.tr('export_session')} (E)")
-        self.btnAnalysis.setText(self.tr("data_analysis"))
-        self.btnSettings.setText(self.tr("settings"))
-        self.rightTabs.setTabText(self.rightTabs.indexOf(self.openTradesTable), self.tr("current_positions"))
-        self.rightTabs.setTabText(self.rightTabs.indexOf(self.eventTab), self.tr("events"))
-        self.rightTabs.setTabText(self.rightTabs.indexOf(self.multiTimeframePanel), self.tr("multi_timeframe_context"))
-        self.rightTabs.setTabText(self.rightTabs.indexOf(self.detailBox), self.tr("details"))
-        self.multiTimeframePanel.retranslate_ui(self.current_language)
-        if hasattr(self, "backtestPanel") and hasattr(self.backtestPanel, "retranslate_ui"):
-            self.backtestPanel.retranslate_ui()
-        if hasattr(self, "strategyConsistencyPanel") and hasattr(self.strategyConsistencyPanel, "retranslate_ui"):
-            self.strategyConsistencyPanel.retranslate_ui()
-        self._update_header()
-        self._update_load_play_button()
+        retranslate_main_window_ui(self)
 
     def _add_shortcut(self, sequence, handler):
-        shortcut = QtGui.QShortcut(QtGui.QKeySequence(sequence), self)
-        shortcut.setContext(QtCore.Qt.WindowShortcut)
-
-        def guarded_handler():
-            if self._focus_is_text_entry():
-                return
-            handler()
-
-        shortcut.activated.connect(guarded_handler)
-        self._shortcuts.append(shortcut)
-        return shortcut
+        return add_window_shortcut(self, sequence, handler)
 
     def _focus_is_text_entry(self) -> bool:
-        widget = QtWidgets.QApplication.focusWidget()
-        text_widgets = (
-            QtWidgets.QLineEdit,
-            QtWidgets.QTextEdit,
-            QtWidgets.QPlainTextEdit,
-            QtWidgets.QSpinBox,
-            QtWidgets.QDoubleSpinBox,
-            QtWidgets.QComboBox,
-            QtWidgets.QDateEdit,
-        )
-        while widget is not None:
-            if isinstance(widget, text_widgets):
-                return True
-            widget = widget.parentWidget()
-        return False
+        return focus_is_text_entry()
 
     def eventFilter(self, obj, event):
         if obj is getattr(self, "symbolBox", None) and event.type() == QtCore.QEvent.MouseButtonPress:
@@ -822,81 +364,7 @@ class MainWindow(QtWidgets.QMainWindow):
         widget.update()
 
     def apply_theme(self, theme: dict):
-        self.theme_settings = dict(DEFAULT_THEME)
-        self.theme_settings.update(theme or {})
-        if self.theme_settings.get("name") not in THEME_PRESETS:
-            self.theme_settings["name"] = DEFAULT_THEME.get("name", "交易暗色")
-        app = QtWidgets.QApplication.instance()
-        pal = QtGui.QPalette()
-        pal.setColor(QtGui.QPalette.Window, QtGui.QColor(self.theme_settings['window_bg']))
-        pal.setColor(QtGui.QPalette.WindowText, QtGui.QColor(self.theme_settings['text']))
-        pal.setColor(QtGui.QPalette.Base, QtGui.QColor(self.theme_settings['base_bg']))
-        pal.setColor(QtGui.QPalette.AlternateBase, QtGui.QColor(self.theme_settings['panel_bg']))
-        pal.setColor(QtGui.QPalette.Text, QtGui.QColor(self.theme_settings['text']))
-        pal.setColor(QtGui.QPalette.Button, QtGui.QColor(self.theme_settings['panel_bg']))
-        pal.setColor(QtGui.QPalette.ButtonText, QtGui.QColor(self.theme_settings['text']))
-        pal.setColor(QtGui.QPalette.Highlight, QtGui.QColor(45, 125, 255))
-        pal.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor(0, 0, 0))
-        app.setPalette(pal)
-
-        self.setStyleSheet(build_app_qss(self.theme_settings))
-
-        grid_alpha = max(0.0, min(1.0, self.theme_settings['grid_alpha'] / 100.0))
-        try:
-            self.glw.setBackground(self.theme_settings['base_bg'])
-        except Exception:
-            pass
-
-        for plot in (self.pricePlot, self.volPlot):
-            vb = plot.getViewBox()
-            if vb is not None and hasattr(vb, 'setBackgroundColor'):
-                try:
-                    vb.setBackgroundColor(self.theme_settings['base_bg'])
-                except Exception:
-                    pass
-            plot.showGrid(x=True, y=True, alpha=grid_alpha)
-            for side in ('left', 'bottom', 'right', 'top'):
-                ax = plot.getAxis(side)
-                if ax is not None:
-                    ax.setPen(pg.mkPen(self.theme_settings['axis']))
-                    ax.setTextPen(pg.mkPen(self.theme_settings['axis']))
-
-        try:
-            self.premiumPlot.setBackground(self.theme_settings['base_bg'])
-        except Exception:
-            pass
-        self.premiumPlot.showGrid(x=True, y=True, alpha=grid_alpha)
-        premium_item = self.premiumPlot.getPlotItem() if hasattr(self.premiumPlot, 'getPlotItem') else None
-        if premium_item is not None:
-            for side in ('left', 'bottom', 'right', 'top'):
-                ax = premium_item.getAxis(side)
-                if ax is not None:
-                    ax.setPen(pg.mkPen(self.theme_settings['axis']))
-                    ax.setTextPen(pg.mkPen(self.theme_settings['axis']))
-
-        self.candleItem._pen_up = pg.mkPen(self.theme_settings['candle_up'])
-        self.candleItem._pen_dn = pg.mkPen(self.theme_settings['candle_down'])
-        self.candleItem._brush_up = pg.mkBrush(self.theme_settings['candle_up'])
-        self.candleItem._brush_dn = pg.mkBrush(self.theme_settings['candle_down'])
-        self.candleItem._wick_pen = pg.mkPen(self.theme_settings['wick'])
-        self.volItem._brush_up = pg.mkBrush(self.theme_settings['volume_up'])
-        self.volItem._brush_dn = pg.mkBrush(self.theme_settings['volume_down'])
-        self.scatter_open_long.setBrush(pg.mkBrush(self.theme_settings['candle_up']))
-        self.scatter_open_long.setPen(pg.mkPen(self.theme_settings['candle_up']))
-        self.scatter_open_short.setBrush(pg.mkBrush(self.theme_settings['premium_sell']))
-        self.scatter_open_short.setPen(pg.mkPen(self.theme_settings['premium_sell']))
-        self.scatter_close_long.setBrush(pg.mkBrush('#26C6DA'))
-        self.scatter_close_long.setPen(pg.mkPen('#26C6DA'))
-        self.scatter_close_short.setBrush(pg.mkBrush(self.theme_settings['premium_avg']))
-        self.scatter_close_short.setPen(pg.mkPen(self.theme_settings['premium_avg']))
-        self.premiumBuyCurve.setPen(pg.mkPen(self.theme_settings['premium_buy'], width=1.5, style=QtCore.Qt.DashLine))
-        self.premiumSellCurve.setPen(pg.mkPen(self.theme_settings['premium_sell'], width=1.5, style=QtCore.Qt.DotLine))
-        self.premiumAvgCurve.setPen(pg.mkPen(self.theme_settings['premium_avg'], width=1.8))
-        self.candleItem._rebuild()
-        self.volItem._rebuild()
-        self._update_header()
-        save_theme_settings(self.theme_settings)
-        self._render(force=True)
+        apply_main_window_theme(self, theme)
 
     def open_theme_dialog(self):
         dlg = ThemeDialog(self.theme_settings, self)
@@ -967,15 +435,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.symbolBox.addItem(value)
         self.symbolBox.setCurrentText(value)
 
-    @staticmethod
-    def _fill_mode_label(mode: Any) -> str:
-        labels = {
-            "MID": "中间价",
-            "CLOSE": "收盘价",
-            "OPEN": "开盘价",
-        }
-        return labels.get(str(mode or "").upper(), str(mode or ""))
-
     def _fill_mode_value(self) -> str:
         data = self.fillModeBox.currentData()
         value = data if data is not None else self.fillModeBox.currentText()
@@ -987,83 +446,14 @@ class MainWindow(QtWidgets.QMainWindow):
             if str(self.fillModeBox.itemData(idx) or "").upper() == value:
                 self.fillModeBox.setCurrentIndex(idx)
                 return
-        self.fillModeBox.addItem(self._fill_mode_label(value), value)
+        self.fillModeBox.addItem(fill_mode_label(value), value)
         self.fillModeBox.setCurrentIndex(self.fillModeBox.count() - 1)
 
-    @staticmethod
-    def _side_label(side: Any) -> str:
-        return {"LONG": "多", "SHORT": "空"}.get(str(side or "").upper(), str(side or ""))
-
-    @staticmethod
-    def _status_label(status: Any) -> str:
-        return {"OPEN": "未平仓", "CLOSED": "已平仓"}.get(str(status or "").upper(), str(status or ""))
-
-    @staticmethod
-    def _event_type_label(event_type: Any) -> str:
-        return {"OPEN": "开仓", "CLOSE": "平仓"}.get(str(event_type or "").upper(), str(event_type or ""))
-
     def on_price_view_range_changed(self, _viewbox, view_range):
-        if self._programmatic_view_update:
-            return
-        try:
-            x0, x1 = view_range[0]
-        except Exception:
-            return
-        if not (math.isfinite(x0) and math.isfinite(x1) and x1 > x0):
-            return
-        self.manual_xrange = (float(x0), float(x1))
-        self._render_dirty = True
+        apply_price_view_range_change(self, view_range)
 
     def _connect(self):
-        self.btnLoadPlay.clicked.connect(self.load_or_toggle_play)
-        self.btnStep.clicked.connect(self.step_once)
-        self.btnToEnd.clicked.connect(self.jump_to_end)
-        self.btnFollow.clicked.connect(self.toggle_follow)
-        self.btnResetView.clicked.connect(self.reset_view)
-        self.btnExport.clicked.connect(self.export_session)
-        self.btnAnalysis.clicked.connect(self.open_analysis_workspace)
-        self.btnSettings.clicked.connect(self.open_settings_dialog)
-        self.btnOpenLong.clicked.connect(lambda: self.request_open_trade("LONG"))
-        self.btnOpenShort.clicked.connect(lambda: self.request_open_trade("SHORT"))
-        self.btnCloseLong.clicked.connect(lambda: self.request_close_trade("LONG"))
-        self.btnCloseShort.clicked.connect(lambda: self.request_close_trade("SHORT"))
-        self.btnUndo.clicked.connect(self.undo)
-        self.btnRedo.clicked.connect(self.redo)
-        self.btnClearTradeRecords.clicked.connect(self.confirm_clear_trade_records)
-        self.btnApplyEventMeta.clicked.connect(self.apply_labels_to_selected_event)
-        self.symbolSearchEdit.textChanged.connect(self.filter_symbol_list)
-        self.symbolList.itemClicked.connect(self.on_symbol_item_selected)
-        self.symbolList.itemActivated.connect(self.on_symbol_item_selected)
-        self.symbolBox.currentTextChanged.connect(self.on_market_params_changed)
-        self.intervalBox.currentTextChanged.connect(self.on_interval_changed_for_dynamic_switch)
-        self.startDate.dateChanged.connect(self.on_market_params_changed)
-        self.endDate.dateChanged.connect(self.on_market_params_changed)
-        self.speedSlider.valueChanged.connect(self.on_speed_changed)
-        for widget in (self.fillModeBox, self.feeBpsSpin, self.slippageBpsSpin, self.tradeNotionalSpin, self.initialEquitySpin):
-            try:
-                widget.valueChanged.connect(self.on_execution_settings_changed)
-            except AttributeError:
-                widget.currentTextChanged.connect(self.on_execution_settings_changed)
-        self.requestLoad.connect(self.loader.load, QtCore.Qt.QueuedConnection)
-        self.loader.progress.connect(self.on_load_progress)
-        self.loader.finished.connect(self.on_loaded)
-        self.multiTimeframePanel.loadFailed.connect(self.on_multi_timeframe_load_failed)
-        self.requestPremium.connect(self.premium_worker.fetch_once, QtCore.Qt.QueuedConnection)
-        self.premium_worker.finished.connect(self.on_premium_sample)
-        self.vb_price.userInteracted.connect(self.on_user_interaction)
-        self.vb_vol.userInteracted.connect(self.on_user_interaction)
-        self.vb_price.sigXRangeChanged.connect(self.on_price_view_range_changed)
-        self.openTradesTable.itemSelectionChanged.connect(self.on_open_trade_selected)
-        self.closedTradesTable.itemSelectionChanged.connect(self.on_closed_trade_selected)
-        self.eventTable.itemSelectionChanged.connect(self.on_event_selected)
-        self.eventFilterTag.currentTextChanged.connect(lambda _text: self._refresh_tables())
-        self.eventFilterSide.currentIndexChanged.connect(lambda _index: self._refresh_tables())
-        self.eventFilterType.currentIndexChanged.connect(lambda _index: self._refresh_tables())
-        self.openTradesTable.itemDoubleClicked.connect(lambda item: self.jump_to_trade_row(item))
-        self.closedTradesTable.itemDoubleClicked.connect(lambda item: self.jump_to_trade_row(item))
-        self.eventTable.itemDoubleClicked.connect(lambda item: self.jump_to_event_row(item))
-        self.btnToggleDetail.toggled.connect(self.toggle_detail_panel)
-        self.btnToggleLog.toggled.connect(self.toggle_log_drawer)
+        connect_main_window_signals(self)
 
     # ---------- Session ----------
     def _restore_latest_session_if_any(self):
@@ -1072,24 +462,31 @@ class MainWindow(QtWidgets.QMainWindow):
             self.session_id = self._new_id("sess")
             return
         try:
-            self.restoring_session_id = last["session_id"]
-            self.session_id = last["session_id"]
-            if last.get("symbol"):
-                self._set_symbol_value(last["symbol"])
-            if last.get("interval"):
-                self.intervalBox.setCurrentText(last["interval"])
-            if last.get("start_date_bjt"):
-                self.startDate.setDate(QtCore.QDate.fromString(last["start_date_bjt"], "yyyy-MM-dd"))
-            if last.get("end_date_bjt"):
-                self.endDate.setDate(QtCore.QDate.fromString(last["end_date_bjt"], "yyyy-MM-dd"))
-            self.follow_latest = bool(last.get("follow_latest", 0))
-            speed = float(last.get("speed") or 1.0)
-            self.speedSlider.setValue(max(1, min(1000, int(speed * 10))))
-            self.initialEquitySpin.setValue(float(last.get("initial_equity") or DEFAULT_INITIAL_EQUITY))
-            self.tradeNotionalSpin.setValue(float(last.get("trade_notional") or DEFAULT_TRADE_NOTIONAL))
-            self.feeBpsSpin.setValue(float(last.get("fee_bps") or DEFAULT_FEE_BPS))
-            self.slippageBpsSpin.setValue(float(last.get("slippage_bps") or DEFAULT_SLIPPAGE_BPS))
-            self._set_fill_mode_value(last.get("fill_mode") or DEFAULT_FILL_MODE)
+            plan = build_session_restore_plan(
+                last,
+                default_initial_equity=DEFAULT_INITIAL_EQUITY,
+                default_trade_notional=DEFAULT_TRADE_NOTIONAL,
+                default_fee_bps=DEFAULT_FEE_BPS,
+                default_slippage_bps=DEFAULT_SLIPPAGE_BPS,
+                default_fill_mode=DEFAULT_FILL_MODE,
+            )
+            self.restoring_session_id = plan.session_id
+            self.session_id = plan.session_id
+            if plan.symbol:
+                self._set_symbol_value(plan.symbol)
+            if plan.interval:
+                self.intervalBox.setCurrentText(plan.interval)
+            if plan.start_date_bjt:
+                self.startDate.setDate(QtCore.QDate.fromString(plan.start_date_bjt, "yyyy-MM-dd"))
+            if plan.end_date_bjt:
+                self.endDate.setDate(QtCore.QDate.fromString(plan.end_date_bjt, "yyyy-MM-dd"))
+            self.follow_latest = plan.follow_latest
+            self.speedSlider.setValue(plan.speed_slider_value)
+            self.initialEquitySpin.setValue(plan.initial_equity)
+            self.tradeNotionalSpin.setValue(plan.trade_notional)
+            self.feeBpsSpin.setValue(plan.fee_bps)
+            self.slippageBpsSpin.setValue(plan.slippage_bps)
+            self._set_fill_mode_value(plan.fill_mode)
             self.restore_snapshot_pending = True
             self._log(f"发现历史会话，准备恢复 会话ID={self.session_id}")
             QtCore.QTimer.singleShot(100, lambda: self.load_data(restore=True))
@@ -1099,223 +496,139 @@ class MainWindow(QtWidgets.QMainWindow):
             self.session_id = self._new_id("sess")
 
     def persist_session_state(self):
+        started = time.perf_counter()
         if not self.session_id:
             return
-        protects_samples = bool(self.trades or self.events) and not self._is_display_interval_same_as_sample_interval()
-        if not protects_samples:
-            self._sample_cursor_bar_index = int(self.cursor)
-        cursor_bar_index = int(self._sample_cursor_bar_index) if protects_samples else int(self.cursor)
-        session_market_key = (
-            self._sample_market_key
-            if (self.trades or self.events) and self._sample_market_key
-            else self._current_market_key()
-        )
-        latest_session = self.storage.get_latest_session()
-        if latest_session and latest_session.get("session_id") == self.session_id:
-            last_opened_at = latest_session.get("last_opened_at") or bjt_now_iso()
-        else:
-            last_opened_at = bjt_now_iso()
-        self.storage.upsert_session(
-            {
-                "session_id": self.session_id,
-                "symbol": session_market_key[0],
-                "interval": session_market_key[1],
-                "start_date_bjt": session_market_key[2],
-                "end_date_bjt": session_market_key[3],
-                "cursor_bar_index": cursor_bar_index,
-                "follow_latest": 1 if self.follow_latest else 0,
-                "speed": self.current_speed(),
-                "last_opened_at": last_opened_at,
-                "last_saved_at": bjt_now_iso(),
-                "app_version": APP_VERSION,
-                "initial_equity": float(self.initialEquitySpin.value()),
-                "trade_notional": float(self.tradeNotionalSpin.value()),
-                "fee_bps": float(self.feeBpsSpin.value()),
-                "slippage_bps": float(self.slippageBpsSpin.value()),
-                "fill_mode": self._fill_mode_value(),
-            }
-        )
+        try:
+            now_iso = bjt_now_iso()
+            current_market_key = self._current_market_key() if hasattr(self, "_current_market_key") else self._display_market_key
+            result = save_session_state(
+                self.storage,
+                SessionSaveInput(
+                    session_id=self.session_id,
+                    current_market_key=current_market_key,
+                    sample_market_key=self._sample_market_key,
+                    has_trade_samples=bool(self.trades or self.events),
+                    display_interval_matches_sample=self._is_display_interval_same_as_sample_interval(),
+                    cursor=int(self.cursor),
+                    sample_cursor_bar_index=int(self._sample_cursor_bar_index),
+                    follow_latest=bool(self.follow_latest),
+                    speed=self.current_speed(),
+                    now_iso=now_iso,
+                    app_version=APP_VERSION,
+                    initial_equity=float(self.initialEquitySpin.value()),
+                    trade_notional=float(self.tradeNotionalSpin.value()),
+                    fee_bps=float(self.feeBpsSpin.value()),
+                    slippage_bps=float(self.slippageBpsSpin.value()),
+                    fill_mode=self._fill_mode_value(),
+                )
+            )
+            self._sample_cursor_bar_index = result.sample_cursor_bar_index
+        finally:
+            _maybe_log_slow_operation(self, "persist_session_state", started)
 
-    def confirm_clear_trade_records(self):
-        if self._loading_data or self.app_state.export.running:
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("clear_trade_records_title"),
-                self.tr("clear_trade_records_busy"),
-            )
-            return
-        response = QtWidgets.QMessageBox.warning(
-            self,
-            self.tr("clear_trade_records_title"),
-            self.tr("clear_trade_records_warning"),
-            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
-            QtWidgets.QMessageBox.Cancel,
-        )
-        if response != QtWidgets.QMessageBox.Yes:
-            return
-        phrase, accepted = QtWidgets.QInputDialog.getText(
-            self,
-            self.tr("clear_trade_records_title"),
-            self.tr("clear_trade_records_phrase_prompt"),
-        )
-        if not accepted:
-            return
-        if phrase.strip() != self.tr("clear_trade_records_phrase"):
-            QtWidgets.QMessageBox.warning(
-                self,
-                self.tr("clear_trade_records_title"),
-                self.tr("clear_trade_records_phrase_mismatch"),
-            )
+    def _on_autosave_timer(self):
+        now = QtCore.QDateTime.currentMSecsSinceEpoch()
+        if not should_autosave(
+            is_transaction_active=bool(getattr(self, "_trade_transaction_active", False)),
+            is_playing=bool(self.playing),
+            now_msec=int(now),
+            last_autosave_msec=int(getattr(self, "_last_autosave_msec", 0)),
+        ):
             return
         try:
-            deleted = self.storage.clear_manual_research_records()
-        except Exception as exc:
-            self._operation_error(self.tr("clear_trade_records_failed"), exc)
-            return
+            self.persist_session_state()
+            self._last_autosave_msec = now
+        except Exception:
+            logger.exception("autosave failed")
 
-        self.playing = False
-        self._accum = 0.0
-        self.trades.clear()
-        self.events.clear()
-        self._trade_by_id.clear()
-        self._event_by_id.clear()
-        self.undo_stack.clear()
-        self.redo_stack.clear()
-        self.restoring_session_id = None
-        self.restore_snapshot_pending = False
-        self.session_id = self._new_id("sess")
-        for checkbox in self.tag_checks:
-            checkbox.setChecked(False)
-        self.noteEdit.clear()
-        self.detailText.setPlainText(self.tr("none"))
-        self.replay_controller.load_state(self.cursor, False, self.follow_latest, 0.0)
-        self.persist_session_state()
-        self._sync_markers()
-        self._refresh_tables()
-        self._render_dirty = True
-        self._render(force=True)
-        if self._analysis_workspace is not None:
-            try:
-                self._analysis_workspace.refresh()
-            except Exception:
-                logger.exception("Failed to refresh analysis workspace after clearing trade samples")
-        message = self.tr("clear_trade_records_done").format(**deleted)
-        self._log(message)
-        QtWidgets.QMessageBox.information(self, self.tr("clear_trade_records_title"), message)
+    def _operation_context(self) -> dict[str, Any]:
+        return {
+            "cursor": int(getattr(self, "cursor", 0)),
+            "df_rows": int(len(getattr(self, "df", []))),
+            "playing": bool(getattr(self, "playing", False)),
+            "trades": int(len(getattr(self, "trades", []))),
+            "events": int(len(getattr(self, "events", []))),
+        }
+
+    def _log_slow_operation(self, name: str, started: float) -> None:
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        if elapsed_ms < 200.0:
+            return
+        context = self._operation_context()
+        message = (
+            "slow_operation function=%s elapsed_ms=%.1f cursor=%s df_rows=%s "
+            "playing=%s trades=%s events=%s"
+        )
+        args = (
+            name,
+            elapsed_ms,
+            context["cursor"],
+            context["df_rows"],
+            context["playing"],
+            context["trades"],
+            context["events"],
+        )
+        if elapsed_ms >= 1000.0:
+            logger.error(message, *args)
+        else:
+            logger.warning(message, *args)
+
+    def _should_render_now(self, force: bool = False) -> bool:
+        return should_render_now(self, force)
+
+    def _mark_rendered(self) -> None:
+        mark_rendered(self)
+
+    def _pause_replay_for_manual_trade(self) -> None:
+        pause_replay_for_manual_trade(self)
+
+    def confirm_clear_trade_records(self):
+        apply_clear_trade_records(self)
 
     def _new_id(self, prefix: str):
         return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
+    def _chart_render_state(self) -> RenderState:
+        state = getattr(self, "render_state", None)
+        if state is None:
+            state = RenderState()
+            self.render_state = state
+        return state
+
     # ---------- Data load ----------
     def _normalized_symbol(self) -> str | None:
-        symbol = self.symbolBox.currentText().strip().upper()
-        if not re.fullmatch(r"[A-Z0-9]{3,30}", symbol):
-            QtWidgets.QMessageBox.warning(self, "品种格式错误", "品种只能包含大写字母和数字，例如 BTCUSDT。")
-            return None
-        return symbol
+        return normalized_symbol(self)
 
     def _current_market_key(self) -> tuple[str, str, str, str]:
-        return (
-            self.symbolBox.currentText().strip().upper(),
-            self.intervalBox.currentText().strip(),
-            self.startDate.date().toString("yyyy-MM-dd"),
-            self.endDate.date().toString("yyyy-MM-dd"),
-        )
+        return current_market_key(self)
 
     def _is_market_params_dirty(self) -> bool:
-        if self.df.empty:
-            return False
-        return self._loaded_market_key != self._current_market_key()
+        return is_market_params_dirty(self)
 
     def _accept_loaded_market_key(self, df: pd.DataFrame, successful: bool = True) -> None:
-        if successful and isinstance(df, pd.DataFrame) and not df.empty:
-            self._loaded_market_key = self._pending_market_key or self._current_market_key()
-            self._display_market_key = self._loaded_market_key
-            if not getattr(self, "trades", []) and not getattr(self, "events", []):
-                self._sample_market_key = self._display_market_key
-        self._pending_market_key = None
-        self.market_dirty = self._is_market_params_dirty()
+        apply_loaded_market_key(self, df, successful)
 
     def _show_market_dirty_feedback(self) -> None:
-        self.status.setText(self.tr("market_params_changed"))
-        self._update_load_play_button()
+        show_market_dirty_feedback(self)
 
     def _refresh_multi_timeframe_context(self) -> None:
-        if not hasattr(self, "multiTimeframePanel") or self.df.empty:
-            return
-        index = int(clamp(self.cursor, 0, len(self.df) - 1))
-        self.multiTimeframePanel.refresh_for_primary_row(self.df.iloc[index])
+        refresh_multi_timeframe_context(self)
 
     def _load_multi_timeframe_context(self) -> None:
-        if not hasattr(self, "multiTimeframePanel") or self.df.empty or self.market_dirty:
-            return
-        loaded_key = self._loaded_market_key
-        if not loaded_key:
-            return
-        symbol, primary_interval, start_date, end_date = loaded_key
-        start_dt = pd.Timestamp(start_date, tz=BJT).to_pydatetime()
-        end_dt = (pd.Timestamp(end_date, tz=BJT) + pd.Timedelta(hours=23, minutes=59, seconds=59)).to_pydatetime()
-        self.multiTimeframePanel.request_context_load(symbol, primary_interval, start_dt, end_dt)
+        load_multi_timeframe_context(self)
 
     def on_multi_timeframe_load_failed(self, interval: str, error: str) -> None:
-        symbol = self._loaded_market_key[0] if self._loaded_market_key else self.symbolBox.currentText().strip().upper()
-        self._log(f"高周期上下文加载失败：{symbol} {interval} {error}")
+        apply_multi_timeframe_load_failure(self, interval, error)
 
     def on_interval_changed_for_dynamic_switch(self, new_interval: str) -> None:
-        self._update_header()
-        if self.df.empty:
-            return
-        if self._loading_data:
-            self._queued_dynamic_interval = str(new_interval).strip()
-            return
-        display_key = getattr(self, "_display_market_key", None) or getattr(self, "_loaded_market_key", None)
-        previous_interval = display_key[1] if display_key else None
-        next_interval = str(new_interval).strip()
-        if previous_interval == next_interval:
-            return
-        if (getattr(self, "trades", []) or getattr(self, "events", [])) and self._display_interval() == self._sample_interval():
-            self._sample_cursor_bar_index = int(self.cursor)
-        self._pending_time_anchor_bjt = capture_time_anchor(self.df, self.cursor)
-        self._pending_view_time_span_seconds = capture_view_time_span(self.df, self.manual_xrange)
-        self._pending_was_playing = bool(self.playing)
-        self._pending_follow_latest = bool(self.follow_latest)
-        self._pending_switch_from_interval = previous_interval
-        self._pending_switch_to_interval = next_interval
-        self._timeframe_switch_pending = True
-        self.playing = False
-        self.replay_controller.playing = False
-        self.replay_controller.accumulated_bars = 0.0
-        if hasattr(self, "multiTimeframePanel"):
-            self.multiTimeframePanel.mark_stale()
-        self.load_data(
-            dynamic_switch=True,
-            preserve_time_anchor=True,
-            auto_resume_after_load=self._pending_was_playing,
-            reset_session=False,
-            use_cache=True,
-        )
+        apply_dynamic_interval_change(self, new_interval)
 
     def on_market_params_changed(self, *_args) -> None:
-        self.market_dirty = self._is_market_params_dirty()
-        if self.market_dirty:
-            self.playing = False
-            self._accum = 0.0
-            self.replay_controller.playing = False
-            self.replay_controller.accumulated_bars = 0.0
-            if hasattr(self, "multiTimeframePanel"):
-                self.multiTimeframePanel.mark_stale()
-        self._update_header()
-        if self.market_dirty:
-            self._show_market_dirty_feedback()
+        apply_market_params_change(self)
 
     def _clear_timeframe_switch_pending(self) -> None:
-        self._timeframe_switch_pending = False
-        self._pending_time_anchor_bjt = None
-        self._pending_view_time_span_seconds = None
-        self._pending_was_playing = False
-        self._pending_follow_latest = False
-        self._pending_switch_from_interval = None
-        self._pending_switch_to_interval = None
+        clear_timeframe_switch_pending(self)
 
     def load_data(
         self,
@@ -1326,243 +639,37 @@ class MainWindow(QtWidgets.QMainWindow):
         auto_resume_after_load: bool = False,
         reset_session: bool | None = None,
     ):
-        self.playing = False
-        self._accum = 0.0
-        self.replay_controller.load_state(self.cursor, False, self.follow_latest, 0.0)
-        symbol = self._normalized_symbol()
-        if symbol is None:
-            return
-        self._set_symbol_value(symbol)
-        interval = self.intervalBox.currentText().strip()
-        d0 = self.startDate.date()
-        d1 = self.endDate.date()
-        if d0 > d1:
-            QtWidgets.QMessageBox.warning(self, "日期范围错误", "开始日期不能晚于结束日期。")
-            return
-        self._pending_market_key = self._current_market_key()
-        start_dt = QtCore.QDateTime(d0, QtCore.QTime(0, 0)).toPython().replace(tzinfo=BJT)
-        end_dt = QtCore.QDateTime(d1, QtCore.QTime(23, 59, 59)).toPython().replace(tzinfo=BJT)
-        use_cache = bool(restore) if use_cache is None else bool(use_cache)
-        reset_session = (not restore and not dynamic_switch) if reset_session is None else bool(reset_session)
-
-        if restore and self.restoring_session_id:
-            self.session_id = self.restoring_session_id
-        elif reset_session:
-            self.session_id = self._new_id("sess")
-            self.trades.clear()
-            self.events.clear()
-            self._trade_by_id.clear()
-            self._event_by_id.clear()
-            self.undo_stack.clear()
-            self.redo_stack.clear()
-            self.restore_snapshot_pending = False
-
-        if not dynamic_switch:
-            self.persist_session_state()
-        self.status.setText(self.tr("dynamic_switch_loading") if dynamic_switch else f"{symbol} {interval} 加载中...")
-        self._loading_data = True
-        self.app_state.data_load.loading = True
-        self.app_state.data_load.status_message = f"Loading {symbol} {interval}"
-        self._update_load_play_button()
-        self._update_header()
-        self.requestLoad.emit(LoadRequest(symbol=symbol, interval=interval, start_dt_bjt=start_dt, end_dt_bjt=end_dt, use_cache=use_cache))
+        request_market_data_load(
+            self,
+            restore=restore,
+            use_cache=use_cache,
+            dynamic_switch=dynamic_switch,
+            preserve_time_anchor=preserve_time_anchor,
+            auto_resume_after_load=auto_resume_after_load,
+            reset_session=reset_session,
+        )
 
     def on_load_progress(self, message: str):
-        self.app_state.data_load.status_message = message
-        self.status.setText(message)
-        self._log(message)
+        apply_load_progress(self, message)
 
     def on_loaded(self, df: pd.DataFrame, message: str):
-        self._loading_data = False
-        self.app_state.data_load.loading = False
-        self._log(message)
-        load_failed = message.startswith("加载失败")
-        dynamic_switch = bool(getattr(self, "_timeframe_switch_pending", False))
-        dynamic_success = dynamic_switch and not load_failed and isinstance(df, pd.DataFrame) and not df.empty
-        if load_failed:
-            logger.error("数据加载失败：%s", message)
-        elif "在线刷新失败" in message or "缓存不可用" in message:
-            logger.warning("数据加载警告：%s", message)
-        if dynamic_switch and not dynamic_success:
-            previous_interval = getattr(self, "_pending_switch_from_interval", None)
-            if previous_interval and hasattr(self.intervalBox, "setCurrentText"):
-                blocked = self.intervalBox.blockSignals(True)
-                self.intervalBox.setCurrentText(previous_interval)
-                self.intervalBox.blockSignals(blocked)
-            self._pending_market_key = None
-            self.market_dirty = False
-            MainWindow._clear_timeframe_switch_pending(self)
-            self._update_load_play_button()
-            self._render(force=True)
-            self.status.setText(self.tr("dynamic_switch_failed"))
-            self._log(self.tr("dynamic_switch_failed"))
-            return
-        anchor_time = getattr(self, "_pending_time_anchor_bjt", None)
-        visible_span_seconds = getattr(self, "_pending_view_time_span_seconds", None)
-        resume_playing = bool(getattr(self, "_pending_was_playing", False))
-        resume_follow = bool(getattr(self, "_pending_follow_latest", False))
-        switched_to = getattr(self, "_pending_switch_to_interval", None)
-        incoming_attrs = dict(getattr(df, "attrs", {}))
-        self.df = df.reset_index(drop=True) if isinstance(df, pd.DataFrame) else pd.DataFrame()
-        self.df.attrs.update(incoming_attrs)
-        self._accept_loaded_market_key(self.df, successful=not load_failed)
-        self.app_state.data_load.bar_count = len(self.df)
-        self.app_state.data_load.source = str(self.df.attrs.get("data_source", "-"))
-        quality_report = self.df.attrs.get("data_quality_report", {})
-        self.app_state.data_load.quality_status = (
-            str(quality_report.get("data_quality_status", "-")) if isinstance(quality_report, dict) else "-"
-        )
-        self.cursor = (
-            find_bar_index_by_time(self.df, anchor_time, switched_to or self.intervalBox.currentText().strip())
-            if dynamic_switch
-            else 0
-        )
-        self._drawn_n = -1
-        self._last_cursor_for_series = -1
-        self._accum = 0.0
-        if dynamic_switch:
-            self.playing = resume_playing
-            self.follow_latest = resume_follow
-            self.replay_controller.load_state(self.cursor, self.playing, self.follow_latest, 0.0)
-        else:
-            self.replay_controller.reset()
-            self.replay_controller.follow_latest = self.follow_latest
-        self._render_dirty = True
-
-        if self.df.empty and load_failed:
-            QtWidgets.QMessageBox.critical(self, "K线加载失败", message)
-        elif not self.df.empty:
-            self._persist_loaded_market_data()
-
-        if len(self.df):
-            self.axis_price.set_times(self.df["open_time_bjt"].to_numpy())
-            self.axis_vol.set_times(self.df["open_time_bjt"].to_numpy())
-        else:
-            self.axis_price.set_times([])
-            self.axis_vol.set_times([])
-
-        if not self.restore_snapshot_pending and not dynamic_switch:
-            self.trades.clear()
-            self.events.clear()
-            self._trade_by_id.clear()
-            self._event_by_id.clear()
-            self._refresh_tables()
-
-        try:
-            self.vb_price.disableAutoRange()
-            self.vb_vol.disableAutoRange()
-        except Exception:
-            pass
-
-        self._rebuild_items()
-        restored_xrange = build_time_centered_xrange(self.df, self.cursor, visible_span_seconds) if dynamic_switch else None
-        default_span = min(self.window_bars, max(40, min(len(self.df), 80))) if len(self.df) else 40
-        self.manual_xrange = restored_xrange or (-0.5, max(20.0, float(default_span)))
-        self._set_xrange(*self.manual_xrange, force=True)
-        self.status.setText(f"{self.symbolBox.currentText().strip().upper()} {self.intervalBox.currentText().strip()} K线={len(self.df)}")
-        self._update_load_play_button()
-        self._render(force=True)
-
-        if self.restore_snapshot_pending and self.session_id:
-            self.restore_snapshot_pending = False
-            _, trades, events = self.storage.load_session_snapshot(self.session_id)
-            self.trades = trades
-            self.events = events
-            self._trade_by_id = {t["trade_id"]: t for t in self.trades}
-            self._event_by_id = {e["event_id"]: e for e in self.events}
-            latest_session = self.storage.get_latest_session()
-            if latest_session and latest_session.get("session_id") == self.session_id:
-                self.cursor = int(latest_session.get("cursor_bar_index") or 0)
-                self.follow_latest = bool(latest_session.get("follow_latest") or 0)
-                self.replay_controller.load_state(self.cursor, False, self.follow_latest)
-            self._sync_equity_curve()
-            self._refresh_tables()
-            self._render(force=True)
-            self._log(f"已恢复交易={len(self.trades)}，事件={len(self.events)}")
-        if self.market_dirty:
-            self._show_market_dirty_feedback()
-            if hasattr(self, "multiTimeframePanel"):
-                self.multiTimeframePanel.mark_stale()
-        elif not self.df.empty:
-            self._load_multi_timeframe_context()
-            self._refresh_multi_timeframe_context()
-        if dynamic_switch:
-            MainWindow._clear_timeframe_switch_pending(self)
-            self._update_load_play_button()
-            self.status.setText(self.tr("dynamic_switch_success"))
-        queued_interval = getattr(self, "_queued_dynamic_interval", None)
-        self._queued_dynamic_interval = None
-        if queued_interval and not self.df.empty and queued_interval != self._display_interval():
-            QtCore.QTimer.singleShot(0, lambda interval=queued_interval: self.on_interval_changed_for_dynamic_switch(interval))
+        apply_loaded_market_data(self, df, message)
 
     def _persist_loaded_market_data(self):
-        report = self.df.attrs.get("data_quality_report")
-        source = str(self.df.attrs.get("data_source") or "unknown")
-        if not isinstance(report, dict):
-            return
-        try:
-            loaded_key = self._loaded_market_key or self._current_market_key()
-            self.storage.save_data_quality_report({**report, "report_json": json.dumps(report, ensure_ascii=False)})
-            downloaded_at = report.get("created_at")
-            quality_status = report.get("data_quality_status")
-            self.storage.upsert_klines(
-                {
-                    "symbol": loaded_key[0],
-                    "interval": loaded_key[1],
-                    "open_time_utc_ms": int(row["open_time_ms"]),
-                    "open_time_bjt": pd.to_datetime(row["open_time_bjt"]).isoformat(),
-                    "close_time_utc_ms": int(row["close_time_ms"]),
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                    "volume": float(row["volume"]),
-                    "source": source,
-                    "downloaded_at": downloaded_at,
-                    "data_quality_status": quality_status,
-                }
-                for _, row in self.df.iterrows()
-            )
-        except Exception as exc:
-            logger.exception("Kline quality persistence failed.")
-            self._log(f"数据质量记录保存失败：{type(exc).__name__}: {exc}")
+        persist_loaded_market_data(self)
 
     # ---------- Playback ----------
     def load_or_toggle_play(self):
-        if self._loading_data:
-            return
-        if self.df.empty:
-            self.load_data()
-        elif self._is_market_params_dirty():
-            self.load_data(restore=False, use_cache=True)
-        else:
-            self.toggle_play()
+        apply_load_or_toggle_play(self)
 
     def _update_load_play_button(self):
-        if not hasattr(self, "btnLoadPlay"):
-            return
-        if self._loading_data:
-            self.btnLoadPlay.setText(self.tr("loading"))
-            self.btnLoadPlay.setEnabled(False)
-        elif self.df.empty:
-            self.btnLoadPlay.setText(self.tr("load_klines"))
-            self.btnLoadPlay.setEnabled(True)
-        elif self._is_market_params_dirty():
-            self.market_dirty = True
-            self.btnLoadPlay.setText(self.tr("reload_klines"))
-            self.btnLoadPlay.setEnabled(True)
-        elif self.playing:
-            self.btnLoadPlay.setText(f"{self.tr('pause')} (Space)")
-            self.btnLoadPlay.setEnabled(True)
-        else:
-            self.btnLoadPlay.setText(f"{self.tr('play')} (Space)")
-            self.btnLoadPlay.setEnabled(True)
+        update_load_play_button(self)
 
     def on_speed_changed(self, value: int):
-        self.speedLabel.setText(f"速度: {self.current_speed():.1f}x")
+        apply_speed_change(self, value)
 
     def current_speed(self):
-        return max(0.1, float(self.speedSlider.value()) / 10.0)
+        return replay_current_speed(self)
 
     def execution_settings(self) -> ExecutionSettings:
         return self.trade_controller.execution_settings(
@@ -1594,355 +701,80 @@ class MainWindow(QtWidgets.QMainWindow):
         self.trade_controller.replace_equity_curve(self.session_id, rows)
 
     def on_timer(self):
-        if len(self.df) == 0:
-            return
-        elapsed = self._last_tick.restart() / 1000.0
-        try:
-            self.replay_controller.load_state(self.cursor, self.playing, self.follow_latest, self._accum)
-            changed = self.replay_controller.tick(elapsed, len(self.df), self.current_speed(), self._base_bars_per_sec)
-            self.cursor = self.replay_controller.cursor
-            self.playing = self.replay_controller.playing
-            self._accum = self.replay_controller.accumulated_bars
-            if changed or self.cursor != self._last_cursor_for_series:
-                self._rebuild_items()
-                self._last_cursor_for_series = int(self.cursor)
-                self._render_dirty = True
-            self._render(force=False)
-        except Exception as e:
-            logger.exception("播放定时器异常")
-            self._log(f"timer异常：{type(e).__name__}: {e}")
-            self.playing = False
+        apply_replay_timer(self)
 
     def toggle_play(self):
-        if len(self.df) == 0:
-            return
-        if self._is_market_params_dirty():
-            self.on_market_params_changed()
-            return
-        self.replay_controller.load_state(self.cursor, self.playing, self.follow_latest, self._accum)
-        self.playing = self.replay_controller.toggle_play(len(self.df))
-        self._log("播放" if self.playing else "暂停")
-        self._last_tick.restart()
-        self._update_load_play_button()
-        self._render_dirty = True
-        self._render(force=False)
+        replay_toggle_play(self)
 
     def step_once(self):
-        if len(self.df) == 0:
-            return
-        self.replay_controller.load_state(self.cursor, self.playing, self.follow_latest, self._accum)
-        self.cursor = self.replay_controller.step(len(self.df))
-        self.playing = self.replay_controller.playing
-        self._accum = self.replay_controller.accumulated_bars
-        self._rebuild_items()
-        self._last_cursor_for_series = int(self.cursor)
-        self._update_load_play_button()
-        self._render(force=True)
+        replay_step_once(self)
 
     def jump_to_end(self):
-        if len(self.df) == 0:
-            return
-        self.replay_controller.load_state(self.cursor, self.playing, self.follow_latest, self._accum)
-        self.cursor = self.replay_controller.jump_end(len(self.df))
-        self._rebuild_items(n=len(self.df))
-        self._last_cursor_for_series = int(self.cursor)
-        self.user_view_lock = False
-        self.playing = self.replay_controller.playing
-        self._update_load_play_button()
-        self._render(force=True)
+        replay_jump_to_end(self)
 
     def toggle_follow(self):
-        self.replay_controller.load_state(self.cursor, self.playing, self.follow_latest, self._accum)
-        self.follow_latest = self.replay_controller.toggle_follow()
-        self._log(f"跟随最新：{'开启' if self.follow_latest else '关闭'}")
-        if self.follow_latest:
-            self.user_view_lock = False
-            curr = self._current_xrange()
-            if curr is not None:
-                self.manual_xrange = curr
-        self._render(force=True)
+        replay_toggle_follow(self)
 
     def on_user_interaction(self):
-        self.user_view_lock = True
-        self.last_user_interaction = QtCore.QDateTime.currentMSecsSinceEpoch() / 1000.0
-        if self.follow_latest:
-            self.follow_latest = False
-            self._log("检测到手动缩放/拖动，已自动退出跟随最新。")
+        apply_user_chart_interaction(self)
 
     def reset_view(self):
-        if len(self.df) == 0:
-            return
-        span = min(self.window_bars, max(40, min(len(self.df), 120)))
-        x1 = float(min(self.cursor + self.pad_right, len(self.df) - 1 + self.pad_right))
-        x0 = max(0.0, x1 - span)
-        self.manual_xrange = (x0, x1)
-        self.user_view_lock = False
-        self._set_xrange(x0, x1, force=True)
-        self._render(force=True)
-        self._log(self.tr("reset_zoom_done"))
+        reset_replay_view(self)
 
-    def _rebuild_items(self, n=None):
-        if self.df.empty:
-            self.candleItem.set_data(np.array([]), np.array([]), np.array([]), np.array([]), np.array([]))
-            self.volItem.set_data(np.array([]), np.array([]), np.array([]))
-            self._drawn_n = 0
-            return
-        n = int(clamp((self.cursor + 1) if n is None else n, 0, len(self.df)))
-        if self._drawn_n == n and n <= 2000:
-            return
-        start, end = visible_bar_bounds(n, self._current_xrange())
-        d = self.df.iloc[start:end]
-        x = np.arange(start, end, dtype=float)
-        o = d["open"].to_numpy(dtype=float)
-        h = d["high"].to_numpy(dtype=float)
-        l = d["low"].to_numpy(dtype=float)
-        c = d["close"].to_numpy(dtype=float)
-        v = d["volume"].to_numpy(dtype=float)
-        up = c >= o
-        self.candleItem.set_data(x, o, h, l, c)
-        self.volItem.set_data(x, v, up)
-        self._drawn_n = n
+    def _rebuild_items(self, n=None, visible_range=None):
+        rebuild_items(self, n=n, visible_range=visible_range)
 
     def _current_xrange(self):
-        try:
-            (x0, x1), _ = self.vb_price.viewRange()
-            if math.isfinite(x0) and math.isfinite(x1) and x1 > x0:
-                return float(x0), float(x1)
-        except Exception:
-            pass
-        return None
+        return current_xrange(self)
 
     def _set_xrange(self, x0: float, x1: float, force: bool = False):
-        x0, x1 = self._clamp_xrange(x0, x1)
-        current = self._current_xrange()
-        if (not force) and current is not None and abs(current[0] - x0) < 1e-6 and abs(current[1] - x1) < 1e-6:
-            return
-        self._programmatic_view_update = True
-        try:
-            self.pricePlot.setXRange(x0, x1, padding=0.0)
-        finally:
-            self._programmatic_view_update = False
-        self.manual_xrange = (x0, x1)
+        set_xrange(self, x0, x1, force)
 
     def _clamp_xrange(self, x0: float, x1: float):
-        if self.df.empty:
-            return x0, x1
-        span = max(3.0, x1 - x0)
-        xmin = 0.0
-        xmax = max(float(self.cursor) + self.pad_right, span)
-        if x0 < xmin:
-            x0 = xmin
-            x1 = x0 + span
-        if x1 > xmax:
-            x1 = xmax
-            x0 = x1 - span
-        if x0 < xmin:
-            x0 = xmin
-        return x0, x1
+        return clamp_xrange(self, x0, x1)
 
     def _soft_follow_should_apply(self):
-        if not self.follow_latest or self.df.empty:
-            return False
-        now = QtCore.QDateTime.currentMSecsSinceEpoch() / 1000.0
-        if self.user_view_lock and (now - self.last_user_interaction) < 1.2:
-            (x0, x1), _ = self.vb_price.viewRange()
-            return x1 >= (self.cursor - 6)
-        return True
+        return soft_follow_should_apply(self)
 
     def _autoscale_y(self, x0, x1):
-        if self.df.empty or self.cursor < 0:
-            return
-        available_n = self.cursor + 1
-        i0 = int(clamp(math.floor(x0), 0, available_n - 1))
-        i1 = int(clamp(math.ceil(x1), 0, available_n - 1))
-        if i1 <= i0:
-            i1 = min(available_n - 1, i0 + 1)
-        visible = self.df.iloc[i0:i1 + 1]
-        if visible.empty:
-            return
-        lmin = float(visible["low"].min())
-        hmax = float(visible["high"].max())
-        if abs(hmax - lmin) < 1e-9:
-            hmax += 1.0
-            lmin -= 1.0
-        self.pricePlot.setYRange(lmin, hmax, padding=0.0)
-        vmax = float(visible["volume"].max()) if len(visible) else 1.0
-        self.volPlot.setYRange(0.0, max(vmax, 1.0), padding=0.0)
+        autoscale_y(self, x0, x1)
 
-    def _sync_markers(self):
-        cur = self.cursor
-        open_long, open_short, close_long, close_short = [], [], [], []
-        display_interval = self._display_interval()
-        sample_interval = self._sample_interval()
-        for ev in self.events:
-            event_interval = str(ev.get("interval") or sample_interval or "").strip()
-            if event_interval and event_interval != display_interval:
-                continue
-            idx = ev.get("bar_index")
-            if idx is None or idx > cur or idx >= len(self.df):
-                continue
-            if ev["event_type"] == "OPEN" and ev["side"] == "LONG":
-                open_long.append((idx, float(self.df.iloc[idx]["low"])))
-            elif ev["event_type"] == "OPEN" and ev["side"] == "SHORT":
-                open_short.append((idx, float(self.df.iloc[idx]["high"])))
-            elif ev["event_type"] == "CLOSE" and ev["side"] == "LONG":
-                close_long.append((idx, float(self.df.iloc[idx]["high"])))
-            elif ev["event_type"] == "CLOSE" and ev["side"] == "SHORT":
-                close_short.append((idx, float(self.df.iloc[idx]["low"])))
-
-        self.scatter_open_long.setData(pos=np.array(open_long) if open_long else np.empty((0, 2), dtype=float))
-        self.scatter_open_short.setData(pos=np.array(open_short) if open_short else np.empty((0, 2), dtype=float))
-        self.scatter_close_long.setData(pos=np.array(close_long) if close_long else np.empty((0, 2), dtype=float))
-        self.scatter_close_short.setData(pos=np.array(close_short) if close_short else np.empty((0, 2), dtype=float))
+    def _sync_markers(self, force_reindex: bool | None = None):
+        sync_markers(self, force_reindex)
 
     def _update_header(self):
-        if not hasattr(self, "headerSymbolValue"):
-            return
-        symbol = self.symbolBox.currentText().strip().upper() if hasattr(self, "symbolBox") else DEFAULT_SYMBOL
-        interval = self.intervalBox.currentText().strip() if hasattr(self, "intervalBox") else DEFAULT_INTERVAL
-        total = max(0, len(self.df) - 1)
-        close_text = "-"
-        time_text = "-"
-        if not self.df.empty:
-            idx = int(clamp(self.cursor, 0, len(self.df) - 1))
-            row = self.df.iloc[idx]
-            close_text = self._fmt_num(row.get("close"))
-            time_text = pd.to_datetime(row.get("open_time_bjt")).tz_convert(BJT).strftime("%m-%d %H:%M")
-        self.headerSymbolValue.setText(symbol or "-")
-        self.headerIntervalValue.setText(interval or "-")
-        self.headerCloseValue.setText(close_text)
-        self.headerTimeValue.setText(time_text)
-        self.headerCursorValue.setText(f"{self.cursor} / {total}")
-        self.headerPlayBadge.setText(self.tr("playing") if self.playing else self.tr("paused"))
-        self._set_widget_role(self.headerPlayBadge, "pillLive" if self.playing else "pillMuted")
-        self.headerViewBadge.setText(self.tr("follow_latest") if self.follow_latest else self.tr("free_view"))
-        self._set_widget_role(self.headerViewBadge, "pillLive" if self.follow_latest else "pill")
-        short_session = self._short_id(self.session_id) if self.session_id else "-"
-        self.headerSessionBadge.setText(f"{self.tr('session')} {short_session}")
-        self._update_load_play_button()
-        self._update_trade_buttons_enabled()
+        update_header(self)
 
     def _render(self, force=False):
-        if not force and not self._render_dirty:
-            return
-        if self.df.empty:
-            self._update_header()
-            self._render_dirty = False
-            return
-        if len(self.df) > 2000:
-            self._rebuild_items()
-        current = self._current_xrange()
-        if self.follow_latest:
-            if current is not None:
-                span = max(5.0, current[1] - current[0])
-            elif self.manual_xrange is not None:
-                span = max(5.0, self.manual_xrange[1] - self.manual_xrange[0])
-            else:
-                span = float(min(self.window_bars, max(40, len(self.df))))
-            vx1 = float(self.cursor + self.pad_right)
-            vx0 = vx1 - span
-            vx0, vx1 = self._clamp_xrange(vx0, vx1)
-            self._set_xrange(vx0, vx1, force=force)
-        else:
-            if self.manual_xrange is None:
-                if current is not None:
-                    self.manual_xrange = current
-                else:
-                    span = float(min(self.window_bars, max(40, len(self.df))))
-                    vx1 = float(min(self.cursor + self.pad_right, len(self.df) - 1 + self.pad_right))
-                    self.manual_xrange = (max(0.0, vx1 - span), vx1)
-            vx0, vx1 = self._clamp_xrange(*self.manual_xrange)
-            self.manual_xrange = (vx0, vx1)
-            if force and (current is None or abs(current[0] - vx0) > 1e-6 or abs(current[1] - vx1) > 1e-6):
-                self._set_xrange(vx0, vx1, force=True)
-        self._autoscale_y(vx0, vx1)
-        self._sync_markers()
-        self._update_current_price_line(vx0, vx1)
-        self._refresh_multi_timeframe_context()
-        bar_time = self.df.iloc[int(clamp(self.cursor, 0, len(self.df) - 1))]["open_time_bjt"]
-        bar_time = pd.to_datetime(bar_time).tz_convert(BJT).strftime("%Y-%m-%d %H:%M:%S")
-        bar = self.df.iloc[int(clamp(self.cursor, 0, len(self.df) - 1))]
-        report = self.df.attrs.get("data_quality_report", {})
-        data_source = self.df.attrs.get("data_source", "-")
-        quality = report.get("data_quality_status", "-") if isinstance(report, dict) else "-"
-        self.status.setText(
-            f"{self.symbolBox.currentText().strip().upper()} {self.intervalBox.currentText().strip()} | "
-            f"{'播放' if self.playing else '暂停'} | 速度 x{self.current_speed():.1f} | "
-            f"cursor={self.cursor}/{max(0, len(self.df) - 1)} | {bar_time} BJT | "
-            f"O={self._fmt_num(bar.get('open'))} H={self._fmt_num(bar.get('high'))} "
-            f"L={self._fmt_num(bar.get('low'))} C={self._fmt_num(bar.get('close'))} | "
-            f"源={data_source} 质量={quality} 样本={len(self.events)} 会话={self._short_id(self.session_id) if self.session_id else '-'} | "
-            f"{'跟随最新' if self.follow_latest else '自由浏览'}"
-        )
-        if self._is_market_params_dirty():
-            self.status.setText(self.tr("market_params_changed"))
-        self._update_header()
-        self._render_dirty = False
+        render_chart(self, force)
 
     # ---------- Trade / Event ----------
     def current_bar(self):
-        if self.df.empty:
-            return None
-        return self.df.iloc[int(clamp(self.cursor, 0, len(self.df) - 1))]
+        return current_trade_bar(self)
 
     def current_tags_and_note(self):
-        tags = [cb.text() for cb in self.tag_checks if cb.isChecked()]
-        note = self.noteEdit.toPlainText().strip()
-        return tags, note
+        return current_trade_tags_and_note(self)
 
     def _display_interval(self) -> str:
-        key = getattr(self, "_display_market_key", None)
-        if key:
-            return str(key[1])
-        return self.intervalBox.currentText().strip()
+        return display_interval(self)
 
     def _sample_interval(self) -> str:
-        key = getattr(self, "_sample_market_key", None)
-        if key:
-            return str(key[1])
-        for row in [*getattr(self, "trades", []), *getattr(self, "events", [])]:
-            interval = row.get("interval")
-            if interval:
-                return str(interval)
-        return self._display_interval()
+        return sample_interval(self)
 
     def _is_display_interval_same_as_sample_interval(self) -> bool:
-        if not self.trades and not self.events:
-            return True
-        return self._display_interval() == self._sample_interval()
+        return is_display_interval_same_as_sample_interval(self)
 
     def _is_trade_recording_allowed(self) -> bool:
-        return self._is_display_interval_same_as_sample_interval()
+        return is_trade_recording_allowed(self)
 
     def _warn_trade_interval_mismatch(self) -> None:
-        message = self.tr("trade_disabled_due_to_display_interval")
-        self._log(message)
-        QtWidgets.QMessageBox.warning(self, self.tr("trade_actions"), message)
+        warn_trade_interval_mismatch(self)
 
     def _update_trade_buttons_enabled(self) -> None:
-        allowed = self._is_trade_recording_allowed()
-        tooltip = "" if allowed else self.tr("trade_disabled_due_to_display_interval")
-        for button_name in ("btnOpenLong", "btnOpenShort", "btnCloseLong", "btnCloseShort"):
-            button = getattr(self, button_name, None)
-            if button is not None:
-                button.setEnabled(allowed)
-                button.setToolTip(tooltip)
+        update_trade_buttons_enabled(self)
 
     def start_new_session_for_current_display_interval(self) -> None:
-        self.playing = False
-        self._accum = 0.0
-        self.trades.clear()
-        self.events.clear()
-        self._trade_by_id.clear()
-        self._event_by_id.clear()
-        self.undo_stack.clear()
-        self.redo_stack.clear()
-        self.session_id = self._new_id("sess")
-        self._sample_market_key = self._display_market_key or self._current_market_key()
-        self.persist_session_state()
-        self._refresh_tables()
-        self._update_trade_buttons_enabled()
-        self._render(force=True)
+        start_trade_sample_session(self)
 
     def _selected_id_from_table(self, table: QtWidgets.QTableWidget):
         selection = table.selectionModel()
@@ -1963,166 +795,38 @@ class MainWindow(QtWidgets.QMainWindow):
         self._log(f"{title}：{message}")
         QtWidgets.QMessageBox.critical(self, title, message)
 
+    def _trade_use_case(self) -> TradeUseCase:
+        return trade_use_case(self)
+
+    @staticmethod
+    def _raise_trade_action_error(result: TradeActionResult) -> None:
+        raise_trade_action_error(result)
+
+    def _apply_open_trade_result(self, result: TradeActionResult) -> None:
+        apply_open_trade_result(self, result)
+
+    def _undo_open_trade_result(self, result: TradeActionResult) -> None:
+        undo_open_trade_result(self, result)
+
+    def _apply_close_trade_result(self, result: TradeActionResult, trade: dict[str, Any]) -> None:
+        apply_close_trade_result(self, result, trade)
+
+    def _undo_close_trade_result(self, result: TradeActionResult, trade: dict[str, Any]) -> None:
+        undo_close_trade_result(self, result, trade)
+
     def request_open_trade(self, side: str):
-        if self.df.empty:
-            return
-        if not self._is_trade_recording_allowed():
-            self._warn_trade_interval_mismatch()
-            return
-        if side not in {"LONG", "SHORT"}:
-            self._log(f"忽略未知开仓方向：{side}")
-            return
-        if not self.session_id:
-            self.session_id = self._new_id("sess")
-            self.persist_session_state()
-        bar = self.current_bar()
-        if bar is None or "bar_index" not in bar:
-            self._log("开仓失败：当前K线无效。")
-            return
-        tags, note = self.current_tags_and_note()
-        event_id = self._new_id("evt")
-        trade_id = self._new_id("trd")
-        transaction = self.trade_controller.prepare_open(
-            self.df,
-            bar,
-            event_idx=int(bar["bar_index"]),
-            session_id=self.session_id,
-            symbol=self.symbolBox.currentText().strip().upper(),
-            interval=self.intervalBox.currentText().strip(),
-            side=side,
-            event_id=event_id,
-            trade_id=trade_id,
-            label_tags=tags,
-            note=note,
-            settings=self.execution_settings(),
-            now_iso=bjt_now_iso(),
-        )
-        trade_row = transaction.trade_row
-        event_row = transaction.event_row
-
-        def do():
-            self.trade_controller.commit_open(transaction)
-            self._trade_by_id[trade_id] = dict(trade_row)
-            self._event_by_id[event_id] = dict(event_row)
-            self.trades.append(self._trade_by_id[trade_id])
-            self.events.append(self._event_by_id[event_id])
-            self._sample_market_key = self._display_market_key or self._current_market_key()
-            self._sample_cursor_bar_index = int(self.cursor)
-            self.persist_session_state()
-            self._refresh_tables()
-            self._render(force=True)
-            self._log(f"开{('多' if side == 'LONG' else '空')}：交易ID={trade_id}")
-
-        def undo():
-            self.trade_controller.undo_open(transaction)
-            self.trades = [t for t in self.trades if t["trade_id"] != trade_id]
-            self.events = [e for e in self.events if e["event_id"] != event_id]
-            self._trade_by_id.pop(trade_id, None)
-            self._event_by_id.pop(event_id, None)
-            self._refresh_tables()
-            self._render(force=True)
-            self._log(f"撤销开仓：交易ID={trade_id}")
-
-        self.execute_command(ActionCommand(name=f"open_{side.lower()}", do_fn=do, undo_fn=undo))
+        apply_open_trade_request(self, side)
 
     def request_close_trade(self, expected_side: str):
-        if expected_side not in {"LONG", "SHORT"}:
-            self._log(f"忽略未知平仓方向：{expected_side}")
-            return
-        if not self._is_trade_recording_allowed():
-            self._warn_trade_interval_mismatch()
-            return
-        trade = self.selected_open_trade(verify_db=True)
-        if not trade:
-            QtWidgets.QMessageBox.warning(self, "未选择仓位", "请先在“未平仓”列表中选中一笔仓位。")
-            return
-        if trade.get("status") != "OPEN":
-            QtWidgets.QMessageBox.warning(self, "仓位状态错误", "当前选中的交易不是未平仓状态，请刷新或重新选择。")
-            self._log(f"平仓被拒绝：交易ID={trade.get('trade_id')} 状态={self._status_label(trade.get('status'))}")
-            return
-        if trade["side"] != expected_side:
-            QtWidgets.QMessageBox.warning(self, "方向不匹配", f"当前选中仓位方向为 {trade['side']}，不能执行本次平仓。")
-            return
-        bar = self.current_bar()
-        if bar is None:
-            return
-        tags, note = self.current_tags_and_note()
-        event_id = self._new_id("evt")
-        bar_index = int(bar["bar_index"])
-        entry_bar_index = int(trade["entry_bar_index"])
-        if bar_index < entry_bar_index:
-            QtWidgets.QMessageBox.warning(self, "平仓位置错误", "平仓K线不能早于开仓K线。请先跳到开仓之后的位置。")
-            return
-        transaction = self.trade_controller.prepare_close(
-            self.df,
-            bar,
-            event_idx=bar_index,
-            trade=trade,
-            event_id=event_id,
-            label_tags=tags,
-            note=note,
-            fallback_settings=self.execution_settings(),
-            now_iso=bjt_now_iso(),
-        )
-        event_row = transaction.event_row
-        close_update = transaction.close_update
-        old_trade = transaction.original_trade
-
-        def do():
-            self.trade_controller.commit_close(transaction)
-            self._event_by_id[event_id] = dict(event_row)
-            self.events.append(self._event_by_id[event_id])
-            trade.update(close_update)
-            self._trade_by_id[trade["trade_id"]] = trade
-            self._sample_cursor_bar_index = int(self.cursor)
-            self.persist_session_state()
-            self._sync_equity_curve()
-            self._refresh_tables()
-            self._render(force=True)
-            self._log(f"平{('多' if trade['side'] == 'LONG' else '空')}：交易ID={trade['trade_id']}")
-
-        def undo():
-            self.trade_controller.undo_close(transaction, bjt_now_iso())
-            self.events = [e for e in self.events if e["event_id"] != event_id]
-            self._event_by_id.pop(event_id, None)
-            trade.clear()
-            trade.update(old_trade)
-            self._trade_by_id[trade["trade_id"]] = trade
-            self._sync_equity_curve()
-            self._refresh_tables()
-            self._render(force=True)
-            self._log(f"撤销平仓：交易ID={trade['trade_id']}")
-
-        self.execute_command(ActionCommand(name=f"close_{expected_side.lower()}", do_fn=do, undo_fn=undo))
+        apply_close_trade_request(self, expected_side)
 
     def selected_open_trade(self, verify_db: bool = False):
-        trade_id = self._selected_id_from_table(self.openTradesTable)
-        if not trade_id:
-            return None
-        trade = self._trade_by_id.get(trade_id)
-        if not trade:
-            self._log(f"选择的未平仓交易不在内存索引中：交易ID={trade_id}")
-            return None
-        if trade.get("status") != "OPEN":
-            self._log(f"选择的交易不是未平仓状态：交易ID={trade_id} 状态={self._status_label(trade.get('status'))}")
-            return None
-        if verify_db:
-            db_trade = self.trade_controller.fetch_trade(trade_id)
-            if not db_trade:
-                self._log(f"SQLite 中找不到选中的交易：交易ID={trade_id}")
-                return None
-            if db_trade.get("status") != "OPEN":
-                self._log(f"SQLite 中选中交易不是未平仓：交易ID={trade_id} 状态={self._status_label(db_trade.get('status'))}")
-                return None
-            if db_trade.get("session_id") != self.session_id:
-                self._log(f"选中交易不属于当前会话：交易ID={trade_id}")
-                return None
-        return trade
+        return find_selected_open_trade(self, verify_db)
 
     def on_open_trade_selected(self):
         trade = self.selected_open_trade()
         if trade:
-            self.detailText.setPlainText(self._format_trade_detail(trade))
+            self.detailText.setPlainText(format_trade_detail(trade))
         else:
             self.detailText.setPlainText("无")
 
@@ -2132,7 +836,7 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         trade = self._trade_by_id.get(trade_id)
         if trade:
-            self.detailText.setPlainText(self._format_trade_detail(trade))
+            self.detailText.setPlainText(format_trade_detail(trade))
 
     def on_event_selected(self):
         event_id = self._selected_id_from_table(self.eventTable)
@@ -2142,50 +846,10 @@ class MainWindow(QtWidgets.QMainWindow):
         if not event:
             self._log(f"选择的事件不在内存索引中：事件ID={event_id}")
             return
-        self.detailText.setPlainText(self._format_event_detail(event))
+        self.detailText.setPlainText(format_event_detail(event))
         for cb in self.tag_checks:
             cb.setChecked(cb.text() in event.get("label_tags", []))
         self.noteEdit.setPlainText(event.get("note") or "")
-
-    def _format_trade_detail(self, trade: dict[str, Any]) -> str:
-        net_return = trade.get("net_return_pct") if trade.get("net_return_pct") is not None else trade.get("final_return_pct")
-        lines = [
-            "交易详情",
-            "",
-            f"交易ID        : {trade.get('trade_id') or ''}",
-            f"方向          : {self._side_label(trade.get('side'))}",
-            f"状态          : {self._status_label(trade.get('status'))}",
-            f"入场时间      : {trade.get('entry_bar_time_bjt') or ''}",
-            f"出场时间      : {trade.get('exit_bar_time_bjt') or ''}",
-            f"入场成交价    : {self._fmt_num(trade.get('entry_fill_price') if trade.get('entry_fill_price') is not None else trade.get('entry_price_proxy'))}",
-            f"出场成交价    : {self._fmt_num(trade.get('exit_fill_price') if trade.get('exit_fill_price') is not None else trade.get('exit_price_proxy'))}",
-            f"代理收益      : {self._fmt_num(trade.get('final_return_pct'))}%",
-            f"净收益        : {self._fmt_num(net_return)}%",
-            f"净盈亏        : {self._fmt_num(trade.get('net_pnl_quote'))}",
-            f"持仓K线数     : {trade.get('holding_bars') if trade.get('holding_bars') is not None else ''}",
-            f"成交模式      : {self._fill_mode_label(trade.get('fill_mode'))}",
-        ]
-        return "\n".join(lines)
-
-    def _format_event_detail(self, event: dict[str, Any]) -> str:
-        labels = event.get("label_tags", [])
-        if isinstance(labels, str):
-            labels = [labels]
-        lines = [
-            "事件详情",
-            "",
-            f"事件ID        : {event.get('event_id') or ''}",
-            f"交易ID        : {event.get('trade_id') or ''}",
-            f"事件类型      : {self._event_type_label(event.get('event_type'))}",
-            f"方向          : {self._side_label(event.get('side'))}",
-            f"K线时间       : {event.get('bar_open_time_bjt') or ''}",
-            f"代理价格      : {self._fmt_num(event.get('price_proxy'))}",
-            f"标签          : {', '.join(labels)}",
-            "",
-            "备注",
-            event.get("note") or "",
-        ]
-        return "\n".join(lines)
 
     def apply_labels_to_selected_event(self):
         event_id = self._selected_id_from_table(self.eventTable)
@@ -2225,41 +889,17 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---------- Undo / redo ----------
     def execute_command(self, command: ActionCommand):
-        try:
-            command.do()
-        except Exception as e:
-            self._operation_error("操作失败", e)
-            return False
-        self.undo_stack.append(command)
-        self.redo_stack.clear()
-        return True
+        return execute_trade_command(self, command)
 
     def undo(self):
-        if not self.undo_stack:
-            return
-        cmd = self.undo_stack[-1]
-        try:
-            cmd.undo()
-        except Exception as e:
-            self._operation_error("撤销失败", e)
-            return
-        self.undo_stack.pop()
-        self.redo_stack.append(cmd)
+        undo_trade_command(self)
 
     def redo(self):
-        if not self.redo_stack:
-            return
-        cmd = self.redo_stack[-1]
-        try:
-            cmd.do()
-        except Exception as e:
-            self._operation_error("重做失败", e)
-            return
-        self.redo_stack.pop()
-        self.undo_stack.append(cmd)
+        redo_trade_command(self)
 
     # ---------- Tables / selection ----------
-    def _refresh_tables(self):
+    def _refresh_tables(self, include_heavy: bool = True):
+        started = time.perf_counter()
         tables = (
             self.openTradesTable,
             self.closedTradesTable,
@@ -2272,122 +912,51 @@ class MainWindow(QtWidgets.QMainWindow):
             for table in tables:
                 table.clearSelection()
                 table.setCurrentCell(-1, -1)
-            self._populate_tables()
+            self._populate_tables(include_heavy=include_heavy)
         finally:
             for table, old_state in old_signal_state.items():
                 table.blockSignals(old_state)
-        self._refresh_performance_summary()
+            _maybe_log_slow_operation(self, "_refresh_tables", started)
+        if include_heavy:
+            self._refresh_performance_summary()
 
-    def _populate_tables(self):
-        open_trades = [t for t in self.trades if t.get("status") == "OPEN"]
-        closed_trades = [t for t in self.trades if t.get("status") == "CLOSED"]
-        open_trades.sort(key=lambda x: x.get("created_at") or "")
-        closed_trades.sort(key=lambda x: x.get("updated_at") or "")
-        self.openTradesTable.setRowCount(len(open_trades))
-        for r, t in enumerate(open_trades):
-            values = [
-                t["trade_id"], self._side_label(t.get("side")), t.get("entry_bar_time_bjt") or "",
-                self._fmt_num(t.get("entry_price_proxy")),
-                self._fmt_num(t.get("entry_fill_price") if t.get("entry_fill_price") is not None else t.get("entry_price_proxy")),
-                self._fmt_num(t.get("entry_fee_quote")),
-                self._fmt_num(t.get("notional_quote")),
-                t.get("entry_bar_index"), self._status_label(t.get("status")), self._fill_mode_label(t.get("fill_mode")),
-            ]
-            for c, v in enumerate(values):
-                item = self._make_table_item(
-                    v,
-                    role_id=t["trade_id"] if c == 0 else None,
-                    numeric=c in {3, 4, 5, 6, 7},
-                    short_id=c == 0,
-                )
-                self.openTradesTable.setItem(r, c, item)
-
-        self.closedTradesTable.setRowCount(len(closed_trades))
-        for r, t in enumerate(closed_trades):
-            total_fee = (self._safe_float(t.get("entry_fee_quote")) + self._safe_float(t.get("exit_fee_quote")))
-            net_return = t.get("net_return_pct") if t.get("net_return_pct") is not None else t.get("final_return_pct")
-            values = [
-                t["trade_id"], self._side_label(t.get("side")), t.get("entry_bar_time_bjt") or "", t.get("exit_bar_time_bjt") or "",
-                self._fmt_num(t.get("entry_fill_price") if t.get("entry_fill_price") is not None else t.get("entry_price_proxy")),
-                self._fmt_num(t.get("exit_fill_price") if t.get("exit_fill_price") is not None else t.get("exit_price_proxy")),
-                self._fmt_num(t.get("gross_return_pct") if t.get("gross_return_pct") is not None else t.get("final_return_pct")),
-                self._fmt_num(net_return),
-                self._fmt_num(total_fee),
-                self._fmt_num(t.get("net_pnl_quote")),
-                t.get("holding_bars"), self._status_label(t.get("status")), self._fill_mode_label(t.get("fill_mode")),
-            ]
-            for c, v in enumerate(values):
-                item = self._make_table_item(
-                    v,
-                    role_id=t["trade_id"] if c == 0 else None,
-                    numeric=c in {4, 5, 6, 7, 8, 9, 10},
-                    pnl=c in {6, 7, 9},
-                    short_id=c == 0,
-                )
-                self.closedTradesTable.setItem(r, c, item)
-
-        self.events.sort(key=lambda x: x.get("created_at") or "")
-        visible_events = list(self.events)
+    def _populate_tables(self, include_heavy: bool = True):
+        populate_trade_tables(self.openTradesTable, self.closedTradesTable, self.trades)
         selected_tag = self.eventFilterTag.currentText() if hasattr(self, "eventFilterTag") else "全部标签"
         selected_side = self.eventFilterSide.currentData() if hasattr(self, "eventFilterSide") else ""
         selected_type = self.eventFilterType.currentData() if hasattr(self, "eventFilterType") else ""
-        if selected_tag and selected_tag != "全部标签":
-            visible_events = [e for e in visible_events if selected_tag in (e.get("label_tags") or [])]
-        if selected_side:
-            visible_events = [e for e in visible_events if e.get("side") == selected_side]
-        if selected_type:
-            visible_events = [e for e in visible_events if e.get("event_type") == selected_type]
-        self.eventTable.setRowCount(len(visible_events))
-        for r, e in enumerate(visible_events):
-            values = [
-                e["event_id"], e["trade_id"], self._event_type_label(e.get("event_type")), self._side_label(e.get("side")),
-                e.get("bar_open_time_bjt") or "", self._fmt_num(e.get("price_proxy")),
-                ", ".join(e.get("label_tags", [])), e.get("note") or "",
-            ]
-            for c, v in enumerate(values):
-                item = self._make_table_item(
-                    v,
-                    role_id=e["event_id"] if c == 0 else None,
-                    numeric=c in {5},
-                    short_id=c in {0, 1},
-                )
-                self.eventTable.setItem(r, c, item)
-
+        populate_event_table(
+            self.eventTable,
+            self.events,
+            selected_tag=selected_tag,
+            selected_side=selected_side,
+            selected_type=selected_type,
+        )
         equity_rows = self._current_equity_rows()
-        self._populate_equity_table(equity_rows)
-        self._populate_event_study_table()
-        self._refresh_dataset_summary()
+        populate_equity_table(self.equityTable, equity_rows)
+        if include_heavy:
+            self._populate_event_study_table()
+            self._refresh_dataset_summary()
 
-    def _make_table_item(
-        self,
-        value: Any,
-        role_id: Any = None,
-        numeric: bool = False,
-        pnl: bool = False,
-        short_id: bool = False,
-    ) -> QtWidgets.QTableWidgetItem:
-        display = self._short_id(value) if short_id else ("" if value is None else str(value))
-        item = QtWidgets.QTableWidgetItem(display)
-        if role_id is not None:
-            item.setData(ROLE_ID, role_id)
-        if numeric:
-            item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        if pnl:
-            number = self._safe_float(value, default=float("nan"))
-            if math.isfinite(number):
-                if number > 0:
-                    item.setForeground(QtGui.QBrush(QtGui.QColor(COLORS["green"])))
-                elif number < 0:
-                    item.setForeground(QtGui.QBrush(QtGui.QColor(COLORS["red"])))
-        return item
+    def _analysis_refresh_snapshot(self) -> AnalysisRefreshSnapshot:
+        return AnalysisRefreshSnapshot(
+            events=self._event_rows_for_study(),
+            features=self._feature_rows_for_session(),
+            trades=[dict(t) for t in self.trades],
+            equity_rows=self._current_equity_rows(),
+            initial_equity=float(self.initialEquitySpin.value()),
+        )
 
-    @staticmethod
-    def _safe_float(value: Any, default: float = 0.0) -> float:
-        try:
-            out = float(value)
-        except (TypeError, ValueError):
-            return default
-        return out if math.isfinite(out) else default
+    def _on_analysis_refresh_failed(self, error: str) -> None:
+        self._log(f"Analysis refresh failed: {error}")
+
+    def _apply_analysis_refresh_result(self, result: AnalysisRefreshResult) -> None:
+        populate_event_study_table(self.eventStudyTable, result.event_study)
+        self.datasetText.setPlainText(result.dataset_text)
+        if hasattr(self, "performanceText"):
+            self.performanceText.setPlainText(result.performance_text)
+        for warning in result.warnings:
+            self._log(warning)
 
     def _current_equity_rows(self) -> list[dict[str, Any]]:
         from accounting import build_equity_curve
@@ -2398,29 +967,6 @@ class MainWindow(QtWidgets.QMainWindow):
             float(self.initialEquitySpin.value()),
             float(self.tradeNotionalSpin.value()),
         )
-
-    def _populate_equity_table(self, equity_rows: list[dict[str, Any]]):
-        self.equityTable.setRowCount(len(equity_rows))
-        for r, row in enumerate(equity_rows):
-            values = [
-                row.get("sequence_no") or r + 1,
-                row.get("trade_id") or "",
-                self._fmt_num(row.get("equity_before")),
-                self._fmt_num(row.get("realized_net_pnl")),
-                self._fmt_num(row.get("realized_fee")),
-                self._fmt_num(row.get("equity_after")),
-                self._fmt_num(row.get("equity_return_pct")),
-                self._fmt_num(row.get("drawdown_pct")),
-            ]
-            for c, v in enumerate(values):
-                item = self._make_table_item(
-                    v,
-                    role_id=row.get("trade_id") if c == 1 else None,
-                    numeric=c in {0, 2, 3, 4, 5, 6, 7},
-                    pnl=c in {3, 6, 7},
-                    short_id=c == 1,
-                )
-                self.equityTable.setItem(r, c, item)
 
     def _feature_rows_for_session(self) -> list[dict[str, Any]]:
         if not self.session_id:
@@ -2441,71 +987,46 @@ class MainWindow(QtWidgets.QMainWindow):
         return rows
 
     def _populate_event_study_table(self):
-        from event_study import build_event_study_summary
+        started = time.perf_counter()
 
         try:
-            summary = build_event_study_summary(
-                pd.DataFrame(self._event_rows_for_study()),
-                pd.DataFrame(self._feature_rows_for_session()),
+            summary, warning = build_event_study_summary_frame(
+                self._event_rows_for_study(),
+                self._feature_rows_for_session(),
             )
-        except Exception as e:
-            self._log(f"事件研究统计失败：{type(e).__name__}: {e}")
-            summary = pd.DataFrame()
-
-        self.eventStudyTable.setRowCount(len(summary))
-        for r, row in summary.iterrows():
-            values = [
-                row.get("label_tag") or "",
-                row.get("event_type") or "",
-                row.get("side") or "",
-                int(row.get("sample_count") or 0),
-                self._fmt_num(row.get("fwd_ret_1_mean")),
-                self._fmt_num(row.get("fwd_ret_3_mean")),
-                self._fmt_num(row.get("fwd_ret_5_mean")),
-                self._fmt_num(row.get("fwd_ret_10_mean")),
-                self._fmt_num(row.get("fwd_ret_1_win_rate_pct")),
-            ]
-            for c, v in enumerate(values):
-                self.eventStudyTable.setItem(
-                    r,
-                    c,
-                    self._make_table_item(v, numeric=c >= 3, pnl=c in {4, 5, 6, 7, 8}),
-                )
+            if warning:
+                self._log(warning)
+            populate_event_study_table(self.eventStudyTable, summary)
+        finally:
+            _maybe_log_slow_operation(self, "_populate_event_study_table", started)
 
     def _refresh_dataset_summary(self):
-        from dataset_builder import build_ml_datasets
+        started = time.perf_counter()
 
         try:
-            features = pd.DataFrame(self._feature_rows_for_session())
-            datasets = build_ml_datasets(features)
-            ml_features = datasets["ml_features"]
-            ml_labels = datasets["ml_labels"]
-            sample_index = datasets["sample_index"]
-            blocked = ["未来收益字段", "事件后窗口字段", "最大有利/不利波动", "人工交易结果字段"]
-            text = "\n".join([
-                f"当前会话事件特征行数: {len(features)}",
-                f"特征表行/列: {len(ml_features)} / {len(ml_features.columns)}",
-                f"标签表行/列: {len(ml_labels)} / {len(ml_labels.columns)}",
-                f"样本索引行/列: {len(sample_index)} / {len(sample_index.columns)}",
-                f"已隔离未来/结果字段: {', '.join(blocked)}",
-            ])
+            text, warning = build_dataset_summary_text(self._feature_rows_for_session())
             self.datasetText.setPlainText(text)
-        except Exception as e:
-            self.datasetText.setPlainText(f"机器学习样本摘要生成失败：{type(e).__name__}: {e}")
-            self._log(f"机器学习样本摘要生成失败：{type(e).__name__}: {e}")
+            if warning:
+                self._log(warning)
+        finally:
+            _maybe_log_slow_operation(self, "_refresh_dataset_summary", started)
 
     def _refresh_performance_summary(self):
-        from performance import build_performance_summary, format_performance_report
+        started = time.perf_counter()
 
         if not hasattr(self, "performanceText"):
             return
         try:
-            equity_rows = self._current_equity_rows()
-            summary = build_performance_summary(self.trades, equity_rows, float(self.initialEquitySpin.value()))
-            self.performanceText.setPlainText(format_performance_report(summary))
-        except Exception as e:
-            self.performanceText.setPlainText(f"统计生成失败：{type(e).__name__}: {e}")
-            self._log(f"交易绩效统计生成失败：{type(e).__name__}: {e}")
+            text, warning = build_performance_summary_text(
+                self.trades,
+                self._current_equity_rows(),
+                float(self.initialEquitySpin.value()),
+            )
+            self.performanceText.setPlainText(text)
+            if warning:
+                self._log(warning)
+        finally:
+            _maybe_log_slow_operation(self, "_refresh_performance_summary", started)
 
     def jump_to_trade_row(self, item: QtWidgets.QTableWidgetItem):
         trade_id = self.sender().item(item.row(), 0).data(ROLE_ID)
@@ -2525,7 +1046,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if self.df.empty:
             return
         self.cursor = int(clamp(bar_index, 0, len(self.df) - 1))
-        self._rebuild_items()
         self._last_cursor_for_series = int(self.cursor)
         (x0, x1), _ = self.vb_price.viewRange()
         span = max(20.0, x1 - x0 if math.isfinite(x0) and math.isfinite(x1) and x1 > x0 else self.window_bars)
@@ -2533,6 +1053,8 @@ class MainWindow(QtWidgets.QMainWindow):
         x1 = x0 + span
         self.pricePlot.setXRange(x0, x1, padding=0.0)
         self.volPlot.setXRange(x0, x1, padding=0.0)
+        MainWindow._chart_render_state(self).mark_cursor_changed()
+        MainWindow._chart_render_state(self).mark_visible_range_changed()
         self._render(force=True)
 
     # ---------- Export ----------
@@ -2560,31 +1082,22 @@ class MainWindow(QtWidgets.QMainWindow):
         language: str | None = None,
         selected_label: str = "fwd_ret_10_side_adj",
     ):
-        if not self.session_id or self.app_state.export.running:
+        if not self.session_id or self.app_state.export.running or self.export_task_controller.is_running:
             return False
-        from workers.export_worker import ExportWorker
+
+        request = build_export_task_request(
+            target=target,
+            session_id=self.session_id,
+            language=language or self.current_language,
+            selected_label=selected_label,
+        )
 
         self.app_state.export.running = True
         self.app_state.export.last_error = None
         self._export_success_callback = on_success
         self.btnExport.setEnabled(False)
         self.status.setText("Exporting session data...")
-        self._export_thread = QtCore.QThread(self)
-        self._export_worker = ExportWorker(
-            self.storage.db_path,
-            self.session_id,
-            target,
-            language or self.current_language,
-            selected_label,
-        )
-        self._export_worker.moveToThread(self._export_thread)
-        self._export_thread.started.connect(self._export_worker.run)
-        self._export_worker.progress.connect(self.status.setText)
-        self._export_worker.finished.connect(self._on_export_finished)
-        self._export_worker.failed.connect(self._on_export_failed)
-        self._export_worker.cancelled.connect(self._on_export_cancelled)
-        self._export_thread.start()
-        return True
+        return self.export_task_controller.start(self.storage.db_path, request)
 
     @QtCore.Slot(str, object, float)
     def _on_export_finished(self, output_dir: str, warnings: list, elapsed: float):
@@ -2613,13 +1126,6 @@ class MainWindow(QtWidgets.QMainWindow):
         self.app_state.export.running = False
         self._export_success_callback = None
         self.btnExport.setEnabled(True)
-        if self._export_thread is not None:
-            self._export_thread.quit()
-            self._export_thread.wait(1000)
-            self._export_worker.deleteLater()
-            self._export_thread.deleteLater()
-        self._export_worker = None
-        self._export_thread = None
 
     # ---------- Premium ----------
     def request_premium_sample(self):
@@ -2647,70 +1153,12 @@ class MainWindow(QtWidgets.QMainWindow):
         self._refresh_premium_plot()
 
     def _refresh_premium_plot(self):
-        rows = self.storage.fetch_table("usdt_premium_history")
-        if not rows:
-            self.premiumBuyCurve.setData([], [])
-            self.premiumSellCurve.setData([], [])
-            self.premiumAvgCurve.setData([], [])
-            return
-        df = pd.DataFrame(rows).tail(240)
-        df = df[df["sample_status"] == "OK"].copy()
-        if df.empty:
-            self.premiumBuyCurve.setData([], [])
-            self.premiumSellCurve.setData([], [])
-            self.premiumAvgCurve.setData([], [])
-            return
-        x = np.arange(len(df), dtype=float)
-        self.premiumBuyCurve.setData(x, df["buy_premium_pct"].astype(float).to_numpy())
-        self.premiumSellCurve.setData(x, df["sell_premium_pct"].astype(float).to_numpy())
-        self.premiumAvgCurve.setData(x, df["avg_premium_pct"].astype(float).to_numpy())
+        refresh_premium_plot(self)
 
     def _update_current_price_line(self, vx0: float, vx1: float):
-        if self.df.empty:
-            self.currentPriceLine.hide()
-            self.currentPriceLabel.hide()
-            return
-        idx = int(clamp(self.cursor, 0, len(self.df) - 1))
-        row = self.df.iloc[idx]
-        price = float(row["close"])
-        prev_close = float(self.df.iloc[max(0, idx - 1)]["close"]) if idx > 0 else price
-        up = price >= prev_close
-        line_color = self.theme_settings['current_price_up'] if up else self.theme_settings['current_price_down']
-        text_color = self.theme_settings['current_price_label_text']
-        self.currentPriceLine.setPen(pg.mkPen(line_color, style=QtCore.Qt.DashLine, width=1))
-        self.currentPriceLine.setValue(price)
-        label_x = vx1 - max(0.05, (vx1 - vx0) * 0.006)
-        self.currentPriceLabel.setColor(text_color)
-        try:
-            self.currentPriceLabel.fill = pg.mkBrush(line_color)
-            self.currentPriceLabel.border = pg.mkPen(line_color)
-            self.currentPriceLabel.update()
-        except Exception:
-            pass
-        self.currentPriceLabel.setText(f"{price:.4f}")
-        self.currentPriceLabel.setPos(label_x, price)
-        self.currentPriceLine.show()
-        self.currentPriceLabel.show()
+        update_current_price_line(self, vx0, vx1)
 
     # ---------- Utils ----------
-    def _short_id(self, value: Any, keep: int = 8) -> str:
-        text = "" if value is None else str(value)
-        if len(text) <= keep + 4:
-            return text
-        prefix = text.split("_", 1)[0]
-        if "_" in text and len(prefix) <= 5:
-            return f"{prefix}_{text[-keep:]}"
-        return text[-keep:]
-
-    def _fmt_num(self, value):
-        if value is None:
-            return ""
-        try:
-            v = float(value)
-            return f"{v:.6f}" if abs(v) < 1000 else f"{v:.2f}"
-        except Exception:
-            return str(value)
-
     def _log(self, message: str):
         logger.info(message)
         self.log.appendPlainText(f"[{bjt_now_iso()}] {message}")

@@ -8,10 +8,26 @@ from typing import Any
 import pandas as pd
 from PySide6 import QtCore, QtWidgets
 
-from app_i18n import tr
-from app_logger import get_logger
-from market_data import KlineLoader, LoadRequest, interval_to_ms
-from multi_timeframe import build_multi_timeframe_context, higher_timeframes_for
+try:
+    from app_i18n import tr
+    from app_logger import get_logger
+    from market_data import KlineLoader, LoadRequest, interval_to_ms
+    from multi_timeframe import (
+        build_multi_timeframe_context,
+        find_context_bar_by_time,
+        higher_timeframes_for,
+        normalize_context_frame,
+    )
+except ImportError:  # pragma: no cover - package import path
+    from .app_i18n import tr
+    from .app_logger import get_logger
+    from .market_data import KlineLoader, LoadRequest, interval_to_ms
+    from .multi_timeframe import (
+        build_multi_timeframe_context,
+        find_context_bar_by_time,
+        higher_timeframes_for,
+        normalize_context_frame,
+    )
 
 
 logger = get_logger(__name__)
@@ -53,6 +69,8 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         self._context_frames: dict[str, pd.DataFrame] = {}
         self._context_errors: dict[str, str] = {}
         self._latest_context: dict[str, dict[str, Any]] = {}
+        self._last_render_context_key: tuple[Any, ...] | None = None
+        self._last_summary_context_key: tuple[Any, ...] | None = None
         self._configured_primary: str | None = None
         self._active_request_id: str | None = None
         self._last_request_args: tuple[Any, ...] | None = None
@@ -170,9 +188,14 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         frames: dict[str, pd.DataFrame],
         errors: dict[str, str] | None = None,
     ) -> None:
-        self._context_frames = dict(frames)
+        self._context_frames = {
+            interval: normalize_context_frame(frame, interval)
+            for interval, frame in dict(frames).items()
+        }
         self._context_errors = dict(errors or {})
         self._latest_context = {}
+        self._last_render_context_key = None
+        self._last_summary_context_key = None
         if self._context_errors and not self._context_frames:
             detail = "\n".join(f"{interval}: {error}" for interval, error in self._context_errors.items())
             self.summaryText.setPlainText(f"{tr('multi_timeframe_load_failed', self.language)}\n{detail}")
@@ -182,6 +205,8 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         self._context_frames = {}
         self._context_errors = {}
         self._latest_context = {}
+        self._last_render_context_key = None
+        self._last_summary_context_key = None
         self._primary_row = None
         self.summaryText.setPlainText(tr("multi_timeframe_stale", self.language))
 
@@ -189,9 +214,54 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         self._primary_row = primary_row.copy() if hasattr(primary_row, "copy") else dict(primary_row)
         if not self._context_frames:
             return {}
-        self._latest_context = build_multi_timeframe_context(primary_row, self._context_frames)
-        self._render_context(self._latest_context)
+        summary_key = self._context_summary_key(primary_row)
+        if summary_key != self._last_summary_context_key:
+            self._latest_context = build_multi_timeframe_context(primary_row, self._context_frames)
+            self._last_summary_context_key = summary_key
+        key = self._context_render_key(self._latest_context)
+        if key != self._last_render_context_key:
+            self._render_context(self._latest_context)
+            self._last_render_context_key = key
         return self._latest_context
+
+    def _context_summary_key(self, primary_row: pd.Series | dict[str, Any]) -> tuple[Any, ...]:
+        current_time = primary_row.get("open_time_bjt") if hasattr(primary_row, "get") else None
+        if current_time is None:
+            return tuple((interval, "missing_primary_time", None, None) for interval in sorted(self._context_frames))
+        visible_time = pd.Timestamp(current_time)
+        if visible_time.tzinfo is None:
+            visible_time = visible_time.tz_localize("Asia/Shanghai")
+        else:
+            visible_time = visible_time.tz_convert("Asia/Shanghai")
+        keys: list[tuple[Any, ...]] = []
+        for interval, frame in sorted(self._context_frames.items()):
+            match = find_context_bar_by_time(frame, visible_time, interval)
+            containing_index = match.get("htf_bar_index") if match.get("sync_status") == "contains_cursor" else None
+            if match.get("sync_status") == "contains_cursor":
+                completed = frame[frame["_close_time"] <= visible_time] if "_close_time" in frame.columns else pd.DataFrame()
+                visible_index = (
+                    int(completed.iloc[-1]["bar_index"])
+                    if not completed.empty and "bar_index" in completed.columns
+                    else None
+                )
+                sync_status = "previous_completed_for_no_future"
+            else:
+                visible_index = match.get("htf_bar_index")
+                sync_status = match.get("sync_status")
+            keys.append((interval, sync_status, visible_index, containing_index))
+        return tuple(keys)
+
+    def _context_render_key(self, context: dict[str, dict[str, Any]]) -> tuple[Any, ...]:
+        return tuple(
+            (
+                interval,
+                state.get("sync_status"),
+                state.get("htf_bar_index"),
+                state.get("containing_htf_bar_index"),
+                state.get("history_status"),
+            )
+            for interval, state in sorted(context.items())
+        )
 
     def _render_context(self, context: dict[str, dict[str, Any]]) -> None:
         lines = [tr("multi_timeframe_readonly_notice", self.language), ""]

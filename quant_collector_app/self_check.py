@@ -4,8 +4,13 @@ import argparse
 import json
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
+
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
 
 SESSION_ID = "sess_selfcheck"
 NOW = "2026-01-01T00:00:00+08:00"

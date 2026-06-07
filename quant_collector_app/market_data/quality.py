@@ -7,7 +7,10 @@ from dataclasses import dataclass
 
 import pandas as pd
 
-from app_config import UTC
+try:
+    from app_config import UTC
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import UTC
 from .types import interval_to_ms, make_bjt, to_api_utc_ms_from_bjt
 
 

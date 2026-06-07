@@ -41,3 +41,25 @@ def test_research_output_is_presented_as_tables(tmp_path):
     assert dialog.reportText.toPlainText().startswith("# Quant Research Report")
     dialog.close()
     app.processEvents()
+
+
+def test_analysis_workspace_exposes_selected_candidate_for_backtest_params(tmp_path):
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    research_dir = tmp_path / "research"
+    research_dir.mkdir()
+    (research_dir / "candidate_rules.csv").write_text(
+        'readable_rule,conditions_json,test_score\n'
+        '"deep V","[{""column"": ""pre_ret_5"", ""op"": ""<="", ""value"": -0.04}]",0.2\n',
+        encoding="utf-8",
+    )
+
+    dialog = AnalysisWorkspace(Host())
+    dialog.last_research_dir = research_dir
+    dialog._load_research_views()
+    selected = dialog.selected_candidate_rule_params()
+
+    assert selected == {
+        "conditions_json": '[{"column": "pre_ret_5", "op": "<=", "value": -0.04}]'
+    }
+    dialog.close()
+    app.processEvents()

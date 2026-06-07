@@ -43,7 +43,15 @@ def __getattr__(name: str):
     if name not in _EXPORTS:
         raise AttributeError(name)
     module_name, export_name = _EXPORTS[name]
-    value = getattr(import_module(module_name), export_name)
+    try:
+        module = import_module(module_name)
+    except ModuleNotFoundError as exc:
+        top_level_name = module_name.split(".", 1)[0]
+        if "." not in str(__package__) or exc.name != top_level_name:
+            raise
+        package_root = str(__package__).split(".", 1)[0]
+        module = import_module(f"{package_root}.{module_name}")
+    value = getattr(module, export_name)
     globals()[name] = value
     return value
 

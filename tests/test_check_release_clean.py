@@ -32,6 +32,7 @@ def test_release_checker_rejects_virtual_environment_database_and_log(tmp_path):
     "relative_path",
     [
         ".codex_pytest_tmp/run/output.txt",
+        ".pytest_tmp_integrity_full/output.txt",
         "nested/__pycache__/module.py",
         "nested/module.pyc",
         "nested/module.pyo",
@@ -41,6 +42,10 @@ def test_release_checker_rejects_virtual_environment_database_and_log(tmp_path):
         "data/exports/session.csv",
         "data/research.sqlite",
         "logs/.gitkeep",
+        ".env",
+        "nested/app_settings.json",
+        "nested/theme_settings.json",
+        "nested/debug.log",
     ],
 )
 def test_contamination_reason_rejects_required_local_artifacts(relative_path):

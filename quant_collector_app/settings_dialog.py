@@ -16,6 +16,7 @@ from app_config import (
 )
 from app_i18n import tr
 from app_settings import load_app_settings, save_app_settings
+from app_settings import build_app_settings_update
 from execution import FILL_MODES
 from ui_style import SPACING, style_primary_button, style_secondary_button
 
@@ -301,18 +302,16 @@ class SettingsDialog(QtWidgets.QDialog):
             self.app_window.apply_theme(theme)
         self._apply_execution_settings()
         language = self.languageBox.currentData() or "zh_CN"
-        settings = dict(self.app_settings)
-        settings.update(
-            {
-                "language": language,
-                "llm_provider": self.providerBox.currentText(),
-                "local_api_url": "http://127.0.0.1:8765",
-                "fill_mode": self.fillModeBox.currentData() or self.fillModeBox.currentText(),
-                "fee_bps": self.feeBpsSpin.value(),
-                "slippage_bps": self.slippageBpsSpin.value(),
-                "trade_notional": self.tradeNotionalSpin.value(),
-                "initial_equity": self.initialEquitySpin.value(),
-            }
+        settings = build_app_settings_update(
+            self.app_settings,
+            language=language,
+            llm_provider=self.providerBox.currentText(),
+            local_api_url="http://127.0.0.1:8765",
+            fill_mode=self.fillModeBox.currentData() or self.fillModeBox.currentText(),
+            fee_bps=self.feeBpsSpin.value(),
+            slippage_bps=self.slippageBpsSpin.value(),
+            trade_notional=self.tradeNotionalSpin.value(),
+            initial_equity=self.initialEquitySpin.value(),
         )
         save_app_settings(settings)
         self.current_language = str(language)

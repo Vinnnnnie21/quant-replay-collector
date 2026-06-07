@@ -78,6 +78,17 @@ RESEARCH_LABELS = [
     "fwd_ret_20_side_adj",
     "hit_tp_1pct_before_sl_1pct",
 ]
+BACKTEST_PARAM_SOURCE_FIELDS = {
+    "conditions_json",
+    "drop_pct_threshold",
+    "volume_spike_threshold",
+    "lower_shadow_ratio",
+    "next_candle_body_ratio",
+    "trend_window",
+    "future_window",
+    "tp_threshold",
+    "sl_threshold",
+}
 
 
 class SortableTableItem(QtWidgets.QTableWidgetItem):
@@ -101,6 +112,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self._research_output_loaded = False
         self.last_time_series_summary: dict | None = None
         self.last_time_series_report_text = ""
+        self._candidate_rule_rows: list[dict] = []
         self._localized_placeholders: list[tuple[QtWidgets.QPlainTextEdit, str, bool]] = []
         self._build_ui()
         self.retranslate_ui()
@@ -133,8 +145,14 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.tabs = QtWidgets.QTabWidget()
         self.performanceTab = self._performance_tab()
         self.eventStudyTab = self._event_study_tab()
-        self.consistencyTab = self._existing_analysis_widget("strategyConsistencyPanel", "workspace.no_strategy_panel")
-        self.backtestTab = self._existing_analysis_widget("backtestPanel", "workspace.no_backtest_panel")
+        self.consistencyTab = self._scrollable_existing_widget(
+            "strategyConsistencyPanel",
+            "workspace.no_strategy_panel",
+        )
+        self.backtestTab = self._scrollable_existing_widget(
+            "backtestPanel",
+            "workspace.no_backtest_panel",
+        )
         self.premiumTab = self._existing_analysis_widget("premiumBox", "workspace.no_premium_panel")
         self.aiTab = self._ai_tab()
         self.researchTab = self._research_tab()
@@ -210,6 +228,22 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         if self._is_main_trading_tab_widget(widget):
             return self._localized_placeholder(empty_key, owned_elsewhere=True)
         return widget
+
+    def _scrollable_existing_widget(self, name: str, empty_key: str) -> QtWidgets.QWidget:
+        widget = getattr(self.app_window, name, None)
+        if not isinstance(widget, QtWidgets.QWidget):
+            return self._localized_placeholder(empty_key)
+        if self._is_main_trading_tab_widget(widget):
+            return self._localized_placeholder(empty_key, owned_elsewhere=True)
+
+        widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustIgnored)
+        scroll.setWidget(widget)
+        return scroll
 
     def _ai_tab(self) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget()
@@ -454,6 +488,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             absolute_sort=True,
         )
         rule_rows = self._read_csv_rows(directory / "candidate_rules.csv")
+        self._candidate_rule_rows = rule_rows
         rule_sort_column = "test_score" if any(str(row.get("test_score", "")).strip() for row in rule_rows) else "sample_count"
         self._populate_research_table(self.ruleTable, rule_rows, RULE_COLUMNS, sort_column=rule_sort_column)
         self._populate_research_table(
@@ -474,6 +509,28 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         else:
             warning_style = "color: #16a34a; font-weight: 600;"
         self.researchWarning.setStyleSheet(warning_style)
+
+    def selected_candidate_rule_params(self) -> dict | None:
+        if not self._candidate_rule_rows:
+            return None
+        row_index = self.ruleTable.currentRow()
+        row_index = row_index if row_index >= 0 else 0
+        readable_item = self.ruleTable.item(row_index, RULE_COLUMNS.index("readable_rule"))
+        readable_rule = readable_item.text() if readable_item is not None else ""
+        selected = next(
+            (
+                row
+                for row in self._candidate_rule_rows
+                if str(row.get("readable_rule") or "") == readable_rule
+            ),
+            self._candidate_rule_rows[min(row_index, len(self._candidate_rule_rows) - 1)],
+        )
+        values = {
+            key: value
+            for key, value in selected.items()
+            if key in BACKTEST_PARAM_SOURCE_FIELDS and str(value).strip()
+        }
+        return values or None
 
     def open_export_folder(self):
         if self.last_research_dir is not None and self.last_research_dir.exists():

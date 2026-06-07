@@ -7,10 +7,45 @@ from backtesting.strategies import FeatureRuleLongStrategy, MovingAverageCrossSt
 from backtesting.types import Signal
 
 
-@pytest.mark.parametrize("column", ["fwd_ret_10", "post_close_1", "mfe_10", "mae_10", "manual_trade_final_return_pct"])
+@pytest.mark.parametrize(
+    "column",
+    [
+        "fwd_ret_10",
+        "post_close_1",
+        "future_high",
+        "future_low",
+        "mfe_10",
+        "mae_10",
+        "hit_tp",
+        "hit_sl",
+        "outcome_labels",
+        "label",
+        "pnl",
+        "manual_trade_final_return_pct",
+        "final_return",
+        "net_return",
+        "realized_return",
+    ],
+)
 def test_feature_rule_rejects_future_fields(column):
     with pytest.raises(ValueError):
         FeatureRuleLongStrategy([{"column": column, "op": ">", "value": 0}])
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "lower_shadow_ratio",
+        "lower_wick_ratio",
+        "volume_ratio",
+        "pre_ret_20",
+        "event_lower_wick_ratio",
+    ],
+)
+def test_feature_rule_allows_safe_context_fields(column):
+    strategy = FeatureRuleLongStrategy([{"column": column, "op": ">", "value": 0}])
+
+    assert strategy.conditions[0]["column"] == column
 
 
 def test_load_candidate_rule_from_dataframe():
@@ -27,8 +62,11 @@ def test_load_candidate_rule_from_dataframe():
     assert strategy.conditions[0]["column"] == "event_lower_wick_ratio"
 
 
-def test_load_candidate_rule_rejects_future_fields():
-    rules = pd.DataFrame({"conditions_json": ['[{"column": "mfe_10", "op": ">", "value": 0.01}]']})
+@pytest.mark.parametrize("column", ["mfe_10", "hit_tp", "future_high", "outcome_labels", "net_return"])
+def test_load_candidate_rule_rejects_future_fields(column):
+    rules = pd.DataFrame(
+        {"conditions_json": [f'[{{"column": "{column}", "op": ">", "value": 0.01}}]']}
+    )
     with pytest.raises(ValueError):
         load_candidate_rule(rules, 0)
 

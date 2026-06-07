@@ -5,11 +5,18 @@ from pathlib import Path
 import pandas as pd
 from PySide6 import QtCore
 
-from app_config import CACHE_DIR
-from app_logger import get_logger
-from market_data.client import format_request_error
-from market_data.loader import KlineLoader
-from market_data.types import LoadRequest
+try:
+    from app_config import CACHE_DIR
+    from app_logger import get_logger
+    from market_data.client import format_request_error
+    from market_data.loader import KlineLoader
+    from market_data.types import LoadRequest
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import CACHE_DIR
+    from ..app_logger import get_logger
+    from ..market_data.client import format_request_error
+    from ..market_data.loader import KlineLoader
+    from ..market_data.types import LoadRequest
 
 
 logger = get_logger(__name__)

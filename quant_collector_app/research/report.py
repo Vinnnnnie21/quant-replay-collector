@@ -95,12 +95,14 @@ def write_research_report(
         [
             f"- {audit.get('small_sample_warning', '无法评估样本量。')}",
             "- 多个因子与规则检验会提高假阳性风险。",
+            "- 因子 IC 的近似 p-value 不处理金融时间序列的自相关、异方差或重叠未来收益标签，只能作为探索性证据。",
             "- 训练期到后续测试期的衰减应视为过拟合风险。",
         ]
         if zh
         else [
             f"- {audit.get('small_sample_warning', 'Sample-size assessment unavailable.')}",
             "- Multiple factor and rule tests increase false-positive risk.",
+            "- Factor IC approximate p-value does not adjust for serial dependence, heteroskedasticity or overlapping forward-return labels; treat it as exploratory evidence only.",
             "- Any degradation from train to later test periods must be treated as overfit risk.",
         ]
     )

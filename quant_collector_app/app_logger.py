@@ -7,7 +7,10 @@ from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from app_config import LOG_DIR
+try:
+    from app_config import LOG_DIR
+except ImportError:  # pragma: no cover - package import path
+    from .app_config import LOG_DIR
 
 
 LOG_FILE = Path(LOG_DIR) / "app.log"

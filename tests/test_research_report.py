@@ -16,6 +16,9 @@ def test_research_pack_writes_report_and_manifest(tmp_path):
     text = report_path.read_text(encoding="utf-8")
     assert "未来函数审计" in text
     assert "候选规则不是交易信号" in text
+    assert "因子 IC" in text
+    assert "近似 p-value" in text
+    assert "探索性证据" in text
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert manifest["experiment_id"].startswith("exp_")
     assert len(manifest["dataset_hash"]) == 64
@@ -29,3 +32,5 @@ def test_research_report_supports_english_output(tmp_path):
     assert "# Quant Research Report" in text
     assert "Leakage Audit" in text
     assert "not trading signals" in text
+    assert "Factor IC" in text
+    assert "approximate p-value" in text

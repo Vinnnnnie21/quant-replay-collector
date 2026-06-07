@@ -1,13 +1,32 @@
 from __future__ import annotations
 
-import json
-import sqlite3
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
-from app_config import DB_PATH
-from errors import DatabaseError
+try:
+    from app_config import DB_PATH
+    from errors import DatabaseError
+except ImportError:  # pragma: no cover - package import path
+    from .app_config import DB_PATH
+    from .errors import DatabaseError
+try:
+    from storage_core.connection import connect_db, require_rowcount
+    from storage_core import migrations
+    from storage_core import event_repository
+    from storage_core import market_repository
+    from storage_core import premium_repository
+    from storage_core import research_repository
+    from storage_core import session_repository
+    from storage_core import trade_repository
+except ImportError:  # pragma: no cover - package import path
+    from .storage_core.connection import connect_db, require_rowcount
+    from .storage_core import migrations
+    from .storage_core import event_repository
+    from .storage_core import market_repository
+    from .storage_core import premium_repository
+    from .storage_core import research_repository
+    from .storage_core import session_repository
+    from .storage_core import trade_repository
 
 
 class StorageManager:
@@ -60,33 +79,12 @@ class StorageManager:
         except OSError as exc:
             raise DatabaseError(f"Database directory is not writable: {exc}") from exc
 
-    @contextmanager
     def connect(self):
-        try:
-            conn = sqlite3.connect(self.db_path)
-        except sqlite3.Error as exc:
-            raise DatabaseError(f"Cannot open database: {exc}") from exc
-        try:
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            yield conn
-            conn.commit()
-        except sqlite3.OperationalError as exc:
-            conn.rollback()
-            if "locked" in str(exc).lower():
-                raise DatabaseError("Database is temporarily busy. Please retry after the current save completes.") from exc
-            raise DatabaseError(f"SQLite operation failed: {exc}") from exc
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        return connect_db(self.db_path)
 
     def _init_db(self):
         with self.connect() as conn:
-            version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            version = migrations.schema_version(conn)
         if version > self.SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema version {version} is newer than supported version {self.SCHEMA_VERSION}."
@@ -100,544 +98,53 @@ class StorageManager:
         self._migrate_to_v4()
         self._migrate_to_v5()
         with self.connect() as conn:
-            conn.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
+            migrations.set_schema_version(conn, self.SCHEMA_VERSION)
 
     def _migrate_to_v1(self):
         with self.connect() as conn:
-            conn.executescript(
-                """
-                PRAGMA journal_mode=WAL;
-                PRAGMA synchronous=NORMAL;
-
-                CREATE TABLE IF NOT EXISTS sessions (
-                    session_id TEXT PRIMARY KEY,
-                    symbol TEXT,
-                    interval TEXT,
-                    start_date_bjt TEXT,
-                    end_date_bjt TEXT,
-                    cursor_bar_index INTEGER,
-                    follow_latest INTEGER,
-                    speed REAL,
-                    last_opened_at TEXT,
-                    last_saved_at TEXT,
-                    app_version TEXT,
-                    initial_equity REAL,
-                    trade_notional REAL,
-                    fee_bps REAL,
-                    slippage_bps REAL,
-                    fill_mode TEXT
-                );
-
-                CREATE TABLE IF NOT EXISTS trades (
-                    trade_id TEXT PRIMARY KEY,
-                    session_id TEXT,
-                    symbol TEXT,
-                    interval TEXT,
-                    side TEXT,
-                    status TEXT,
-                    entry_event_id TEXT,
-                    exit_event_id TEXT,
-                    entry_bar_index INTEGER,
-                    exit_bar_index INTEGER,
-                    entry_bar_time_bjt TEXT,
-                    exit_bar_time_bjt TEXT,
-                    entry_real_time_bjt TEXT,
-                    exit_real_time_bjt TEXT,
-                    entry_price_proxy REAL,
-                    exit_price_proxy REAL,
-                    holding_bars INTEGER,
-                    final_return_pct REAL,
-                    fill_mode TEXT,
-                    fee_bps REAL,
-                    slippage_bps REAL,
-                    notional_quote REAL,
-                    quantity REAL,
-                    entry_price_raw REAL,
-                    exit_price_raw REAL,
-                    entry_fill_price REAL,
-                    exit_fill_price REAL,
-                    entry_fee_quote REAL,
-                    exit_fee_quote REAL,
-                    gross_pnl_quote REAL,
-                    net_pnl_quote REAL,
-                    gross_return_pct REAL,
-                    net_return_pct REAL,
-                    fee_return_pct REAL,
-                    created_at TEXT,
-                    updated_at TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_trades_session_status ON trades(session_id, status);
-
-                CREATE TABLE IF NOT EXISTS trade_events (
-                    event_id TEXT PRIMARY KEY,
-                    session_id TEXT,
-                    trade_id TEXT,
-                    event_type TEXT,
-                    side TEXT,
-                    symbol TEXT,
-                    interval TEXT,
-                    bar_index INTEGER,
-                    bar_open_time_bjt TEXT,
-                    real_key_time_bjt TEXT,
-                    price_proxy REAL,
-                    label_tags_json TEXT,
-                    note TEXT,
-                    created_at TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_trade_events_session ON trade_events(session_id, created_at);
-
-                CREATE TABLE IF NOT EXISTS event_windows (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT,
-                    event_id TEXT,
-                    offset INTEGER,
-                    is_event_bar INTEGER,
-                    bar_index INTEGER,
-                    bar_open_time_bjt TEXT,
-                    open REAL,
-                    high REAL,
-                    low REAL,
-                    close REAL,
-                    volume REAL,
-                    is_missing_padding INTEGER
-                );
-                CREATE INDEX IF NOT EXISTS idx_event_windows_event ON event_windows(event_id, offset);
-
-                CREATE TABLE IF NOT EXISTS event_features (
-                    event_id TEXT PRIMARY KEY,
-                    session_id TEXT,
-                    trade_id TEXT,
-                    event_type TEXT,
-                    side TEXT,
-                    symbol TEXT,
-                    interval TEXT,
-                    price_proxy REAL,
-                    event_body REAL,
-                    event_upper_wick REAL,
-                    event_lower_wick REAL,
-                    event_range REAL,
-                    event_volume REAL,
-                    event_vol_ratio_5 REAL,
-                    pre_ret_3 REAL,
-                    pre_ret_5 REAL,
-                    pre_ret_10 REAL,
-                    pre_vol_3 REAL,
-                    pre_vol_5 REAL,
-                    pre_vol_10 REAL,
-                    prev_high10_dist_pct REAL,
-                    prev_low10_dist_pct REAL,
-                    bull_run_count INTEGER,
-                    bear_run_count INTEGER,
-                    event_upper_ratio REAL,
-                    event_lower_ratio REAL,
-                    event_body_ratio REAL,
-                    fwd_ret_1 REAL,
-                    fwd_ret_3 REAL,
-                    fwd_ret_5 REAL,
-                    fwd_ret_10 REAL,
-                    fwd_ret_1_side_adj REAL,
-                    fwd_ret_3_side_adj REAL,
-                    fwd_ret_5_side_adj REAL,
-                    fwd_ret_10_side_adj REAL,
-                    mfe_10 REAL,
-                    mae_10 REAL,
-                    manual_trade_final_return_pct REAL,
-                    manual_trade_holding_bars INTEGER,
-                    export_version TEXT,
-                    created_at TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_event_features_session ON event_features(session_id, created_at);
-
-                CREATE TABLE IF NOT EXISTS account_equity (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id TEXT,
-                    sequence_no INTEGER,
-                    trade_id TEXT,
-                    event_id TEXT,
-                    equity_before REAL,
-                    realized_gross_pnl REAL,
-                    realized_fee REAL,
-                    realized_net_pnl REAL,
-                    equity_after REAL,
-                    equity_return_pct REAL,
-                    drawdown_pct REAL,
-                    created_at TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_account_equity_session ON account_equity(session_id, sequence_no);
-
-                CREATE TABLE IF NOT EXISTS usdt_premium_history (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    sample_time_bjt TEXT,
-                    p2p_buy_price_cny REAL,
-                    p2p_sell_price_cny REAL,
-                    p2p_avg_price_cny REAL,
-                    usd_cny_rate REAL,
-                    buy_premium_pct REAL,
-                    sell_premium_pct REAL,
-                    avg_premium_pct REAL,
-                    premium_pct REAL,
-                    fx_source TEXT,
-                    sample_status TEXT,
-                    error_message TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_usdt_sample_time ON usdt_premium_history(sample_time_bjt);
-                """
-            )
-
-            self._ensure_column(conn, "usdt_premium_history", "buy_premium_pct", "REAL")
-            self._ensure_column(conn, "usdt_premium_history", "sell_premium_pct", "REAL")
-            self._ensure_column(conn, "usdt_premium_history", "avg_premium_pct", "REAL")
-            self._ensure_column(conn, "usdt_premium_history", "fx_source", "TEXT")
-            for column, column_type in {
-                "symbol": "TEXT",
-                "interval": "TEXT",
-                "start_date_bjt": "TEXT",
-                "end_date_bjt": "TEXT",
-                "cursor_bar_index": "INTEGER",
-                "follow_latest": "INTEGER",
-                "speed": "REAL",
-                "last_opened_at": "TEXT",
-                "last_saved_at": "TEXT",
-                "app_version": "TEXT",
-                "initial_equity": "REAL",
-                "trade_notional": "REAL",
-                "fee_bps": "REAL",
-                "slippage_bps": "REAL",
-                "fill_mode": "TEXT",
-            }.items():
-                self._ensure_column(conn, "sessions", column, column_type)
-            for column, column_type in {
-                "symbol": "TEXT",
-                "interval": "TEXT",
-                "side": "TEXT",
-                "entry_event_id": "TEXT",
-                "exit_event_id": "TEXT",
-                "entry_bar_index": "INTEGER",
-                "exit_bar_index": "INTEGER",
-                "entry_bar_time_bjt": "TEXT",
-                "exit_bar_time_bjt": "TEXT",
-                "entry_real_time_bjt": "TEXT",
-                "exit_real_time_bjt": "TEXT",
-                "entry_price_proxy": "REAL",
-                "exit_price_proxy": "REAL",
-                "holding_bars": "INTEGER",
-                "final_return_pct": "REAL",
-                "fill_mode": "TEXT",
-                "fee_bps": "REAL",
-                "slippage_bps": "REAL",
-                "notional_quote": "REAL",
-                "quantity": "REAL",
-                "entry_price_raw": "REAL",
-                "exit_price_raw": "REAL",
-                "entry_fill_price": "REAL",
-                "exit_fill_price": "REAL",
-                "entry_fee_quote": "REAL",
-                "exit_fee_quote": "REAL",
-                "gross_pnl_quote": "REAL",
-                "net_pnl_quote": "REAL",
-                "gross_return_pct": "REAL",
-                "net_return_pct": "REAL",
-                "fee_return_pct": "REAL",
-                "created_at": "TEXT",
-                "updated_at": "TEXT",
-            }.items():
-                self._ensure_column(conn, "trades", column, column_type)
+            migrations.migrate_to_v1(conn)
 
     def _migrate_to_v2(self):
         with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS klines (
-                    symbol TEXT NOT NULL,
-                    interval TEXT NOT NULL,
-                    open_time_utc_ms INTEGER NOT NULL,
-                    open_time_bjt TEXT,
-                    close_time_utc_ms INTEGER,
-                    open REAL,
-                    high REAL,
-                    low REAL,
-                    close REAL,
-                    volume REAL,
-                    source TEXT,
-                    downloaded_at TEXT,
-                    data_quality_status TEXT,
-                    PRIMARY KEY (symbol, interval, open_time_utc_ms)
-                );
-                CREATE INDEX IF NOT EXISTS idx_klines_symbol_interval_time
-                    ON klines(symbol, interval, open_time_utc_ms);
-
-                CREATE TABLE IF NOT EXISTS data_quality_reports (
-                    report_id TEXT PRIMARY KEY,
-                    symbol TEXT,
-                    interval TEXT,
-                    start_time_bjt TEXT,
-                    end_time_bjt TEXT,
-                    expected_bars INTEGER,
-                    actual_bars INTEGER,
-                    missing_bars INTEGER,
-                    duplicated_bars INTEGER,
-                    invalid_rows INTEGER,
-                    first_open_time_bjt TEXT,
-                    last_open_time_bjt TEXT,
-                    created_at TEXT,
-                    report_json TEXT
-                );
-                CREATE INDEX IF NOT EXISTS idx_quality_symbol_interval_time
-                    ON data_quality_reports(symbol, interval, created_at);
-                """
-            )
+            migrations.migrate_to_v2(conn)
 
     def _migrate_to_v3(self):
         with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE INDEX IF NOT EXISTS idx_sessions_symbol_interval
-                    ON sessions(symbol, interval);
-                CREATE INDEX IF NOT EXISTS idx_trades_session_symbol_interval
-                    ON trades(session_id, symbol, interval);
-                CREATE INDEX IF NOT EXISTS idx_trade_events_trade_time
-                    ON trade_events(trade_id, bar_open_time_bjt);
-                CREATE INDEX IF NOT EXISTS idx_trade_events_symbol_interval
-                    ON trade_events(symbol, interval);
-                CREATE INDEX IF NOT EXISTS idx_event_windows_session_event
-                    ON event_windows(session_id, event_id);
-                CREATE INDEX IF NOT EXISTS idx_event_features_symbol_interval
-                    ON event_features(symbol, interval);
-                """
-            )
+            migrations.migrate_to_v3(conn)
 
     def _migrate_to_v4(self):
         with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS strategy_profiles (
-                    profile_id TEXT PRIMARY KEY,
-                    profile_version TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    mode TEXT NOT NULL,
-                    allowed_sides_json TEXT,
-                    allowed_symbols_json TEXT,
-                    allowed_intervals_json TEXT,
-                    entry_setup_rules_json TEXT,
-                    entry_filter_rules_json TEXT,
-                    risk_rules_json TEXT,
-                    exit_rules_json TEXT,
-                    invalidation_rules_json TEXT,
-                    expected_holding_bars INTEGER,
-                    selected_label TEXT,
-                    profile_payload_json TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_strategy_profiles_mode_updated
-                    ON strategy_profiles(mode, updated_at);
-
-                CREATE TABLE IF NOT EXISTS observation_universe (
-                    sample_id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    profile_id TEXT,
-                    source_type TEXT NOT NULL CHECK (
-                        source_type IN (
-                            'USER_TRADE', 'USER_EVENT', 'AUTO_CANDIDATE',
-                            'SCHEDULED_BAR', 'MATCHED_CONTROL'
-                        )
-                    ),
-                    symbol TEXT NOT NULL,
-                    interval TEXT NOT NULL,
-                    bar_index INTEGER NOT NULL,
-                    event_time_bjt TEXT,
-                    user_action TEXT NOT NULL CHECK (
-                        user_action IN (
-                            'OPEN_LONG', 'OPEN_SHORT', 'CLOSE_LONG',
-                            'CLOSE_SHORT', 'HOLD', 'NO_ACTION'
-                        )
-                    ),
-                    side TEXT,
-                    linked_trade_id TEXT,
-                    linked_event_id TEXT,
-                    is_user_trade INTEGER NOT NULL DEFAULT 0,
-                    is_candidate INTEGER NOT NULL DEFAULT 0,
-                    is_matched_control INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_observation_session_market_bar
-                    ON observation_universe(session_id, symbol, interval, bar_index);
-                CREATE INDEX IF NOT EXISTS idx_observation_profile_action
-                    ON observation_universe(profile_id, user_action);
-
-                CREATE TABLE IF NOT EXISTS strategy_samples (
-                    strategy_sample_id TEXT PRIMARY KEY,
-                    sample_id TEXT NOT NULL,
-                    experiment_id TEXT NOT NULL,
-                    profile_id TEXT,
-                    profile_version TEXT,
-                    feature_version TEXT NOT NULL,
-                    label_version TEXT NOT NULL,
-                    dataset_hash TEXT NOT NULL,
-                    sample_role TEXT NOT NULL CHECK (
-                        sample_role IN (
-                            'USER_ACTION', 'NO_ACTION', 'CANDIDATE',
-                            'CONTROL', 'TRAIN', 'TEST'
-                        )
-                    ),
-                    created_at TEXT NOT NULL
-                );
-                CREATE INDEX IF NOT EXISTS idx_strategy_samples_experiment
-                    ON strategy_samples(experiment_id, sample_role);
-                CREATE INDEX IF NOT EXISTS idx_strategy_samples_sample
-                    ON strategy_samples(sample_id);
-                """
-            )
+            migrations.migrate_to_v4(conn)
 
     def _migrate_to_v5(self):
         with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS event_context_features (
-                    context_feature_id TEXT PRIMARY KEY,
-                    sample_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    feature_version TEXT NOT NULL,
-                    symbol TEXT NOT NULL,
-                    interval TEXT NOT NULL,
-                    bar_index INTEGER NOT NULL,
-                    lookback_bars INTEGER NOT NULL CHECK (lookback_bars IN (20, 50, 100)),
-                    feature_name TEXT NOT NULL CHECK (
-                        instr(lower(feature_name), 'fwd') = 0 AND
-                        instr(lower(feature_name), 'post') = 0 AND
-                        instr(lower(feature_name), 'future') = 0 AND
-                        instr(lower(feature_name), 'mfe') = 0 AND
-                        instr(lower(feature_name), 'mae') = 0 AND
-                        instr(lower(feature_name), 'hit_tp') = 0 AND
-                        instr(lower(feature_name), 'hit_sl') = 0 AND
-                        instr(lower(feature_name), 'pnl') = 0 AND
-                        instr(lower(feature_name), 'exit') = 0 AND
-                        instr(lower(feature_name), 'label') = 0
-                    ),
-                    feature_value REAL,
-                    created_at TEXT NOT NULL,
-                    UNIQUE (sample_id, feature_version, lookback_bars, feature_name)
-                );
-                CREATE INDEX IF NOT EXISTS idx_context_features_sample_version
-                    ON event_context_features(sample_id, feature_version, lookback_bars);
-                CREATE INDEX IF NOT EXISTS idx_context_features_session_market
-                    ON event_context_features(session_id, symbol, interval, bar_index);
-
-                CREATE TABLE IF NOT EXISTS research_outcome_labels (
-                    outcome_label_id TEXT PRIMARY KEY,
-                    sample_id TEXT NOT NULL,
-                    session_id TEXT NOT NULL,
-                    label_version TEXT NOT NULL,
-                    symbol TEXT NOT NULL,
-                    interval TEXT NOT NULL,
-                    bar_index INTEGER NOT NULL,
-                    horizon_bars INTEGER NOT NULL CHECK (horizon_bars IN (5, 10, 20, 50)),
-                    pricing_basis TEXT NOT NULL CHECK (
-                        pricing_basis IN ('next_open', 'event_close', 'legacy_mid', 'worst_case_same_bar')
-                    ),
-                    fwd_ret REAL,
-                    mfe REAL,
-                    mae REAL,
-                    hit_tp INTEGER,
-                    hit_sl INTEGER,
-                    r_multiple REAL,
-                    insufficient_future_bars INTEGER NOT NULL DEFAULT 0,
-                    pricing_note TEXT,
-                    created_at TEXT NOT NULL,
-                    UNIQUE (sample_id, label_version, horizon_bars, pricing_basis)
-                );
-                CREATE INDEX IF NOT EXISTS idx_outcome_labels_sample_version
-                    ON research_outcome_labels(sample_id, label_version, horizon_bars);
-                CREATE INDEX IF NOT EXISTS idx_outcome_labels_session_market
-                    ON research_outcome_labels(session_id, symbol, interval, bar_index);
-                """
-            )
+            migrations.migrate_to_v5(conn)
 
     def schema_version(self) -> int:
         with self.connect() as conn:
-            return int(conn.execute("PRAGMA user_version").fetchone()[0])
-
+            return migrations.schema_version(conn)
 
     def _ensure_column(self, conn, table: str, column: str, column_type: str):
-        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if column not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+        migrations.ensure_column(conn, table, column, column_type)
 
     def _require_rowcount(self, cursor, expected: int, message: str):
-        if cursor.rowcount != expected:
-            raise RuntimeError(f"{message}，期望影响 {expected} 行，实际影响 {cursor.rowcount} 行")
+        require_rowcount(cursor, expected, message)
 
     def _insert_trade_row(self, conn, row: dict[str, Any]):
-        columns = self.TRADE_COLUMNS
-        placeholders = ", ".join(["?"] * len(columns))
-        conn.execute(
-            f"INSERT INTO trades ({', '.join(columns)}) VALUES ({placeholders})",
-            tuple(row.get(c) for c in columns),
-        )
+        trade_repository.insert_trade_row(conn, row, self.TRADE_COLUMNS)
 
     def upsert_session(self, row: dict[str, Any]):
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO sessions (
-                    session_id, symbol, interval, start_date_bjt, end_date_bjt,
-                    cursor_bar_index, follow_latest, speed, last_opened_at, last_saved_at, app_version,
-                    initial_equity, trade_notional, fee_bps, slippage_bps, fill_mode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(session_id) DO UPDATE SET
-                    symbol=excluded.symbol,
-                    interval=excluded.interval,
-                    start_date_bjt=excluded.start_date_bjt,
-                    end_date_bjt=excluded.end_date_bjt,
-                    cursor_bar_index=excluded.cursor_bar_index,
-                    follow_latest=excluded.follow_latest,
-                    speed=excluded.speed,
-                    last_opened_at=excluded.last_opened_at,
-                    last_saved_at=excluded.last_saved_at,
-                    app_version=excluded.app_version,
-                    initial_equity=excluded.initial_equity,
-                    trade_notional=excluded.trade_notional,
-                    fee_bps=excluded.fee_bps,
-                    slippage_bps=excluded.slippage_bps,
-                    fill_mode=excluded.fill_mode
-                """,
-                (
-                    row.get("session_id"),
-                    row.get("symbol"),
-                    row.get("interval"),
-                    row.get("start_date_bjt"),
-                    row.get("end_date_bjt"),
-                    row.get("cursor_bar_index"),
-                    row.get("follow_latest"),
-                    row.get("speed"),
-                    row.get("last_opened_at"),
-                    row.get("last_saved_at"),
-                    row.get("app_version"),
-                    row.get("initial_equity"),
-                    row.get("trade_notional"),
-                    row.get("fee_bps"),
-                    row.get("slippage_bps"),
-                    row.get("fill_mode"),
-                ),
-            )
+            session_repository.upsert_session(conn, row)
 
     def get_latest_session(self):
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM sessions ORDER BY COALESCE(last_saved_at, last_opened_at) DESC LIMIT 1"
-            ).fetchone()
-            return dict(row) if row else None
+            return session_repository.get_latest_session(conn)
 
     def clear_manual_research_records(self) -> dict[str, int]:
         """Delete manually recorded trade research data while retaining market data."""
         with self.connect() as conn:
-            deleted = {
-                table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
-                for table in self.MANUAL_RESEARCH_TABLES
-            }
-            for table in self.MANUAL_RESEARCH_TABLES:
-                conn.execute(f"DELETE FROM {table}")
-        return deleted
+            return session_repository.clear_manual_research_records(conn, self.MANUAL_RESEARCH_TABLES)
 
     def insert_trade(self, row: dict[str, Any]):
         with self.connect() as conn:
@@ -645,145 +152,43 @@ class StorageManager:
 
     def update_trade_close(self, row: dict[str, Any]):
         with self.connect() as conn:
-            conn.execute(
-                """
-                UPDATE trades SET
-                    status=?,
-                    exit_event_id=?,
-                    exit_bar_index=?,
-                    exit_bar_time_bjt=?,
-                    exit_real_time_bjt=?,
-                    exit_price_proxy=?,
-                    holding_bars=?,
-                    final_return_pct=?,
-                    quantity=?,
-                    exit_price_raw=?,
-                    exit_fill_price=?,
-                    exit_fee_quote=?,
-                    gross_pnl_quote=?,
-                    net_pnl_quote=?,
-                    gross_return_pct=?,
-                    net_return_pct=?,
-                    fee_return_pct=?,
-                    updated_at=?
-                WHERE trade_id=?
-                """,
-                (
-                    row.get("status"), row.get("exit_event_id"), row.get("exit_bar_index"),
-                    row.get("exit_bar_time_bjt"), row.get("exit_real_time_bjt"), row.get("exit_price_proxy"),
-                    row.get("holding_bars"), row.get("final_return_pct"), row.get("quantity"),
-                    row.get("exit_price_raw"), row.get("exit_fill_price"), row.get("exit_fee_quote"),
-                    row.get("gross_pnl_quote"), row.get("net_pnl_quote"), row.get("gross_return_pct"),
-                    row.get("net_return_pct"), row.get("fee_return_pct"), row.get("updated_at"), row.get("trade_id"),
-                ),
-            )
+            trade_repository.update_trade_close(conn, row)
 
     def reopen_trade(self, row: dict[str, Any]):
         with self.connect() as conn:
-            conn.execute(
-                """
-                UPDATE trades SET
-                    status='OPEN',
-                    exit_event_id=NULL,
-                    exit_bar_index=NULL,
-                    exit_bar_time_bjt=NULL,
-                    exit_real_time_bjt=NULL,
-                    exit_price_proxy=NULL,
-                    holding_bars=NULL,
-                    final_return_pct=NULL,
-                    quantity=NULL,
-                    exit_price_raw=NULL,
-                    exit_fill_price=NULL,
-                    exit_fee_quote=NULL,
-                    gross_pnl_quote=NULL,
-                    net_pnl_quote=NULL,
-                    gross_return_pct=NULL,
-                    net_return_pct=NULL,
-                    fee_return_pct=NULL,
-                    updated_at=?
-                WHERE trade_id=?
-                """,
-                (row.get("updated_at"), row.get("trade_id")),
-            )
+            trade_repository.reopen_trade(conn, row)
 
     def delete_trade(self, trade_id: str):
         with self.connect() as conn:
-            conn.execute("DELETE FROM trades WHERE trade_id=?", (trade_id,))
+            trade_repository.delete_trade(conn, trade_id)
 
     def insert_event(self, row: dict[str, Any]):
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO trade_events (
-                    event_id, session_id, trade_id, event_type, side, symbol, interval,
-                    bar_index, bar_open_time_bjt, real_key_time_bjt, price_proxy,
-                    label_tags_json, note, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row.get("event_id"), row.get("session_id"), row.get("trade_id"), row.get("event_type"),
-                    row.get("side"), row.get("symbol"), row.get("interval"), row.get("bar_index"),
-                    row.get("bar_open_time_bjt"), row.get("real_key_time_bjt"), row.get("price_proxy"),
-                    json.dumps(row.get("label_tags", []), ensure_ascii=False), row.get("note"), row.get("created_at"),
-                ),
-            )
+            event_repository.insert_event(conn, row)
 
     def update_event_labels(self, event_id: str, label_tags: list[str], note: str):
         with self.connect() as conn:
-            cur = conn.execute(
-                "UPDATE trade_events SET label_tags_json=?, note=? WHERE event_id=?",
-                (json.dumps(label_tags, ensure_ascii=False), note, event_id),
-            )
-            self._require_rowcount(cur, 1, f"更新事件标签失败：event_id={event_id}")
+            event_repository.update_event_labels(conn, event_id, label_tags, note)
 
     def delete_event(self, event_id: str):
         with self.connect() as conn:
-            conn.execute("DELETE FROM trade_events WHERE event_id=?", (event_id,))
+            event_repository.delete_event(conn, event_id)
 
     def save_event_windows(self, session_id: str, event_id: str, rows: Iterable[dict[str, Any]]):
         with self.connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO event_windows (
-                    session_id, event_id, offset, is_event_bar, bar_index, bar_open_time_bjt,
-                    open, high, low, close, volume, is_missing_padding
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        session_id,
-                        event_id,
-                        r.get("offset"),
-                        r.get("is_event_bar"),
-                        r.get("bar_index"),
-                        r.get("bar_open_time_bjt"),
-                        r.get("open"),
-                        r.get("high"),
-                        r.get("low"),
-                        r.get("close"),
-                        r.get("volume"),
-                        r.get("is_missing_padding"),
-                    )
-                    for r in rows
-                ],
-            )
+            event_repository.save_event_windows(conn, session_id, event_id, rows)
 
     def delete_event_windows(self, event_id: str):
         with self.connect() as conn:
-            conn.execute("DELETE FROM event_windows WHERE event_id=?", (event_id,))
+            event_repository.delete_event_windows(conn, event_id)
 
     def save_event_features(self, row: dict[str, Any]):
-        columns = list(row.keys())
-        placeholders = ", ".join(["?"] * len(columns))
         with self.connect() as conn:
-            conn.execute(
-                f"INSERT OR REPLACE INTO event_features ({', '.join(columns)}) VALUES ({placeholders})",
-                tuple(row[c] for c in columns),
-            )
+            event_repository.save_event_features(conn, row)
 
     def delete_event_features(self, event_id: str):
         with self.connect() as conn:
-            conn.execute("DELETE FROM event_features WHERE event_id=?", (event_id,))
+            event_repository.delete_event_features(conn, event_id)
 
     def insert_open_trade_bundle(
         self,
@@ -793,33 +198,18 @@ class StorageManager:
         feature_row: dict[str, Any],
     ):
         with self.connect() as conn:
-            self._insert_trade_row(conn, trade_row)
-            conn.execute(
-                """
-                INSERT INTO trade_events (
-                    event_id, session_id, trade_id, event_type, side, symbol, interval,
-                    bar_index, bar_open_time_bjt, real_key_time_bjt, price_proxy,
-                    label_tags_json, note, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_row.get("event_id"), event_row.get("session_id"), event_row.get("trade_id"), event_row.get("event_type"),
-                    event_row.get("side"), event_row.get("symbol"), event_row.get("interval"), event_row.get("bar_index"),
-                    event_row.get("bar_open_time_bjt"), event_row.get("real_key_time_bjt"), event_row.get("price_proxy"),
-                    json.dumps(event_row.get("label_tags", []), ensure_ascii=False), event_row.get("note"), event_row.get("created_at"),
-                ),
+            trade_repository.insert_open_trade_bundle(
+                conn,
+                trade_row,
+                event_row,
+                window_rows,
+                feature_row,
+                self.TRADE_COLUMNS,
             )
-            self._insert_event_windows(conn, trade_row.get("session_id"), event_row.get("event_id"), window_rows)
-            self._insert_event_features(conn, feature_row)
 
     def undo_open_trade_bundle(self, trade_id: str, event_id: str):
         with self.connect() as conn:
-            conn.execute("DELETE FROM event_features WHERE event_id=?", (event_id,))
-            conn.execute("DELETE FROM event_windows WHERE event_id=?", (event_id,))
-            event_cur = conn.execute("DELETE FROM trade_events WHERE event_id=?", (event_id,))
-            trade_cur = conn.execute("DELETE FROM trades WHERE trade_id=?", (trade_id,))
-            self._require_rowcount(event_cur, 1, f"撤销开仓失败：未找到事件 event_id={event_id}")
-            self._require_rowcount(trade_cur, 1, f"撤销开仓失败：未找到交易 trade_id={trade_id}")
+            trade_repository.undo_open_trade_bundle(conn, trade_id, event_id)
 
     def close_trade_bundle(
         self,
@@ -832,318 +222,57 @@ class StorageManager:
         holding_bars: int | None,
     ):
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO trade_events (
-                    event_id, session_id, trade_id, event_type, side, symbol, interval,
-                    bar_index, bar_open_time_bjt, real_key_time_bjt, price_proxy,
-                    label_tags_json, note, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event_row.get("event_id"), event_row.get("session_id"), event_row.get("trade_id"), event_row.get("event_type"),
-                    event_row.get("side"), event_row.get("symbol"), event_row.get("interval"), event_row.get("bar_index"),
-                    event_row.get("bar_open_time_bjt"), event_row.get("real_key_time_bjt"), event_row.get("price_proxy"),
-                    json.dumps(event_row.get("label_tags", []), ensure_ascii=False), event_row.get("note"), event_row.get("created_at"),
-                ),
-            )
-            self._insert_event_windows(conn, event_row.get("session_id"), event_row.get("event_id"), window_rows)
-            self._insert_event_features(conn, feature_row)
-            trade_cur = conn.execute(
-                """
-                UPDATE trades SET
-                    status=?,
-                    exit_event_id=?,
-                    exit_bar_index=?,
-                    exit_bar_time_bjt=?,
-                    exit_real_time_bjt=?,
-                    exit_price_proxy=?,
-                    holding_bars=?,
-                    final_return_pct=?,
-                    quantity=?,
-                    exit_price_raw=?,
-                    exit_fill_price=?,
-                    exit_fee_quote=?,
-                    gross_pnl_quote=?,
-                    net_pnl_quote=?,
-                    gross_return_pct=?,
-                    net_return_pct=?,
-                    fee_return_pct=?,
-                    updated_at=?
-                WHERE trade_id=? AND status='OPEN'
-                """,
-                (
-                    close_update.get("status"), close_update.get("exit_event_id"), close_update.get("exit_bar_index"),
-                    close_update.get("exit_bar_time_bjt"), close_update.get("exit_real_time_bjt"), close_update.get("exit_price_proxy"),
-                    close_update.get("holding_bars"), close_update.get("final_return_pct"), close_update.get("quantity"),
-                    close_update.get("exit_price_raw"), close_update.get("exit_fill_price"), close_update.get("exit_fee_quote"),
-                    close_update.get("gross_pnl_quote"), close_update.get("net_pnl_quote"), close_update.get("gross_return_pct"),
-                    close_update.get("net_return_pct"), close_update.get("fee_return_pct"), close_update.get("updated_at"),
-                    close_update.get("trade_id"),
-                ),
-            )
-            self._require_rowcount(trade_cur, 1, f"平仓失败：交易不存在或不是未平仓状态 trade_id={close_update.get('trade_id')}")
-            conn.execute(
-                """
-                UPDATE event_features SET
-                    manual_trade_final_return_pct=?,
-                    manual_trade_holding_bars=?
-                WHERE event_id=?
-                """,
-                (final_return_pct, holding_bars, entry_event_id),
+            trade_repository.close_trade_bundle(
+                conn,
+                event_row,
+                window_rows,
+                feature_row,
+                close_update,
+                entry_event_id,
+                final_return_pct,
+                holding_bars,
             )
 
     def undo_close_trade_bundle(self, trade_id: str, event_id: str, entry_event_id: str, updated_at: str):
         with self.connect() as conn:
-            conn.execute("DELETE FROM event_features WHERE event_id=?", (event_id,))
-            conn.execute("DELETE FROM event_windows WHERE event_id=?", (event_id,))
-            event_cur = conn.execute("DELETE FROM trade_events WHERE event_id=?", (event_id,))
-            trade_cur = conn.execute(
-                """
-                UPDATE trades SET
-                    status='OPEN',
-                    exit_event_id=NULL,
-                    exit_bar_index=NULL,
-                    exit_bar_time_bjt=NULL,
-                    exit_real_time_bjt=NULL,
-                    exit_price_proxy=NULL,
-                    holding_bars=NULL,
-                    final_return_pct=NULL,
-                    quantity=NULL,
-                    exit_price_raw=NULL,
-                    exit_fill_price=NULL,
-                    exit_fee_quote=NULL,
-                    gross_pnl_quote=NULL,
-                    net_pnl_quote=NULL,
-                    gross_return_pct=NULL,
-                    net_return_pct=NULL,
-                    fee_return_pct=NULL,
-                    updated_at=?
-                WHERE trade_id=?
-                """,
-                (updated_at, trade_id),
-            )
-            self._require_rowcount(event_cur, 1, f"撤销平仓失败：未找到平仓事件 event_id={event_id}")
-            self._require_rowcount(trade_cur, 1, f"撤销平仓失败：未找到交易 trade_id={trade_id}")
-            conn.execute(
-                """
-                UPDATE event_features SET
-                    manual_trade_final_return_pct=?,
-                    manual_trade_holding_bars=?
-                WHERE event_id=?
-                """,
-                (None, None, entry_event_id),
-            )
+            trade_repository.undo_close_trade_bundle(conn, trade_id, event_id, entry_event_id, updated_at)
 
     def _insert_event_windows(self, conn, session_id: str, event_id: str, rows: Iterable[dict[str, Any]]):
-        conn.executemany(
-            """
-            INSERT INTO event_windows (
-                session_id, event_id, offset, is_event_bar, bar_index, bar_open_time_bjt,
-                open, high, low, close, volume, is_missing_padding
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (
-                    session_id,
-                    event_id,
-                    r.get("offset"),
-                    r.get("is_event_bar"),
-                    r.get("bar_index"),
-                    r.get("bar_open_time_bjt"),
-                    r.get("open"),
-                    r.get("high"),
-                    r.get("low"),
-                    r.get("close"),
-                    r.get("volume"),
-                    r.get("is_missing_padding"),
-                )
-                for r in rows
-            ],
-        )
+        event_repository.save_event_windows(conn, session_id, event_id, rows)
 
     def _insert_event_features(self, conn, row: dict[str, Any]):
-        columns = list(row.keys())
-        placeholders = ", ".join(["?"] * len(columns))
-        conn.execute(
-            f"INSERT OR REPLACE INTO event_features ({', '.join(columns)}) VALUES ({placeholders})",
-            tuple(row[c] for c in columns),
-        )
+        event_repository.save_event_features(conn, row)
 
     def update_event_trade_outcome(self, event_id: str, final_return_pct: float | None, holding_bars: int | None):
         with self.connect() as conn:
-            conn.execute(
-                """
-                UPDATE event_features SET
-                    manual_trade_final_return_pct=?,
-                    manual_trade_holding_bars=?
-                WHERE event_id=?
-                """,
-                (final_return_pct, holding_bars, event_id),
-            )
+            event_repository.update_event_trade_outcome(conn, event_id, final_return_pct, holding_bars)
 
     def replace_equity_curve(self, session_id: str, rows: Iterable[dict[str, Any]]):
         with self.connect() as conn:
-            conn.execute("DELETE FROM account_equity WHERE session_id=?", (session_id,))
-            conn.executemany(
-                """
-                INSERT INTO account_equity (
-                    session_id, sequence_no, trade_id, event_id, equity_before,
-                    realized_gross_pnl, realized_fee, realized_net_pnl, equity_after,
-                    equity_return_pct, drawdown_pct, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    (
-                        row.get("session_id"),
-                        row.get("sequence_no"),
-                        row.get("trade_id"),
-                        row.get("event_id"),
-                        row.get("equity_before"),
-                        row.get("realized_gross_pnl"),
-                        row.get("realized_fee"),
-                        row.get("realized_net_pnl"),
-                        row.get("equity_after"),
-                        row.get("equity_return_pct"),
-                        row.get("drawdown_pct"),
-                        row.get("created_at"),
-                    )
-                    for row in rows
-                ],
-            )
+            trade_repository.replace_equity_curve(conn, session_id, rows)
 
     def insert_premium_sample(self, row: dict[str, Any]):
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO usdt_premium_history (
-                    sample_time_bjt, p2p_buy_price_cny, p2p_sell_price_cny,
-                    p2p_avg_price_cny, usd_cny_rate,
-                    buy_premium_pct, sell_premium_pct, avg_premium_pct,
-                    premium_pct, fx_source, sample_status, error_message
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row.get("sample_time_bjt"), row.get("p2p_buy_price_cny"), row.get("p2p_sell_price_cny"),
-                    row.get("p2p_avg_price_cny"), row.get("usd_cny_rate"),
-                    row.get("buy_premium_pct"), row.get("sell_premium_pct"), row.get("avg_premium_pct"),
-                    row.get("premium_pct"), row.get("fx_source"), row.get("sample_status"), row.get("error_message"),
-                ),
-            )
+            premium_repository.insert_premium_sample(conn, row)
+
+    def fetch_recent_premium_samples(self, limit: int = 240) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return premium_repository.fetch_recent_premium_samples(conn, limit)
 
     def upsert_klines(self, rows: Iterable[dict[str, Any]]) -> None:
-        payload = list(rows)
-        if not payload:
-            return
         with self.connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO klines (
-                    symbol, interval, open_time_utc_ms, open_time_bjt, close_time_utc_ms,
-                    open, high, low, close, volume, source, downloaded_at, data_quality_status
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(symbol, interval, open_time_utc_ms) DO UPDATE SET
-                    open_time_bjt=excluded.open_time_bjt,
-                    close_time_utc_ms=excluded.close_time_utc_ms,
-                    open=excluded.open,
-                    high=excluded.high,
-                    low=excluded.low,
-                    close=excluded.close,
-                    volume=excluded.volume,
-                    source=excluded.source,
-                    downloaded_at=excluded.downloaded_at,
-                    data_quality_status=excluded.data_quality_status
-                """,
-                [
-                    (
-                        row.get("symbol"),
-                        row.get("interval"),
-                        row.get("open_time_utc_ms"),
-                        row.get("open_time_bjt"),
-                        row.get("close_time_utc_ms"),
-                        row.get("open"),
-                        row.get("high"),
-                        row.get("low"),
-                        row.get("close"),
-                        row.get("volume"),
-                        row.get("source"),
-                        row.get("downloaded_at"),
-                        row.get("data_quality_status"),
-                    )
-                    for row in payload
-                ],
-            )
+            market_repository.upsert_klines(conn, rows)
 
     def save_data_quality_report(self, row: dict[str, Any]) -> None:
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO data_quality_reports (
-                    report_id, symbol, interval, start_time_bjt, end_time_bjt,
-                    expected_bars, actual_bars, missing_bars, duplicated_bars,
-                    invalid_rows, first_open_time_bjt, last_open_time_bjt,
-                    created_at, report_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(report_id) DO UPDATE SET
-                    symbol=excluded.symbol,
-                    interval=excluded.interval,
-                    start_time_bjt=excluded.start_time_bjt,
-                    end_time_bjt=excluded.end_time_bjt,
-                    expected_bars=excluded.expected_bars,
-                    actual_bars=excluded.actual_bars,
-                    missing_bars=excluded.missing_bars,
-                    duplicated_bars=excluded.duplicated_bars,
-                    invalid_rows=excluded.invalid_rows,
-                    first_open_time_bjt=excluded.first_open_time_bjt,
-                    last_open_time_bjt=excluded.last_open_time_bjt,
-                    created_at=excluded.created_at,
-                    report_json=excluded.report_json
-                """,
-                (
-                    row.get("report_id"),
-                    row.get("symbol"),
-                    row.get("interval"),
-                    row.get("start_time_bjt"),
-                    row.get("end_time_bjt"),
-                    row.get("expected_bars"),
-                    row.get("actual_bars"),
-                    row.get("missing_bars"),
-                    row.get("duplicated_bars"),
-                    row.get("invalid_rows"),
-                    row.get("first_open_time_bjt"),
-                    row.get("last_open_time_bjt"),
-                    row.get("created_at"),
-                    row.get("report_json"),
-                ),
-            )
+            market_repository.save_data_quality_report(conn, row)
 
     def save_event_context_feature(self, row: dict[str, Any]) -> None:
         self.save_event_context_features([row])
 
     def save_event_context_features(self, rows: Iterable[dict[str, Any]]) -> None:
-        columns = [
-            "context_feature_id", "sample_id", "session_id", "feature_version",
-            "symbol", "interval", "bar_index", "lookback_bars", "feature_name",
-            "feature_value", "created_at",
-        ]
-        payload = list(rows)
-        if not payload:
-            return
-        placeholders = ", ".join(["?"] * len(columns))
-        assignments = ", ".join(
-            f"{column}=excluded.{column}"
-            for column in columns
-            if column != "context_feature_id"
-        )
         with self.connect() as conn:
-            conn.executemany(
-                f"""
-                INSERT INTO event_context_features ({", ".join(columns)})
-                VALUES ({placeholders})
-                ON CONFLICT(context_feature_id) DO UPDATE SET {assignments}
-                """,
-                [tuple(row.get(column) for column in columns) for row in payload],
-            )
+            research_repository.save_event_context_features(conn, rows)
 
     def list_event_context_features(
         self,
@@ -1151,52 +280,20 @@ class StorageManager:
         session_id: str | None = None,
         feature_version: str | None = None,
     ) -> list[dict[str, Any]]:
-        conditions = []
-        params: list[Any] = []
-        for column, value in (
-            ("sample_id", sample_id),
-            ("session_id", session_id),
-            ("feature_version", feature_version),
-        ):
-            if value is not None:
-                conditions.append(f"{column}=?")
-                params.append(value)
-        query = "SELECT * FROM event_context_features"
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY sample_id, lookback_bars, feature_name"
         with self.connect() as conn:
-            rows = conn.execute(query, tuple(params)).fetchall()
-            return [dict(row) for row in rows]
+            return research_repository.list_event_context_features(
+                conn,
+                sample_id=sample_id,
+                session_id=session_id,
+                feature_version=feature_version,
+            )
 
     def save_research_outcome_label(self, row: dict[str, Any]) -> None:
         self.save_research_outcome_labels([row])
 
     def save_research_outcome_labels(self, rows: Iterable[dict[str, Any]]) -> None:
-        columns = [
-            "outcome_label_id", "sample_id", "session_id", "label_version",
-            "symbol", "interval", "bar_index", "horizon_bars", "pricing_basis",
-            "fwd_ret", "mfe", "mae", "hit_tp", "hit_sl", "r_multiple",
-            "insufficient_future_bars", "pricing_note", "created_at",
-        ]
-        payload = list(rows)
-        if not payload:
-            return
-        placeholders = ", ".join(["?"] * len(columns))
-        assignments = ", ".join(
-            f"{column}=excluded.{column}"
-            for column in columns
-            if column != "outcome_label_id"
-        )
         with self.connect() as conn:
-            conn.executemany(
-                f"""
-                INSERT INTO research_outcome_labels ({", ".join(columns)})
-                VALUES ({placeholders})
-                ON CONFLICT(outcome_label_id) DO UPDATE SET {assignments}
-                """,
-                [tuple(row.get(column) for column in columns) for row in payload],
-            )
+            research_repository.save_research_outcome_labels(conn, rows)
 
     def list_research_outcome_labels(
         self,
@@ -1204,119 +301,49 @@ class StorageManager:
         session_id: str | None = None,
         label_version: str | None = None,
     ) -> list[dict[str, Any]]:
-        conditions = []
-        params: list[Any] = []
-        for column, value in (
-            ("sample_id", sample_id),
-            ("session_id", session_id),
-            ("label_version", label_version),
-        ):
-            if value is not None:
-                conditions.append(f"{column}=?")
-                params.append(value)
-        query = "SELECT * FROM research_outcome_labels"
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY sample_id, horizon_bars, pricing_basis"
         with self.connect() as conn:
-            rows = conn.execute(query, tuple(params)).fetchall()
-            return [dict(row) for row in rows]
+            return research_repository.list_research_outcome_labels(
+                conn,
+                sample_id=sample_id,
+                session_id=session_id,
+                label_version=label_version,
+            )
 
     def save_strategy_profile(self, row: dict[str, Any]) -> None:
-        columns = [
-            "profile_id", "profile_version", "name", "mode",
-            "allowed_sides_json", "allowed_symbols_json", "allowed_intervals_json",
-            "entry_setup_rules_json", "entry_filter_rules_json", "risk_rules_json",
-            "exit_rules_json", "invalidation_rules_json", "expected_holding_bars",
-            "selected_label", "profile_payload_json", "created_at", "updated_at",
-        ]
-        updated = [column for column in columns if column != "profile_id"]
-        placeholders = ", ".join(["?"] * len(columns))
-        assignments = ", ".join(f"{column}=excluded.{column}" for column in updated)
         with self.connect() as conn:
-            conn.execute(
-                f"""
-                INSERT INTO strategy_profiles ({", ".join(columns)})
-                VALUES ({placeholders})
-                ON CONFLICT(profile_id) DO UPDATE SET {assignments}
-                """,
-                tuple(row.get(column) for column in columns),
-            )
+            research_repository.save_strategy_profile(conn, row)
 
     def load_strategy_profile(self, profile_id: str) -> dict[str, Any] | None:
         with self.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM strategy_profiles WHERE profile_id=?",
-                (profile_id,),
-            ).fetchone()
-            return dict(row) if row else None
+            return research_repository.load_strategy_profile(conn, profile_id)
 
     def list_strategy_profiles(self) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM strategy_profiles ORDER BY updated_at DESC, profile_id"
-            ).fetchall()
-            return [dict(row) for row in rows]
+            return research_repository.list_strategy_profiles(conn)
 
     def save_observation_sample(self, row: dict[str, Any]) -> None:
-        columns = [
-            "sample_id", "session_id", "profile_id", "source_type", "symbol",
-            "interval", "bar_index", "event_time_bjt", "user_action", "side",
-            "linked_trade_id", "linked_event_id", "is_user_trade",
-            "is_candidate", "is_matched_control", "created_at",
-        ]
-        placeholders = ", ".join(["?"] * len(columns))
         with self.connect() as conn:
-            conn.execute(
-                f"INSERT INTO observation_universe ({', '.join(columns)}) VALUES ({placeholders})",
-                tuple(row.get(column) for column in columns),
-            )
+            research_repository.save_observation_sample(conn, row)
 
     def list_observation_samples(
         self,
         session_id: str | None = None,
         profile_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        conditions = []
-        params: list[Any] = []
-        if session_id is not None:
-            conditions.append("session_id=?")
-            params.append(session_id)
-        if profile_id is not None:
-            conditions.append("profile_id=?")
-            params.append(profile_id)
-        query = "SELECT * FROM observation_universe"
-        if conditions:
-            query += " WHERE " + " AND ".join(conditions)
-        query += " ORDER BY bar_index, created_at, sample_id"
         with self.connect() as conn:
-            rows = conn.execute(query, tuple(params)).fetchall()
-            return [dict(row) for row in rows]
+            return research_repository.list_observation_samples(
+                conn,
+                session_id=session_id,
+                profile_id=profile_id,
+            )
 
     def save_strategy_sample(self, row: dict[str, Any]) -> None:
-        columns = [
-            "strategy_sample_id", "sample_id", "experiment_id", "profile_id",
-            "profile_version", "feature_version", "label_version", "dataset_hash",
-            "sample_role", "created_at",
-        ]
-        placeholders = ", ".join(["?"] * len(columns))
         with self.connect() as conn:
-            conn.execute(
-                f"INSERT INTO strategy_samples ({', '.join(columns)}) VALUES ({placeholders})",
-                tuple(row.get(column) for column in columns),
-            )
+            research_repository.save_strategy_sample(conn, row)
 
     def list_strategy_samples_for_experiment(self, experiment_id: str) -> list[dict[str, Any]]:
         with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT * FROM strategy_samples
-                WHERE experiment_id=?
-                ORDER BY created_at, strategy_sample_id
-                """,
-                (experiment_id,),
-            ).fetchall()
-            return [dict(row) for row in rows]
+            return research_repository.list_strategy_samples_for_experiment(conn, experiment_id)
 
     def fetch_table(self, table: str, where: str = "", params: tuple[Any, ...] = ()):
         if table not in self.ALLOWED_TABLES:
@@ -1330,32 +357,12 @@ class StorageManager:
 
     def fetch_trade(self, trade_id: str):
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM trades WHERE trade_id=?", (trade_id,)).fetchone()
-            return dict(row) if row else None
+            return trade_repository.fetch_trade(conn, trade_id)
 
     def fetch_event(self, event_id: str):
         with self.connect() as conn:
-            row = conn.execute("SELECT * FROM trade_events WHERE event_id=?", (event_id,)).fetchone()
-            if not row:
-                return None
-            out = dict(row)
-            out["label_tags"] = json.loads(out.get("label_tags_json") or "[]")
-            return out
+            return event_repository.fetch_event(conn, event_id)
 
     def load_session_snapshot(self, session_id: str):
-        session = None
         with self.connect() as conn:
-            srow = conn.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
-            if srow:
-                session = dict(srow)
-            trades = [dict(r) for r in conn.execute(
-                "SELECT * FROM trades WHERE session_id=? ORDER BY created_at", (session_id,)
-            ).fetchall()]
-            events = []
-            for r in conn.execute(
-                "SELECT * FROM trade_events WHERE session_id=? ORDER BY created_at", (session_id,)
-            ).fetchall():
-                item = dict(r)
-                item["label_tags"] = json.loads(item.get("label_tags_json") or "[]")
-                events.append(item)
-            return session, trades, events
+            return session_repository.load_session_snapshot(conn, session_id)

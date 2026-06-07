@@ -20,12 +20,16 @@ build/
 dist/
 *.spec
 *.zip
+clean_release_report.json
+clean_release_report.md
 performance_reports/
 .coverage
 coverage.xml
 htmlcov/
 
 # Quant Replay Collector local data
+data/
+quant_collector_app/data/
 quant_collector_app/data/cache/
 quant_collector_app/data/exports/
 quant_collector_app/data/*.db
@@ -35,6 +39,8 @@ quant_collector_app/data/theme_settings.json
 quant_collector_app/data/app_settings.json
 data/cache/
 data/exports/
+*.csv
+*.parquet
 *.db
 *.db-wal
 *.db-shm
@@ -57,12 +63,14 @@ quant_collector_app/logs/*.log.*
 quant_collector_app/logs/
 quant_collector_app/data/logs/*.log
 quant_collector_app/data/logs/*.log.*
+theme_settings.json
 
 # Local backups and temporary working files
 Backup/
 .codex-backups/
 .codex-tmp/
 .codex_pytest_tmp/
+.pytest_tmp*/
 *_codex_selfcheck_*/
 
 # OS/editor noise
