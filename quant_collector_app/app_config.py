@@ -8,10 +8,13 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 
-from ui_style import EXCHANGE_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME
+try:
+    from ui_style import EXCHANGE_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME
+except ImportError:  # pragma: no cover - package import path
+    from .ui_style import EXCHANGE_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME
 
 APP_NAME = "Quant Replay Collector"
-APP_VERSION = "1.4.0"
+APP_VERSION = "1.4.1"
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_INTERVAL = "1m"
 DEFAULT_INITIAL_EQUITY = 10_000.0

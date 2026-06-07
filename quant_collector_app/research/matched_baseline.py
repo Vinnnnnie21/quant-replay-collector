@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,6 +13,8 @@ from .context_features import FORBIDDEN_CONTEXT_TOKENS
 CONTROL_ACTIONS = frozenset({"NO_ACTION", "HOLD"})
 CONTROL_SOURCE_TYPES = frozenset({"SCHEDULED_BAR", "AUTO_CANDIDATE", "MATCHED_CONTROL"})
 USER_ACTIONS = frozenset({"OPEN_LONG", "OPEN_SHORT", "CLOSE_LONG", "CLOSE_SHORT"})
+ALLOWED_DISTANCE_SCALING = frozenset({"robust", "zscore", "standard", "none"})
+EPS = 1e-12
 
 
 @dataclass(frozen=True)
@@ -31,6 +34,7 @@ class MatchedBaselineSpec:
     min_controls_per_sample: int = 2
     min_user_samples: int = 10
     outcome_metric: str = "fwd_ret"
+    distance_scaling: str = "robust"
 
 
 def _forbidden_name(name: str) -> bool:
@@ -89,23 +93,100 @@ def build_match_pool(observations: pd.DataFrame, context_features: pd.DataFrame)
     return observations.merge(context, on="sample_id", how="inner", validate="one_to_one")
 
 
+def _numeric(value: Any) -> float | None:
+    value = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(value):
+        return None
+    number = float(value)
+    return number if np.isfinite(number) else None
+
+
+def _safe_scale(values: pd.Series, method: str) -> tuple[float, float]:
+    numeric = pd.to_numeric(values, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if numeric.empty:
+        return 0.0, 1.0
+    method = str(method or "robust").lower()
+    if method in {"zscore", "standard"}:
+        center = float(numeric.mean())
+        scale = float(numeric.std(ddof=0))
+    elif method == "robust":
+        center = float(numeric.median())
+        mad = float((numeric - center).abs().median())
+        scale = 1.4826 * mad
+        if not np.isfinite(scale) or scale <= EPS:
+            q75 = float(numeric.quantile(0.75))
+            q25 = float(numeric.quantile(0.25))
+            scale = (q75 - q25) / 1.349 if q75 != q25 else scale
+        if not np.isfinite(scale) or scale <= EPS:
+            scale = float(numeric.std(ddof=0))
+    elif method == "none":
+        return 0.0, 1.0
+    else:
+        raise ValueError(f"Unsupported distance_scaling: {method}")
+    if not np.isfinite(scale) or scale <= EPS:
+        scale = 1.0
+    return center, scale
+
+
+def _distance_scaling_params(
+    match_pool: pd.DataFrame,
+    spec: MatchedBaselineSpec,
+) -> dict[str, dict[str, float | str]]:
+    method = str(spec.distance_scaling or "robust").lower()
+    if method not in ALLOWED_DISTANCE_SCALING:
+        raise ValueError(f"Unsupported distance_scaling: {spec.distance_scaling}")
+    params: dict[str, dict[str, float | str]] = {}
+    for feature in spec.numeric_features:
+        if _forbidden_name(feature):
+            raise ValueError(f"Matched baseline cannot use future or outcome field: {feature}")
+        if feature not in match_pool.columns:
+            continue
+        center, scale = _safe_scale(match_pool[feature], method)
+        params[feature] = {"center": center, "scale": scale, "method": method}
+    return params
+
+
+def _context_distance_details(
+    user_row: pd.Series | dict[str, Any],
+    control_row: pd.Series | dict[str, Any],
+    spec: MatchedBaselineSpec | None = None,
+    scaling_params: dict[str, dict[str, float | str]] | None = None,
+) -> tuple[float, dict[str, float]]:
+    spec = spec or MatchedBaselineSpec()
+    user = dict(user_row)
+    control = dict(control_row)
+    contributions: dict[str, float] = {}
+    for feature in spec.numeric_features:
+        if feature not in user or feature not in control:
+            continue
+        left = _numeric(user[feature])
+        right = _numeric(control[feature])
+        if left is None or right is None:
+            continue
+        scale = 1.0
+        if scaling_params and feature in scaling_params:
+            scale_value = _numeric(scaling_params[feature].get("scale"))
+            if scale_value is not None and scale_value > EPS:
+                scale = scale_value
+        contributions[feature] = abs(left - right) / scale
+    if not contributions:
+        return float("inf"), {}
+    return float(np.sqrt(np.square(list(contributions.values())).sum())), contributions
+
+
 def compute_context_distance(
     user_row: pd.Series | dict[str, Any],
     control_row: pd.Series | dict[str, Any],
     spec: MatchedBaselineSpec | None = None,
+    scaling_params: dict[str, dict[str, float | str]] | None = None,
 ) -> float:
-    spec = spec or MatchedBaselineSpec()
-    user = dict(user_row)
-    control = dict(control_row)
-    distances: list[float] = []
-    for feature in spec.numeric_features:
-        if feature not in user or feature not in control:
-            continue
-        left = pd.to_numeric(pd.Series([user[feature]]), errors="coerce").iloc[0]
-        right = pd.to_numeric(pd.Series([control[feature]]), errors="coerce").iloc[0]
-        if pd.notna(left) and pd.notna(right):
-            distances.append(abs(float(left) - float(right)))
-    return float(np.sqrt(np.square(distances).sum())) if distances else float("inf")
+    distance, _contributions = _context_distance_details(
+        user_row,
+        control_row,
+        spec,
+        scaling_params,
+    )
+    return distance
 
 
 def select_matched_controls(
@@ -139,11 +220,18 @@ def select_matched_controls(
         if feature in candidates.columns and feature in user.index and pd.notna(user[feature]):
             candidates = candidates[candidates[feature] == user[feature]]
     if candidates.empty:
-        return pd.DataFrame(columns=["user_sample_id", "control_sample_id", "context_distance"])
-    candidates["context_distance"] = candidates.apply(
-        lambda row: compute_context_distance(user, row, spec),
+        return pd.DataFrame(
+            columns=["user_sample_id", "control_sample_id", "context_distance", "distance_contributions_json"]
+        )
+    scaling_params = _distance_scaling_params(pd.concat([selected, candidates], ignore_index=True), spec)
+    distance_rows = candidates.apply(
+        lambda row: _context_distance_details(user, row, spec, scaling_params),
         axis=1,
     )
+    candidates["context_distance"] = [item[0] for item in distance_rows]
+    candidates["distance_contributions_json"] = [
+        json.dumps(item[1], ensure_ascii=False, sort_keys=True) for item in distance_rows
+    ]
     candidates = candidates[np.isfinite(candidates["context_distance"])].sort_values(
         ["context_distance", "sample_id"],
         kind="stable",

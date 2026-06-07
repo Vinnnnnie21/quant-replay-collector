@@ -5,7 +5,10 @@ from pathlib import Path
 
 from PySide6 import QtCore
 
-from app_logger import get_logger
+try:
+    from app_logger import get_logger
+except ImportError:  # pragma: no cover - package import path
+    from ..app_logger import get_logger
 
 
 logger = get_logger(__name__)
@@ -47,8 +50,12 @@ class ExportWorker(QtCore.QObject):
             return
         try:
             self.progress.emit("Preparing export...")
-            from exporter import Exporter
-            from storage import StorageManager
+            try:
+                from exporter import Exporter
+                from storage import StorageManager
+            except ImportError:  # pragma: no cover - package import path
+                from ..exporter import Exporter
+                from ..storage import StorageManager
 
             output_dir = Exporter(StorageManager(self.db_path)).export_session(
                 self.session_id,

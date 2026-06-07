@@ -7,11 +7,28 @@ from typing import Any
 
 import pandas as pd
 
-from backtesting.types import Signal
+try:
+    from backtesting.types import Signal
+except ImportError:  # pragma: no cover - package import path
+    from .types import Signal
 
 
-FORBIDDEN_FEATURE_PREFIXES = ("fwd_", "post_")
-FORBIDDEN_FEATURE_NAMES = ("mfe", "mae", "manual_trade_final")
+FORBIDDEN_FEATURE_TOKENS = (
+    "fwd",
+    "post",
+    "future",
+    "mfe",
+    "mae",
+    "hit_tp",
+    "hit_sl",
+    "outcome",
+    "label",
+    "pnl",
+    "manual_trade_final",
+    "final_return",
+    "net_return",
+    "realized",
+)
 OPS = {
     "<=": operator.le,
     ">=": operator.ge,
@@ -23,7 +40,7 @@ OPS = {
 
 def _is_future_field(column: str) -> bool:
     lower = str(column or "").lower()
-    return lower.startswith(FORBIDDEN_FEATURE_PREFIXES) or any(token in lower for token in FORBIDDEN_FEATURE_NAMES)
+    return any(token in lower for token in FORBIDDEN_FEATURE_TOKENS)
 
 
 class BaseStrategy:

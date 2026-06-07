@@ -18,6 +18,10 @@ def test_excluded_runtime_paths():
         "quant_collector_app/logs/app.log",
         "quant_collector_app/logs/.gitkeep",
         "quant_collector_app/data/app_settings.json",
+        "quant_collector_app/.env",
+        "docs/local.sqlite",
+        "tests/debug.log",
+        "tests/local-release.zip",
     ]:
         assert excluded_reason(Path(value)) is not None
 
@@ -29,17 +33,23 @@ def test_build_release_skips_user_runtime_data(tmp_path):
     (source / "quant_collector_app" / "main.py").write_text("pass\n", encoding="utf-8")
     (source / "quant_collector_app" / "data" / "cache" / "bars.csv").write_text("x\n", encoding="utf-8")
     (source / "quant_collector_app" / "data" / "local.db").write_bytes(b"db")
+    (source / "quant_collector_app" / ".env").write_text("TOKEN=private\n", encoding="utf-8")
+    (source / "quant_collector_app" / "local.sqlite").write_bytes(b"sqlite")
     (source / "quant_collector_app" / "logs").mkdir(parents=True)
     (source / "quant_collector_app" / "logs" / ".gitkeep").write_text("\n", encoding="utf-8")
     (source / "README.md").write_text("readme\n", encoding="utf-8")
+    (source / "pytest.ini").write_text("[pytest]\n", encoding="utf-8")
 
     report = build_release(output, source)
 
     assert (output / "README.md").exists()
+    assert (output / "pytest.ini").exists()
     assert (output / "quant_collector_app" / "main.py").exists()
     assert not (output / "quant_collector_app" / "data" / "cache" / "bars.csv").exists()
     assert not (output / "quant_collector_app" / "data" / "local.db").exists()
+    assert not (output / "quant_collector_app" / ".env").exists()
+    assert not (output / "quant_collector_app" / "local.sqlite").exists()
     assert not (output / "quant_collector_app" / "logs").exists()
     assert (output / "clean_release_report.json").exists()
     assert (output / "clean_release_report.md").exists()
-    assert report["skipped_file_count"] == 3
+    assert report["skipped_file_count"] == 5

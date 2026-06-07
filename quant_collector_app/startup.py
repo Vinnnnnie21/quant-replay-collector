@@ -5,7 +5,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from app_config import CACHE_DIR, DATA_DIR, EXPORT_DIR, LOG_DIR
+try:
+    from app_config import CACHE_DIR, DATA_DIR, EXPORT_DIR, LOG_DIR
+except ImportError:  # pragma: no cover - package import path
+    from .app_config import CACHE_DIR, DATA_DIR, EXPORT_DIR, LOG_DIR
 
 
 def bootstrap_runtime_dirs() -> tuple[Path, ...]:
@@ -16,7 +19,10 @@ def bootstrap_runtime_dirs() -> tuple[Path, ...]:
 
 
 def configure_logging() -> Path:
-    from app_logger import setup_logging
+    try:
+        from app_logger import setup_logging
+    except ImportError:  # pragma: no cover - package import path
+        from .app_logger import setup_logging
 
     return setup_logging()
 

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import pandas as pd
@@ -14,6 +18,10 @@ from PySide6 import QtWidgets
 
 from main_app import MainWindow
 from multi_timeframe_panel import MultiTimeframePanel
+
+
+ROOT = Path(__file__).resolve().parents[1]
+APP_DIR = ROOT / "quant_collector_app"
 
 
 @pytest.fixture(scope="module")
@@ -35,6 +43,29 @@ def _htf_frame() -> pd.DataFrame:
             "volume": range(1000, 1030),
         }
     )
+
+
+def test_multi_timeframe_panel_imports_in_package_mode_without_app_dir_pythonpath():
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    probe = (
+        "import importlib, pathlib, sys; "
+        "import quant_collector_app; "
+        f"app_dir = {str(APP_DIR)!r}; "
+        "sys.path = [p for p in sys.path if p != app_dir]; "
+        "assert app_dir not in sys.path; "
+        "importlib.import_module('quant_collector_app.multi_timeframe_panel')"
+    )
+
+    run = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert run.returncode == 0, run.stderr
 
 
 def test_panel_is_read_only_and_builds_cache_first_context_requests(qapp):

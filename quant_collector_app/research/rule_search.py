@@ -190,8 +190,21 @@ def search_rules(
         json.dumps(validation["validation_warnings"], ensure_ascii=False) for validation in validations
     ]
     result["degradation_ratio"] = [validation["degradation_ratio"] for validation in validations]
-    return (
-        result.sort_values(["train_score", "sample_count"], ascending=[False, False], na_position="last")
-        .head(max_rules)
-        .reset_index(drop=True)
+    ranked = result.copy()
+    ranked["_validated_rank"] = ranked["validation_status"].astype(str).eq("validated_candidate")
+    ranked["_fdr_rank"] = ranked["fdr_pass"].fillna(False).astype(bool)
+    ranked = ranked.sort_values(
+        [
+            "_validated_rank",
+            "_fdr_rank",
+            "test_score",
+            "degradation_ratio",
+            "test_sample_count",
+            "train_score",
+            "sample_count",
+        ],
+        ascending=[False, False, False, True, False, False, False],
+        na_position="last",
+        kind="stable",
     )
+    return ranked.drop(columns=["_validated_rank", "_fdr_rank"]).head(max_rules).reset_index(drop=True)

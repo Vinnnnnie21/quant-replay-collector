@@ -11,7 +11,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from market_data import interval_to_ms
+try:
+    from market_data import interval_to_ms
+except ImportError:  # pragma: no cover - package import path
+    from .market_data import interval_to_ms
 
 
 _DEFAULT_HIGHER_TIMEFRAMES = {
@@ -40,6 +43,10 @@ def _as_bjt_timestamp(value: Any) -> pd.Timestamp:
 def _frame_with_close_time(htf_df: pd.DataFrame, htf_interval: str | None = None) -> pd.DataFrame:
     if not isinstance(htf_df, pd.DataFrame) or htf_df.empty or "open_time_bjt" not in htf_df.columns:
         return pd.DataFrame()
+    if {"_open_time", "_close_time"} <= set(htf_df.columns):
+        cached_interval = htf_df.attrs.get("_qrc_htf_interval")
+        if htf_interval is None or cached_interval == htf_interval:
+            return htf_df
     frame = htf_df.copy()
     frame["_open_time"] = frame["open_time_bjt"].map(_as_bjt_timestamp)
     frame = frame.sort_values("_open_time", kind="stable").reset_index(drop=True)
@@ -61,7 +68,13 @@ def _frame_with_close_time(htf_df: pd.DataFrame, htf_interval: str | None = None
         frame["_close_time"] = frame["_open_time"] + inferred_delta
     else:
         return pd.DataFrame()
+    frame.attrs["_qrc_htf_interval"] = htf_interval
     return frame
+
+
+def normalize_context_frame(htf_df: pd.DataFrame, htf_interval: str | None = None) -> pd.DataFrame:
+    """Normalize HTF timestamps once so replay refreshes can reuse the frame."""
+    return _frame_with_close_time(htf_df, htf_interval)
 
 
 def _matched_row(row: pd.Series | None, sync_status: str) -> dict[str, Any]:
@@ -233,5 +246,6 @@ __all__ = [
     "build_multi_timeframe_context",
     "find_context_bar_by_time",
     "higher_timeframes_for",
+    "normalize_context_frame",
     "summarize_htf_state",
 ]

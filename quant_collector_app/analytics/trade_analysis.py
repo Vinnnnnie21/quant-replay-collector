@@ -5,20 +5,36 @@ from typing import Any
 
 import pandas as pd
 
-from analytics.metrics import (
-    annualization_factor,
-    calmar_ratio,
-    conditional_value_at_risk,
-    consecutive_win_loss_stats,
-    expectancy,
-    max_drawdown,
-    payoff_ratio,
-    profit_factor,
-    safe_mean,
-    sharpe_ratio,
-    sortino_ratio,
-    value_at_risk,
-)
+try:
+    from analytics.metrics import (
+        annualization_factor,
+        calmar_ratio,
+        conditional_value_at_risk,
+        consecutive_win_loss_stats,
+        expectancy,
+        max_drawdown,
+        payoff_ratio,
+        profit_factor,
+        safe_mean,
+        sharpe_ratio,
+        sortino_ratio,
+        value_at_risk,
+    )
+except ImportError:  # pragma: no cover - package import path
+    from .metrics import (
+        annualization_factor,
+        calmar_ratio,
+        conditional_value_at_risk,
+        consecutive_win_loss_stats,
+        expectancy,
+        max_drawdown,
+        payoff_ratio,
+        profit_factor,
+        safe_mean,
+        sharpe_ratio,
+        sortino_ratio,
+        value_at_risk,
+    )
 
 
 def _df(data) -> pd.DataFrame:

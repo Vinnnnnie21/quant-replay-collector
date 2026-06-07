@@ -1,88 +1,130 @@
-# Backtesting Guide
+# Backtesting
 
-Quant Replay Collector 的回测模块只用于研究。它不是实盘交易系统，也不会连接交易所下单。
+Quant Replay Collector uses backtesting for research-only historical simulation. It provides no live trading, automatic order execution or trading signals. It provides no investment advice. Results describe the selected historical sample and do not predict future returns.
 
-## BacktestConfig
+## Workflow
 
-`BacktestConfig` 控制回测资金和成交假设：
+The current workflow is:
 
-- `initial_equity`
-- `notional_quote`
-- `fee_bps`
-- `slippage_bps`
-- `fill_mode`
-- `allow_short`
-- `single_position`
-- `max_bars_hold`
-- `stop_loss_pct`
-- `take_profit_pct`
+1. Load market K-lines for a symbol and interval.
+2. Select a backtest date range.
+3. Load default `StrategyRuleParams`, enter parameters manually, or apply mapped analysis thresholds.
+4. Review the parameters and run `BacktestService`.
+5. Inspect the summary, rule trades, equity curve, warnings and optional manual-vs-rule comparison.
 
-手续费、滑点和成交价模式会影响 `net_return_pct`。报告必须同时区分 gross 和 net。
+The backtest panel is a minimal functional interface. It is not an execution terminal.
 
-## Strategy 接口
+## StrategyRuleParams
 
-策略需要实现：
+`StrategyRuleParams` is the reproducible parameter contract for the current `deep_v_reversal` workflow.
 
-```python
-def on_bar(self, i, row, history, position):
-    return "HOLD"
-```
+Current capability limits are explicit:
 
-`history` 只包含当前 bar 和历史 bar。策略不能读取未来 K 线。
+- `strategy_name`: `deep_v_reversal`
+- `direction`: `long_only`
+- `exit_mode`: `tp_sl_timeout`
+- `allow_overlap_positions`: `False`
+- `entry_mode`: `next_open` or `confirmation_next_open`
 
-## 内置策略
+Unsupported strategy names, short or both-side directions, other exit modes and overlapping positions are rejected rather than silently mapped to Deep V behavior.
 
-`MovingAverageCrossStrategy`
+The remaining fields describe the hypothesis and simulation assumptions:
 
-- `fast_window`
-- `slow_window`
-- `direction`
+- Trend and drop context: `trend_lookback`, `drop_lookback`, `min_drop_pct`
+- Volume condition: `volume_lookback`, `volume_spike_multiple`
+- Reversal shape: `lower_shadow_min_ratio`, `bullish_next_candle_min_body_ratio`, `rebound_confirm_bars`
+- Optional regime filter: `regime_filter`, `uptrend_lookback`, `uptrend_min_return_pct`
+- Exit assumptions: `take_profit_pct`, `stop_loss_pct`, `max_holding_bars`
+- Cost and sizing assumptions: `fee_bps`, `slippage_bps`, `notional_per_trade`
+- Entry spacing: `cooldown_bars`
 
-`FeatureRuleLongStrategy`
+Percentage-like thresholds use decimal fractions. For example, `0.02` means two percent.
 
-- `conditions`
-- `exit_bars`
-- `stop_loss_pct`
-- `take_profit_pct`
+## Date Range
 
-Feature Rule 禁止使用未来字段，例如 `fwd_*`、`post_*`、`mfe`、`mae`、`manual_trade_final`。
+`BacktestDateRange` contains:
 
-## 如何新增策略
+- `symbol`
+- `interval`
+- `start`
+- `end`
 
-继承 `BaseStrategy`，实现 `on_bar`。返回值只能是：
+Filtering uses K-line `open_time_bjt` and the half-open interval `[start, end)`. `start` must be earlier than `end`.
 
-- `HOLD`
-- `OPEN_LONG`
-- `OPEN_SHORT`
-- `CLOSE_LONG`
-- `CLOSE_SHORT`
+The date-range layer returns an explicit error or status when:
 
-不要在策略里访问完整未来数据。不要写下单 API。
+- the requested range is invalid;
+- no rows exist in the selected range;
+- the selected range has too few bars for the configured lookbacks;
+- the currently loaded data does not cover the requested range;
+- the selected symbol or interval does not match the currently loaded K-lines.
 
-## 参数扫描
+The current backtest panel does not automatically reload another symbol or interval.
 
-`grid_search` 接收 `param_grid`，对每组参数运行一次回测，输出收益、胜率、Profit Factor、Sharpe、最大回撤等指标。
+## Parameter Sources
 
-参数组合默认最多 300 组。组合太多时结果更容易过拟合。
+Parameters can come from:
 
-## 样本外验证
+- defaults;
+- manual input in the backtest panel;
+- mapped analysis output.
 
-`walk_forward_grid_search` 使用 train / validation / test：
+The current analysis-to-backtest mapping is:
 
-- train 用于跑参数扫描。
-- validation 用于选择参数。
-- test 只做最终评估。
+| Analysis output | StrategyRuleParams field |
+| --- | --- |
+| `drop_pct_threshold` | `min_drop_pct` |
+| `volume_spike_threshold` | `volume_spike_multiple` |
+| `lower_shadow_ratio` | `lower_shadow_min_ratio` |
+| `next_candle_body_ratio` | `bullish_next_candle_min_body_ratio` |
+| `trend_window` | `trend_lookback` |
+| `future_window` | `max_holding_bars` |
+| `tp_threshold` | `take_profit_pct` |
+| `sl_threshold` | `stop_loss_pct` |
 
-不能用 test set 调参。否则样本外验证失效。
+`future_window` is retained as a legacy analysis field name. It maps only to the exit timeout `max_holding_bars`; it is not an entry feature. Analysis outcome fields are rejected from the mapping.
 
-## 指标解释
+## Deep V Entry And Lookahead Boundary
 
-Sharpe 衡量平均收益相对波动的比例。加密货币 24/7 交易，年化周期按 K 线 interval 推断。
+The Deep V entry rule may use only the current bar and historical OHLCV or rolling context available at the decision time. It does not use:
 
-Sortino 只惩罚下行波动。
+- `fwd_ret`;
+- MFE or MAE;
+- `hit_tp` or `hit_sl`;
+- `outcome_labels`;
+- future high or low values;
+- final manual-trade returns.
 
-Profit Factor 是盈利总和除以亏损绝对值。全胜时返回 `None`，不返回无穷大。
+Normal Deep V detection enters at the next bar open. If a bullish confirmation bar is required, confirmation is evaluated only after that bar is visible, and entry occurs at the following open. The confirmation bar is not used to claim an earlier fill.
 
-Max Drawdown 是权益从峰值回落的最大比例，使用负数百分比表示。
+Take-profit, stop-loss and timeout assumptions affect exit simulation only. They are not entry conditions.
 
-这些指标只描述历史样本表现，不代表未来收益。
+## BacktestService Output
+
+`BacktestService` is Qt-free orchestration. It validates parameters and data, slices the requested date range, runs the Deep V rule and returns:
+
+- `summary`;
+- `trades`;
+- `equity_curve`;
+- `warnings`;
+- `errors`;
+- optional `manual_vs_rule_comparison`.
+
+The summary includes trade counts, win rate, average and median return, total return, maximum drawdown, profit factor, expectancy, holding-bar statistics, fees, slippage and exit-reason counts.
+
+## Manual-vs-Rule Comparison
+
+Manual-vs-rule comparison is descriptive only. It compares manual and simulated rule entry bars after the rule backtest has completed.
+
+Manual trades never become rule entry conditions and do not influence rule signals. The comparison reports counts, overlapping entry bars, manual-only bars, rule-only bars, average returns, win rates and overlap ratio.
+
+When manual-trade rows contain `symbol` and `interval`, the comparison filters them to the requested market. Legacy rows without these fields cannot be market-filtered reliably; treat such comparisons cautiously.
+
+## Limits
+
+- No Binance live-order API is used.
+- No automatic orders are placed.
+- Backtest results are not investment advice.
+- Sample-internal performance does not establish future profitability.
+- Parameter scans or selected thresholds are not out-of-sample validation.
+- Intrabar TP/SL ordering, liquidity, slippage and fees can materially change results.

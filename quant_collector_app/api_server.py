@@ -8,11 +8,18 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-from analysis.llm_context import build_llm_context
-from app_config import APP_NAME, EXPORT_DIR
-from llm_client import analyze_strategy_context
-from performance import build_performance_summary
-from storage import StorageManager
+try:
+    from analysis.llm_context import build_llm_context
+    from app_config import APP_NAME, EXPORT_DIR
+    from llm_client import analyze_strategy_context
+    from performance import build_performance_summary
+    from storage import StorageManager
+except ImportError:  # pragma: no cover - package import path
+    from .analysis.llm_context import build_llm_context
+    from .app_config import APP_NAME, EXPORT_DIR
+    from .llm_client import analyze_strategy_context
+    from .performance import build_performance_summary
+    from .storage import StorageManager
 
 
 SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")

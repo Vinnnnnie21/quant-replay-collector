@@ -25,6 +25,12 @@ def throttle(func: Callable, interval_ms: int) -> Callable:
 
 
 def debounce(func: Callable, wait_ms: int) -> Callable:
+    """Debounce plain Python callbacks.
+
+    This uses ``threading.Timer``. Do not use it to update Qt widgets; Qt UI
+    refreshes must stay on the main thread via ``QTimer`` or queued signals.
+    """
+
     wait = max(0.0, float(wait_ms) / 1000.0)
     timer: threading.Timer | None = None
     lock = threading.Lock()

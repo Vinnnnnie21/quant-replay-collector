@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from i18n import has_translation as _has_resource_translation
-from i18n import tr as _resource_tr
+try:
+    from i18n import has_translation as _has_resource_translation
+    from i18n import tr as _resource_tr
+except ImportError:  # pragma: no cover - package import path
+    from .i18n import has_translation as _has_resource_translation
+    from .i18n import tr as _resource_tr
 
 
 TRANSLATIONS = {

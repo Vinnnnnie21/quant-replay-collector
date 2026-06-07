@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("fastapi")
@@ -9,6 +14,10 @@ from fastapi.testclient import TestClient
 
 import api_server
 from storage import StorageManager
+
+
+ROOT = Path(__file__).resolve().parents[1]
+APP_DIR = ROOT / "quant_collector_app"
 
 
 def _seed_storage(tmp_path):
@@ -29,6 +38,29 @@ def _seed_storage(tmp_path):
         }
     )
     return storage
+
+
+def test_api_server_imports_in_package_mode_without_app_dir_pythonpath():
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    probe = (
+        "import importlib, pathlib, sys; "
+        "import quant_collector_app; "
+        f"app_dir = {str(APP_DIR)!r}; "
+        "sys.path = [p for p in sys.path if p != app_dir]; "
+        "assert app_dir not in sys.path; "
+        "importlib.import_module('quant_collector_app.api_server')"
+    )
+
+    run = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+    )
+
+    assert run.returncode == 0, run.stderr
 
 
 def test_health_endpoint():

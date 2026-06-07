@@ -6,7 +6,10 @@ from typing import Callable
 
 import requests
 
-from app_config import BINANCE_FAPI
+try:
+    from app_config import BINANCE_FAPI
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import BINANCE_FAPI
 from .types import BINANCE_RAW_COLUMNS, DataLoadCancelled, interval_to_ms, to_api_utc_ms_from_bjt
 
 

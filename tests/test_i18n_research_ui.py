@@ -25,7 +25,8 @@ def test_research_workspace_uses_language_for_visible_tabs():
         session_id = "sess_test"
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    dialog = AnalysisWorkspace(Host())
+    host = Host()
+    dialog = AnalysisWorkspace(host)
     assert dialog.researchTabs.tabText(0) == "数据审计"
     assert dialog.btnRunResearch.text() == "运行研究分析"
     assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.timeSeriesTab)) == "时间序列诊断"

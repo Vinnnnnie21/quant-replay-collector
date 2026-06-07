@@ -1,6 +1,12 @@
 from __future__ import annotations
 
 from .baseline import build_random_bar_baseline, build_random_event_baseline, compare_events_to_baseline
+from .concentration_bounds import (
+    cantelli_bound,
+    chebyshev_bound,
+    empirical_sigma_exceedance,
+    summarize_concentration_bounds,
+)
 from .diagnostics import descriptive_stats, jarque_bera_test
 from .factor_model import correlation_matrix, pca_factor_model, rolling_correlation
 from .liquidity_proxy import classify_liquidity_state, compute_liquidity_proxy, summarize_liquidity_proxy
@@ -23,7 +29,10 @@ from .volatility import volatility_diagnostics
 __all__ = [
     "build_random_event_baseline",
     "build_random_bar_baseline",
+    "cantelli_bound",
+    "chebyshev_bound",
     "descriptive_stats",
+    "empirical_sigma_exceedance",
     "jarque_bera_test",
     "build_regime_features",
     "build_return_series",
@@ -31,6 +40,7 @@ __all__ = [
     "build_time_series_report",
     "compare_events_to_baseline",
     "summarize_regime_distribution",
+    "summarize_concentration_bounds",
     "summarize_return_distribution",
     "write_time_series_report",
     "simple_return",

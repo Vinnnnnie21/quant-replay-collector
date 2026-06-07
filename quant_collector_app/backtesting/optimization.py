@@ -6,8 +6,12 @@ from typing import Any
 
 import pandas as pd
 
-from backtesting.engine import run_backtest
-from backtesting.types import BacktestConfig
+try:
+    from backtesting.engine import run_backtest
+    from backtesting.types import BacktestConfig
+except ImportError:  # pragma: no cover - package import path
+    from .engine import run_backtest
+    from .types import BacktestConfig
 
 
 def time_series_split(df, train_ratio=0.6, valid_ratio=0.2, test_ratio=0.2) -> dict:

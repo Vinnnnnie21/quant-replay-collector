@@ -4,7 +4,10 @@ import datetime as dt
 import re
 from dataclasses import dataclass
 
-from app_config import BJT, UTC
+try:
+    from app_config import BJT, UTC
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import BJT, UTC
 
 
 VALID_INTERVALS = {

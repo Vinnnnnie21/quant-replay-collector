@@ -5,10 +5,16 @@ from typing import Callable
 
 import pandas as pd
 
-from app_config import CACHE_DIR
-from market_data.client import MarketDataClient
-from market_data.loader import KlineLoader
-from market_data.types import LoadRequest
+try:
+    from app_config import CACHE_DIR
+    from market_data.client import MarketDataClient
+    from market_data.loader import KlineLoader
+    from market_data.types import LoadRequest
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import CACHE_DIR
+    from ..market_data.client import MarketDataClient
+    from ..market_data.loader import KlineLoader
+    from ..market_data.types import LoadRequest
 
 
 class MarketDataService:
