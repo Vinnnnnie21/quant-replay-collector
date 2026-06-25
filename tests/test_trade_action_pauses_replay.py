@@ -127,10 +127,11 @@ def test_request_open_trade_pauses_replay_and_clears_accumulated_bars():
 
     MainWindow.request_open_trade(window, "LONG")
 
-    assert window.playing is False
-    assert window.replay_controller.playing is False
-    assert window.replay_controller.accumulated_bars == 0.0
-    assert window._accum == 0.0
+    # Manual trades no longer pause playback; playback state is left untouched.
+    assert window.playing is True
+    assert window.replay_controller.playing is True
+    assert window.replay_controller.accumulated_bars == 3.5
+    assert window._accum == 3.5
     assert trade_controller.commits == 1
     assert window._trade_transaction_active is False
     assert window.trades[0]["trade_id"] == "trd_1"
@@ -270,10 +271,11 @@ def test_request_close_trade_pauses_replay_and_updates_memory_without_heavy_refr
 
     MainWindow.request_close_trade(window, "LONG")
 
-    assert window.playing is False
-    assert window.replay_controller.playing is False
-    assert window.replay_controller.accumulated_bars == 0.0
-    assert window._accum == 0.0
+    # Manual trades no longer pause playback; playback state is left untouched.
+    assert window.playing is True
+    assert window.replay_controller.playing is True
+    assert window.replay_controller.accumulated_bars == 2.0
+    assert window._accum == 2.0
     assert trade_controller.commits == 1
     assert window._trade_transaction_active is False
     assert trade["status"] == "CLOSED"
@@ -349,7 +351,8 @@ def test_request_open_trade_restores_trade_buttons_after_transaction_error():
 
     MainWindow.request_open_trade(window, "LONG")
 
-    assert window.playing is False
+    # Manual trades no longer pause playback, even when the transaction fails.
+    assert window.playing is True
     assert window._trade_transaction_active is False
     assert trade_controller.commits == 1
     assert window.trades == []

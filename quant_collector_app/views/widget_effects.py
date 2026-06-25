@@ -1,24 +1,25 @@
-"""Reusable Qt widget effects: drop shadows for the OKX pill buttons.
+"""Reusable Qt widget effects.
 
-Qt style sheets cannot render ``box-shadow``; a drop shadow is a per-widget
-``QGraphicsDropShadowEffect``. This is only safe when the button paints its OWN
-background via a LOCAL stylesheet (see ``apply_role_button_styles``). With a
-window-level stylesheet the effect strips the fill (black buttons); with a local
-stylesheet the fill survives — verified at runtime. Always run
-``apply_role_button_styles`` BEFORE attaching shadows.
+Qt style sheets cannot render ``box-shadow``. The obvious alternative — a
+``QGraphicsDropShadowEffect`` on each button — proved unsafe in this Qt build:
 
-The helpers are defensive: a failure to attach an effect must never break theme
-application.
+1. Over a window-level QSS fill it strips the button background (black buttons),
+   and
+2. a widget that still owns a graphics effect can abort (native crash) when it is
+   torn down via ``deleteLater`` / ``DeferredDelete`` — which happens whenever the
+   analysis window is closed or the test suite isolates Qt between tests.
+
+Because the effect crashes on teardown, these helpers are intentional NO-OPS. The
+dark "pill" buttons already separate from the near-black chrome on their own. A
+real drop shadow would require wrapping each button in a container widget and
+applying the effect to the wrapper (so no button ever owns an effect); that is a
+structural change and is deliberately not done here.
+
+Do NOT re-introduce ``QGraphicsDropShadowEffect`` / ``setGraphicsEffect`` on the
+buttons directly.
 """
 
 from __future__ import annotations
-
-try:
-    from PySide6 import QtCore, QtGui, QtWidgets
-except Exception:  # pragma: no cover - Qt always present at runtime
-    QtCore = None
-    QtGui = None
-    QtWidgets = None
 
 
 SHADOW_BUTTON_ROLES = (
@@ -34,43 +35,14 @@ SHADOW_BUTTON_ROLES = (
 )
 
 
-def apply_button_shadow(button, *, blur: int = 16, y_offset: int = 3, alpha: int = 150) -> None:
-    """Attach a soft drop shadow to a single control. No-op if Qt is unavailable."""
-    if QtWidgets is None or button is None:
-        return
-    try:
-        button.setAttribute(QtCore.Qt.WA_StyledBackground, True)
-        effect = QtWidgets.QGraphicsDropShadowEffect(button)
-        effect.setBlurRadius(blur)
-        effect.setXOffset(0)
-        effect.setYOffset(y_offset)
-        effect.setColor(QtGui.QColor(0, 0, 0, alpha))
-        button.setGraphicsEffect(effect)
-    except Exception:
-        pass
+def apply_button_shadow(button, **_kwargs) -> None:
+    """Intentional no-op (a graphics effect crashes on widget teardown)."""
+    return None
 
 
 def apply_role_button_shadows(root) -> int:
-    """Attach drop shadows to every role button (QPushButton/QToolButton) under root.
-
-    Returns the number of controls that received a shadow.
-    """
-    if QtWidgets is None or root is None:
-        return 0
-    count = 0
-    for widget_cls in (QtWidgets.QPushButton, QtWidgets.QToolButton, QtWidgets.QCheckBox):
-        try:
-            controls = root.findChildren(widget_cls)
-        except Exception:
-            continue
-        for button in controls:
-            try:
-                if button.property("role") in SHADOW_BUTTON_ROLES:
-                    apply_button_shadow(button)
-                    count += 1
-            except Exception:
-                continue
-    return count
+    """Intentional no-op. Returns 0 (no shadows attached)."""
+    return 0
 
 
 __all__ = ["apply_button_shadow", "apply_role_button_shadows", "SHADOW_BUTTON_ROLES"]

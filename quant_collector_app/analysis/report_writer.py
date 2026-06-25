@@ -37,6 +37,11 @@ def _df_head_md(df: pd.DataFrame | None, n: int = 10, language: str = "zh_CN") -
         return head.to_string(index=False)
 
 
+def _dict_lines(data: dict[str, Any] | None, keys: list[str] | None = None) -> list[str]:
+    data = data or {}
+    items = [(k, data.get(k)) for k in (keys or list(data.keys()))]
+    return [f"- {k}: {v}" for k, v in items if v is not None]
+
 
 def write_strategy_research_report(
     output_dir: Path,

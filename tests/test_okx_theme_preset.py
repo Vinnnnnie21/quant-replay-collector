@@ -77,14 +77,15 @@ def test_claude_dark_remains_neutral_reference():
     assert claude["theme_schema_version"] == THEME_SCHEMA_VERSION
 
 
-def test_okx_neutral_buttons_are_white_pills_claude_stays_neutral():
+def test_okx_neutral_buttons_are_dark_pills_claude_stays_neutral():
     okx = normalize_theme_settings(OKX_DARK_THEME)
     claude = normalize_theme_settings(EXCHANGE_DARK_THEME)
-    # Non-trade buttons: white in OKX, neutral grey in Claude.
-    assert okx["btn_bg"] == "#FFFFFF"
-    assert okx["btn_text"] == "#0B0B0C"
-    assert claude["btn_bg"] == COLORS["btn_bg"] != "#FFFFFF"
-    # Near-black OKX background.
+    # Non-trade buttons: dark raised pill (lighter than the black chrome) + white
+    # text in OKX; neutral grey in Claude.
+    assert okx["btn_bg"] == "#202024"
+    assert okx["btn_text"] == "#EAECEF"
+    assert claude["btn_bg"] == COLORS["btn_bg"] != okx["btn_bg"]
+    # Near-black OKX background, clearly darker than the buttons.
     assert okx["bg_primary"] == "#000000"
 
 
@@ -178,7 +179,7 @@ def test_themed_input_qss_matches_dark_pill():
     combo = themed_input_qss("combo", OKX_DARK_THEME)
     assert "QComboBox {" in combo
     assert f"background-color: {okx['btn_bg']}" in combo
-    assert "border-radius: 10px" in combo
+    assert "border-radius: 12px" in combo
 
     date = themed_input_qss("date", OKX_DARK_THEME)
     assert "QDateEdit {" in date
@@ -191,14 +192,22 @@ def test_themed_input_qss_matches_dark_pill():
     assert themed_input_qss("unknown", OKX_DARK_THEME) == ""
 
 
-def test_widget_effects_shadow_helpers():
-    """Shadows are applied via a graphics effect, which is safe over a LOCAL fill.
-    The helpers must stay import-safe (no Qt / no widget => no error, returns 0)."""
+def test_widget_effects_never_attach_graphics_effect():
+    """Regression: a QGraphicsDropShadowEffect on a button both strips its QSS
+    fill and aborts (native crash) when the widget is torn down via deleteLater.
+    The helpers must stay no-ops and never wire one up."""
     import inspect
 
     import views.widget_effects as we
 
-    assert "QGraphicsDropShadowEffect" in inspect.getsource(we)
-    assert {"primaryButton", "successButton", "dangerButton"} <= set(we.SHADOW_BUTTON_ROLES)
-    assert we.apply_role_button_shadows(None) == 0
-    we.apply_button_shadow(None)
+    assert "setGraphicsEffect" not in inspect.getsource(we)
+
+    class _FakeButton:
+        def property(self, _name):
+            return "primaryButton"
+
+        def setGraphicsEffect(self, _effect):  # pragma: no cover
+            raise AssertionError("must not attach a graphics effect")
+
+    assert we.apply_role_button_shadows(_FakeButton()) == 0
+    we.apply_button_shadow(_FakeButton())

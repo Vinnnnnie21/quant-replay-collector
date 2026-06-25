@@ -320,7 +320,9 @@ def test_main_window_effective_background_layers_and_no_local_button_styles(monk
         monkeypatch.setattr(presentation, "save_theme_settings", lambda _theme: None)
         presentation.apply_main_window_theme(host, EXCHANGE_DARK_THEME)
         host.resize(1366, 768)
-        host.show()
+        # Do not show() the window: grab() renders the styled widgets to a pixmap
+        # without a native window. Showing a full pyqtgraph window here aborts
+        # (native crash) when it is torn down under the offscreen platform.
         app.processEvents()
 
         expected_roles = {
@@ -333,7 +335,7 @@ def test_main_window_effective_background_layers_and_no_local_button_styles(monk
             "currentStatusCard": (COLORS["bg_card"], (host.currentStatusCard.width() - 8, 8)),
             "bottomTabs": (COLORS["bg_secondary"], (host.bottomTabs.width() - 8, host.bottomTabs.height() - 8)),
             "logDrawer": (COLORS["bg_secondary"], (host.logDrawer.width() // 2, host.logDrawer.height() - 5)),
-            "symbolBox": (COLORS["bg_input"], (12, host.symbolBox.height() - 6)),
+            "symbolBox": (COLORS["btn_bg"], (12, host.symbolBox.height() - 6)),
         }
         for name, (expected, point) in expected_roles.items():
             widget = host.findChild(QtWidgets.QWidget, name)

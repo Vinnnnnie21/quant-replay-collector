@@ -269,7 +269,7 @@ def request_close_trade(window, expected_side: str) -> None:
     if not window._is_trade_recording_allowed():
         window._warn_trade_interval_mismatch()
         return
-    trade = selected_open_trade(window, verify_db=True)
+    trade = window.selected_open_trade(verify_db=True)
     if not trade:
         trade = _auto_select_open_trade_if_needed(window, expected_side)
     if not trade:

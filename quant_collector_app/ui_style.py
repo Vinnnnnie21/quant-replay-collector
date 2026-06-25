@@ -383,6 +383,12 @@ def normalize_theme_settings(theme: dict | None) -> dict:
                 normalized[key] = _clamp_int(value, normalized[key], 80, 110)
             elif key == "name":
                 normalized[key] = str(value)
+        # Fill a token from its legacy alias (e.g. panel_bg -> bg_secondary) when
+        # only the legacy key was provided; an explicit token value still wins.
+        for legacy_key, token_key in _LEGACY_TO_TOKEN_KEYS.items():
+            value = incoming.get(legacy_key)
+            if _is_hex_color(value) and not _is_hex_color(incoming.get(token_key)):
+                normalized[token_key] = str(value).strip().upper()
     elif schema == 2:
         if incoming.get("name"):
             normalized["name"] = str(incoming["name"])
