@@ -34,6 +34,96 @@ logger = get_logger(__name__)
 _SELECTABLE_CONTEXT_INTERVALS = ("5m", "15m", "1h", "4h")
 
 
+def _safe_float(value: Any) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if pd.notna(result) else None
+
+
+def _format_time_bjt(value: Any) -> str:
+    if value is None or value == "":
+        return "—"
+    try:
+        timestamp = pd.Timestamp(value)
+    except (TypeError, ValueError):
+        return "—"
+    if pd.isna(timestamp):
+        return "—"
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.tz_localize("Asia/Shanghai")
+    else:
+        timestamp = timestamp.tz_convert("Asia/Shanghai")
+    return timestamp.strftime("%Y-%m-%d %H:%M")
+
+
+def _format_price(value: Any) -> str:
+    number = _safe_float(value)
+    return "—" if number is None else f"{number:,.2f}"
+
+
+def _format_percent(value: Any, *, signed: bool = False) -> str:
+    number = _safe_float(value)
+    if number is None:
+        return "—"
+    prefix = "+" if signed and number > 0 else ""
+    return f"{prefix}{number:.2%}"
+
+
+def _translate_enum(value: str | None, mapping: dict[str, str], language: str, fallback_key: str, label: str) -> str:
+    if value in mapping:
+        return tr(mapping[str(value)], language)
+    logger.debug("Unknown multi-timeframe %s enum: %r", label, value)
+    return tr(fallback_key, language)
+
+
+def translate_sync_status(status: str, language: str) -> str:
+    return _translate_enum(
+        status,
+        {
+            "previous_completed_for_no_future": "multi_timeframe_sync_previous_completed",
+            "latest_completed": "multi_timeframe_sync_latest_completed",
+            "contains_cursor": "multi_timeframe_sync_contains_cursor",
+            "unavailable": "multi_timeframe_sync_unavailable",
+            "unavailable_before_cursor": "multi_timeframe_sync_before_cursor",
+            "missing_primary_time": "multi_timeframe_sync_missing_time",
+            "completed": "multi_timeframe_sync_latest_completed",
+        },
+        language,
+        "multi_timeframe_sync_unknown",
+        "sync_status",
+    )
+
+
+def translate_trend_regime(regime: str | None, language: str) -> str:
+    return _translate_enum(
+        regime,
+        {
+            "uptrend": "multi_timeframe_trend_up",
+            "downtrend": "multi_timeframe_trend_down",
+            "range": "multi_timeframe_trend_range",
+        },
+        language,
+        "multi_timeframe_trend_unknown",
+        "trend_regime",
+    )
+
+
+def translate_volatility_regime(regime: str | None, language: str) -> str:
+    return _translate_enum(
+        regime,
+        {
+            "high_vol": "multi_timeframe_vol_high",
+            "normal_vol": "multi_timeframe_vol_normal",
+            "low_vol": "multi_timeframe_vol_low",
+        },
+        language,
+        "multi_timeframe_vol_unknown",
+        "volatility_regime",
+    )
+
+
 class _MultiTimeframeLoadWorker(QtCore.QObject):
     finished = QtCore.Signal(str, object, object)
 
@@ -95,13 +185,27 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         self.noticeLabel.setWordWrap(True)
         self.noticeLabel.setProperty("role", "muted")
         layout.addWidget(self.noticeLabel)
+
+        self.primaryIntervalLabel = QtWidgets.QLabel()
+        self.primaryIntervalLabel.setProperty("role", "muted")
+        layout.addWidget(self.primaryIntervalLabel)
+
+        self.contextIntervalsLabel = QtWidgets.QLabel()
+        self.contextIntervalsLabel.setProperty("role", "muted")
+        layout.addWidget(self.contextIntervalsLabel)
+
         selection = QtWidgets.QHBoxLayout()
-        self.intervalChecks: dict[str, QtWidgets.QCheckBox] = {}
+        self.intervalButtons: dict[str, QtWidgets.QToolButton] = {}
+        self.intervalChecks = self.intervalButtons
         for interval in _SELECTABLE_CONTEXT_INTERVALS:
-            checkbox = QtWidgets.QCheckBox(interval)
-            checkbox.toggled.connect(self._on_selection_changed)
-            selection.addWidget(checkbox)
-            self.intervalChecks[interval] = checkbox
+            button = QtWidgets.QToolButton()
+            button.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+            button.setCheckable(True)
+            button.setProperty("role", "timeframeChip")
+            button.setAccessibleName(interval)
+            button.toggled.connect(lambda checked, interval=interval: self._on_interval_toggled(interval, checked))
+            selection.addWidget(button)
+            self.intervalButtons[interval] = button
         selection.addStretch(1)
         layout.addLayout(selection)
         self.summaryText = QtWidgets.QPlainTextEdit()
@@ -109,10 +213,31 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         self.summaryText.setMinimumHeight(250)
         layout.addWidget(self.summaryText, stretch=1)
 
+    def _selected_mark(self) -> str:
+        return tr("multi_timeframe_selected_mark", self.language)
+
+    def _set_primary_interval_text(self) -> None:
+        primary = self._configured_primary or "—"
+        self.primaryIntervalLabel.setText(
+            f"{tr('multi_timeframe_primary_interval', self.language)}: {self._selected_mark()} {primary}"
+        )
+
+    def _sync_interval_button_text(self, interval: str) -> None:
+        button = self.intervalButtons[interval]
+        button.setText(f"{self._selected_mark()} {interval}" if button.isChecked() else interval)
+
+    def _on_interval_toggled(self, interval: str, checked: bool) -> None:
+        self._sync_interval_button_text(interval)
+        self._on_selection_changed(checked)
+
     def retranslate_ui(self, language: str | None = None) -> None:
         if language:
             self.language = language
         self.noticeLabel.setText(tr("multi_timeframe_readonly_notice", self.language))
+        self.contextIntervalsLabel.setText(f"{tr('multi_timeframe_context_intervals', self.language)}:")
+        self._set_primary_interval_text()
+        for interval in self.intervalButtons:
+            self._sync_interval_button_text(interval)
         if not self._latest_context and not self._context_errors:
             self.summaryText.setPlainText(tr("multi_timeframe_waiting", self.language))
         elif self._latest_context:
@@ -127,19 +252,22 @@ class MultiTimeframePanel(QtWidgets.QWidget):
             primary_ms = interval_to_ms(primary)
         except ValueError:
             primary_ms = 0
-        for interval, checkbox in self.intervalChecks.items():
-            checkbox.blockSignals(True)
-            enabled = interval_to_ms(interval) > primary_ms
-            checkbox.setEnabled(enabled)
-            checkbox.setChecked(enabled and interval in defaults)
-            checkbox.blockSignals(False)
         self._configured_primary = primary
+        self._set_primary_interval_text()
+        for interval, button in self.intervalButtons.items():
+            button.blockSignals(True)
+            enabled = interval_to_ms(interval) > primary_ms
+            button.setVisible(enabled)
+            button.setEnabled(enabled)
+            button.setChecked(enabled and interval in defaults)
+            button.blockSignals(False)
+            self._sync_interval_button_text(interval)
 
     def selected_intervals(self) -> tuple[str, ...]:
         return tuple(
             interval
-            for interval, checkbox in self.intervalChecks.items()
-            if checkbox.isEnabled() and checkbox.isChecked()
+            for interval, button in self.intervalButtons.items()
+            if not button.isHidden() and button.isEnabled() and button.isChecked()
         )
 
     def build_load_requests(self, symbol: str, primary_interval: str, start_dt_bjt, end_dt_bjt) -> list[LoadRequest]:
@@ -264,34 +392,33 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         )
 
     def _render_context(self, context: dict[str, dict[str, Any]]) -> None:
-        lines = [tr("multi_timeframe_readonly_notice", self.language), ""]
+        lines: list[str] = []
         for interval in self.selected_intervals() or tuple(context):
             state = context.get(interval)
             if not state:
                 continue
-            lines.append(f"[{interval}] {state['sync_status']}")
-            lines.append(
-                "  HTF time: {time} | close: {close}".format(
-                    time=state["htf_open_time_bjt"] or "-",
-                    close="-" if state["close"] is None else f"{state['close']:.6g}",
-                )
-            )
+            lines.append(f"[{interval}]")
+            lines.append(f"{tr('multi_timeframe_alignment', self.language)}: {translate_sync_status(state.get('sync_status'), self.language)}")
+            lines.append(f"{tr('multi_timeframe_htf_time', self.language)}: {_format_time_bjt(state.get('htf_open_time_bjt'))}")
+            lines.append(f"{tr('multi_timeframe_close_price', self.language)}: {_format_price(state.get('close'))}")
             if state["history_status"] != "available":
-                lines.append(f"  {tr('multi_timeframe_insufficient_history', self.language)} ({state['available_bars']}/20)")
-            else:
                 lines.append(
-                    "  ret20: {ret:.4%} | vol20: {vol:.4%} | trend: {trend} | vol: {vol_regime}".format(
-                        ret=state["pre_simple_ret_20"],
-                        vol=state["realized_vol_20"],
-                        trend=state["trend_regime"],
-                        vol_regime=state["volatility_regime"],
-                    )
+                    f"{tr('multi_timeframe_available_bars', self.language)}: "
+                    f"{state.get('available_bars') or 0}/20 {tr('multi_timeframe_bars_unit', self.language)}"
                 )
-        if self._context_errors:
+                lines.append(tr("multi_timeframe_insufficient_history", self.language))
+            else:
+                lines.append(f"{tr('multi_timeframe_return_20', self.language)}: {_format_percent(state.get('pre_simple_ret_20'), signed=True)}")
+                lines.append(f"{tr('multi_timeframe_volatility_20', self.language)}: {_format_percent(state.get('realized_vol_20'))}")
+                lines.append(f"{tr('multi_timeframe_trend', self.language)}: {translate_trend_regime(state.get('trend_regime'), self.language)}")
+                lines.append(f"{tr('multi_timeframe_volatility_regime', self.language)}: {translate_volatility_regime(state.get('volatility_regime'), self.language)}")
             lines.append("")
+        if self._context_errors:
+            if lines and lines[-1] != "":
+                lines.append("")
             lines.append(tr("multi_timeframe_load_failed", self.language))
             lines.extend(f"  {interval}: {error}" for interval, error in self._context_errors.items())
-        self.summaryText.setPlainText("\n".join(lines))
+        self.summaryText.setPlainText("\n".join(lines).rstrip())
 
     def shutdown(self) -> None:
         if self._worker_thread is not None and self._worker_thread.isRunning():
@@ -299,4 +426,9 @@ class MultiTimeframePanel(QtWidgets.QWidget):
             self._worker_thread.wait(1000)
 
 
-__all__ = ["MultiTimeframePanel"]
+__all__ = [
+    "MultiTimeframePanel",
+    "translate_sync_status",
+    "translate_trend_regime",
+    "translate_volatility_regime",
+]

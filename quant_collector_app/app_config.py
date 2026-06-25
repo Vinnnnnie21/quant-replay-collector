@@ -9,9 +9,9 @@ from datetime import datetime
 from pathlib import Path
 
 try:
-    from ui_style import EXCHANGE_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME
+    from ui_style import EXCHANGE_DARK_THEME, OKX_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME, normalize_theme_settings
 except ImportError:  # pragma: no cover - package import path
-    from .ui_style import EXCHANGE_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME
+    from .ui_style import EXCHANGE_DARK_THEME, OKX_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME, normalize_theme_settings
 
 APP_NAME = "Quant Replay Collector"
 APP_VERSION = "1.4.1"
@@ -74,28 +74,26 @@ DATA_DIR = ROOT_DIR / "data"
 CACHE_DIR = DATA_DIR / "cache"
 EXPORT_DIR = DATA_DIR / "exports"
 LOG_DIR = ROOT_DIR / "logs"
+BACKUP_DIR = (ROOT_DIR if getattr(sys, "frozen", False) else ROOT_DIR.parent) / "backups"
 DB_PATH = DATA_DIR / "quant_replay.db"
 THEME_CONFIG_PATH = DATA_DIR / "theme_settings.json"
 
 BINANCE_FAPI = "https://fapi.binance.com/fapi/v1/klines"
 
-DEFAULT_THEME = dict(EXCHANGE_DARK_THEME, name="交易暗色")
+DEFAULT_THEME = normalize_theme_settings(EXCHANGE_DARK_THEME)
 
 THEME_PRESETS = {
-    "交易暗色": dict(EXCHANGE_DARK_THEME, name="交易暗色"),
-    "研究灰蓝": dict(RESEARCH_SLATE_THEME, name="研究灰蓝"),
-    "高对比暗色": dict(CONTRAST_DARK_THEME, name="高对比暗色"),
+    OKX_DARK_THEME["name"]: normalize_theme_settings(OKX_DARK_THEME),
+    EXCHANGE_DARK_THEME["name"]: normalize_theme_settings(EXCHANGE_DARK_THEME),
+    RESEARCH_SLATE_THEME["name"]: normalize_theme_settings(RESEARCH_SLATE_THEME),
+    CONTRAST_DARK_THEME["name"]: normalize_theme_settings(CONTRAST_DARK_THEME),
 }
 
 def load_theme_settings() -> dict:
     if THEME_CONFIG_PATH.exists():
         try:
             data = json.loads(THEME_CONFIG_PATH.read_text(encoding="utf-8"))
-            if data.get("name") not in THEME_PRESETS:
-                return dict(DEFAULT_THEME)
-            merged = dict(DEFAULT_THEME)
-            merged.update(data)
-            return merged
+            return normalize_theme_settings(data)
         except Exception as exc:
             broken = THEME_CONFIG_PATH.with_name(
                 f"{THEME_CONFIG_PATH.stem}.{datetime.now().strftime('%Y%m%d_%H%M%S')}.broken.json"
@@ -111,4 +109,5 @@ def load_theme_settings() -> dict:
 
 def save_theme_settings(theme: dict) -> None:
     THEME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    THEME_CONFIG_PATH.write_text(json.dumps(theme, ensure_ascii=False, indent=2), encoding="utf-8")
+    normalized = normalize_theme_settings(theme)
+    THEME_CONFIG_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")

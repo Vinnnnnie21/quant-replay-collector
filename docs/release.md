@@ -2,11 +2,13 @@
 
 ## v1.4.1 Hotfix Notes
 
-`v1.4.1` is a focused stability, engineering-hygiene and backtesting hotfix for the v1.4 line. It reduces main-thread work during high-speed playback plus manual trade actions, limits premium chart reads to recent samples, adds a background UI freeze watchdog, and avoids redundant chart and multi-timeframe context refreshes.
+`v1.4.1` is a focused stability, engineering-hygiene, backtesting and entry-logic research hotfix for the v1.4 line. It reduces main-thread work during high-speed playback plus manual trade actions, limits premium chart reads to recent samples, adds a background UI freeze watchdog, and avoids redundant chart and multi-timeframe context refreshes.
 
 It also adds a research-only Deep V backtesting workflow with `StrategyRuleParams`, selected historical date ranges, analysis-to-backtest parameter mapping, `BacktestService`, `BacktestController`, result presentation and descriptive manual-vs-rule comparison. The backtest panel therefore has new parameter, date-range and result controls; this is a functional addition, not a cosmetic redesign.
 
-This release does not change research schemas, SQLite schemas, manual trading semantics or live-trading behavior. Quant Replay Collector remains a local replay and research tool; it does not connect to Binance order APIs, submit live trades or provide investment advice. Historical simulations are rule-hypothesis diagnostics and do not predict future returns.
+Entry logic research adds a separate study layer for learning the user's long-entry judgment boundary. It uses `human_decision` labels (`ENTRY`, `REJECT`, `UNCERTAIN`, `UNLABELED`), decision-time context features, isolated post-event outcome labels, chronological/walk-forward validation with purge and embargo, pandas/numpy prototype and PU-style scoring, active review queues, optional exports and Markdown/JSON reports. Scores such as `human_entry_similarity` and `setup_confidence` are similarity diagnostics, not buy/sell signals.
+
+This release does not change manual trading semantics or live-trading behavior. SQLite migrations are append-only: schema version `6` adds `entry_annotations` while preserving existing sessions and old tables. Existing CSV, JSON, Markdown and Parquet exports remain available; entry logic files are optional additions. Quant Replay Collector remains a local replay and research tool; it does not connect to Binance order APIs, submit live trades or provide investment advice. Historical simulations and entry logic outputs are research diagnostics and do not predict future returns.
 
 Internal stabilization work moved table presentation, trade transaction
 orchestration, visible-window and marker calculations, session/export request
@@ -18,8 +20,8 @@ not claim that its final decomposition is complete.
 Clean release commands:
 
 ```powershell
-python scripts/clean_release.py --output dist/QuantReplayCollector-v1.4.1-Clean
-python scripts/check_release_clean.py dist/QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.4.1-Clean
 ```
 
 ## v1.4.0 Release Notes
@@ -33,8 +35,8 @@ This is a replay and research application. It does not connect to Binance order 
 Run from PowerShell at the repository root:
 
 ```powershell
-python scripts/clean_release.py --output dist/QuantReplayCollector-v1.4.1-Clean
-python scripts/check_release_clean.py dist/QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.4.1-Clean
 ```
 
 The output contains the source package, public documentation, tests, requirements and launch scripts. It includes `clean_release_report.json` and `clean_release_report.md`. The default public reports omit local absolute paths and individual skipped file names.
@@ -51,15 +53,14 @@ Runtime databases, settings, exports, cache and logs remain local. Before publis
 
 Do not publish a development working tree directly to `main`. Prepare a release branch, let CI verify it, then merge or tag the reviewed commit.
 
-PowerShell verification commands:
+PowerShell verification commands. Use the project virtual environment so release validation does not accidentally run against an incomplete system Python:
 
 ```powershell
-python -m compileall quant_collector_app scripts
-python -m pytest -q
-python quant_collector_app/self_check.py --core
-python -m quant_collector_app.self_check --core
-python scripts/clean_release.py --output dist/QuantReplayCollector-v1.4.1-Clean
-python scripts/check_release_clean.py dist/QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe -m compileall -q quant_collector_app tests
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m quant_collector_app.self_check --core
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.4.1-Clean
 ```
 
 Inspect local-only files before staging:

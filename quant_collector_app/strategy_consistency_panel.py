@@ -17,7 +17,6 @@ from strategy_consistency.profile import (
     default_reversal_long_profile,
 )
 from strategy_consistency.report import write_strategy_consistency_report
-from ui_style import style_primary_button, style_secondary_button
 
 
 WARNING_CODE_PATTERNS = [
@@ -60,8 +59,8 @@ class StrategyConsistencyPanel(QtWidgets.QWidget):
         self.profileModeBox = QtWidgets.QComboBox()
         self.btnRun = QtWidgets.QPushButton()
         self.btnExport = QtWidgets.QPushButton()
-        self.btnRun.setStyleSheet(style_primary_button())
-        self.btnExport.setStyleSheet(style_secondary_button())
+        self.btnRun.setProperty("role", "primaryButton")
+        self.btnExport.setProperty("role", "secondaryButton")
         row.addWidget(self.profileModeBox, stretch=1)
         row.addWidget(self.btnRun)
         row.addWidget(self.btnExport)

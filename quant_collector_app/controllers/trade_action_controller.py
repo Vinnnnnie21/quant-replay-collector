@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 try:
     from app_logger import get_logger
@@ -56,13 +56,10 @@ def _log_slow(window, name: str, started: float) -> None:
 
 
 def pause_replay_for_manual_trade(window) -> None:
-    if window.playing or getattr(window.replay_controller, "playing", False):
-        window._log("manual trade requested while replay is playing; paused replay before transaction")
-    window.playing = False
-    window._accum = 0.0
-    window.replay_controller.playing = False
-    window.replay_controller.accumulated_bars = 0.0
-    window._update_load_play_button()
+    # Manual trades no longer pause playback (user preference). The trade is
+    # recorded against the bar captured before this call, so replay can keep
+    # running without affecting which bar the transaction is attributed to.
+    return
 
 
 def current_bar(window):
@@ -272,9 +269,11 @@ def request_close_trade(window, expected_side: str) -> None:
     if not window._is_trade_recording_allowed():
         window._warn_trade_interval_mismatch()
         return
-    trade = window.selected_open_trade(verify_db=True)
+    trade = selected_open_trade(window, verify_db=True)
     if not trade:
-        QtWidgets.QMessageBox.warning(window, "未选择仓位", "请先在“未平仓”列表中选中一笔仓位。")
+        trade = _auto_select_open_trade_if_needed(window, expected_side)
+    if not trade:
+        QtWidgets.QMessageBox.warning(window, "无法平仓", "当前没有可平仓的持仓。请先开仓。")
         return
     if trade.get("status") != "OPEN":
         QtWidgets.QMessageBox.warning(window, "仓位状态错误", "当前选中的交易不是未平仓状态，请刷新或重新选择。")
@@ -349,6 +348,47 @@ def request_close_trade(window, expected_side: str) -> None:
     window.execute_command(
         ActionCommand(name=f"close_{expected_side.lower()}", do_fn=do, undo_fn=undo_action)
     )
+
+
+def _auto_select_open_trade_if_needed(window, expected_side: str | None = None) -> dict | None:
+    trade = selected_open_trade(window)
+    if trade:
+        return trade
+    if window.openTradesTable.rowCount() == 0:
+        return None
+    # No row selected: pick the most recently opened OPEN trade that matches the
+    # requested side, so 平多/平空 (C/X) work even with several positions open.
+    candidate_id = None
+    for tid, candidate in reversed(list(window._trade_by_id.items())):
+        if candidate.get("status") != "OPEN":
+            continue
+        if expected_side is not None and candidate.get("side") != expected_side:
+            continue
+        candidate_id = tid
+        break
+    if candidate_id is None and expected_side is None:
+        candidate_id = _first_open_trade_id(window)
+    if candidate_id:
+        trade = window._trade_by_id.get(candidate_id)
+        if trade and trade.get("status") == "OPEN":
+            _select_row_for_trade_id(window.openTradesTable, candidate_id)
+            return trade
+    return None
+
+
+def _first_open_trade_id(window) -> str | None:
+    for tid, t in window._trade_by_id.items():
+        if t.get("status") == "OPEN":
+            return tid
+    return None
+
+
+def _select_row_for_trade_id(table, trade_id: str) -> None:
+    for row in range(table.rowCount()):
+        item = table.item(row, 0)
+        if item and item.data(QtCore.Qt.UserRole) == trade_id:
+            table.selectRow(row)
+            return
 
 
 def selected_open_trade(window, verify_db: bool = False):

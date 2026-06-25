@@ -66,7 +66,10 @@ quant_collector_app/data/logs/*.log.*
 theme_settings.json
 
 # Local backups and temporary working files
+.scratch/
 Backup/
+backups/
+quant_collector_app/backups/
 .codex-backups/
 .codex-tmp/
 .codex_pytest_tmp/

@@ -4,7 +4,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from i18n import tr
+try:
+    from i18n import tr
+except ImportError:  # package import path
+    from ..i18n import tr
 
 
 def _text(key: str, language: str, default: str) -> str:

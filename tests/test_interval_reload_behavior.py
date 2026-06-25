@@ -32,6 +32,18 @@ class _Status:
         self.text = text
 
 
+class _Hint:
+    def __init__(self):
+        self.visible = False
+        self.text = ""
+
+    def setVisible(self, visible: bool):
+        self.visible = visible
+
+    def setText(self, text: str):
+        self.text = text
+
+
 def _state(dirty: bool, playing: bool = False) -> SimpleNamespace:
     calls: list[tuple] = []
     window = SimpleNamespace(
@@ -42,17 +54,17 @@ def _state(dirty: bool, playing: bool = False) -> SimpleNamespace:
         replay_controller=SimpleNamespace(playing=playing),
         btnLoadPlay=_Button(),
         status=_Status(),
+        marketDirtyHint=_Hint(),
         load_data=lambda *args, **kwargs: calls.append(("load", args, kwargs)),
         toggle_play=lambda: calls.append(("play",)),
         _is_market_params_dirty=lambda: dirty,
         _update_header=lambda: calls.append(("header",)),
         tr=lambda key: {
             "loading": "加载中...",
-            "load_klines": "加载K线",
-            "reload_klines": "重新加载K线",
             "pause": "暂停",
             "play": "播放",
-            "market_params_changed": "行情参数已变更，点击重新加载K线。",
+            "market_params_dirty_hint": "行情参数已更改，请应用",
+            "apply_market_before_play": "请先应用行情参数",
         }.get(key, key),
         _calls=calls,
     )
@@ -69,12 +81,24 @@ def test_loaded_clean_data_toggles_play():
     assert window._calls == [("play",)]
 
 
-def test_loaded_dirty_data_reloads_instead_of_playing_old_frame():
+def test_loaded_dirty_data_does_not_reload_from_play_button():
     window = _state(True)
 
     MainWindow.load_or_toggle_play(window)
 
-    assert window._calls == [("load", (), {"restore": False, "use_cache": True})]
+    assert window._calls == []
+    assert window.status.text == "请先应用行情参数"
+    assert window.marketDirtyHint.visible is True
+
+
+def test_empty_data_play_button_does_not_load_market_data():
+    window = _state(False)
+    window.df = pd.DataFrame()
+
+    MainWindow.load_or_toggle_play(window)
+
+    assert window._calls == []
+    assert window.status.text == "请先应用行情参数"
 
 
 def test_market_parameter_change_stops_playback_and_requests_reload_feedback():
@@ -85,8 +109,22 @@ def test_market_parameter_change_stops_playback_and_requests_reload_feedback():
     assert window.playing is False
     assert window.replay_controller.playing is False
     assert window.market_dirty is True
-    assert window.status.text == "行情参数已变更，点击重新加载K线。"
-    assert window.btnLoadPlay.text == "重新加载K线"
+    assert window.status.text == "行情参数已更改，请应用"
+    assert window.marketDirtyHint.visible is True
+    assert window.btnLoadPlay.text == "播放 (Space)"
+    assert window.btnLoadPlay.enabled is False
+
+
+def test_clean_market_parameter_state_hides_dirty_hint():
+    window = _state(False, playing=False)
+    window.marketDirtyHint.visible = True
+
+    MainWindow.on_market_params_changed(window)
+
+    assert window.market_dirty is False
+    assert window.marketDirtyHint.visible is False
+    assert window.btnLoadPlay.text == "播放 (Space)"
+    assert window.btnLoadPlay.enabled is True
 
 
 def test_dirty_button_state_takes_priority_over_playing():
@@ -94,7 +132,8 @@ def test_dirty_button_state_takes_priority_over_playing():
 
     MainWindow._update_load_play_button(window)
 
-    assert window.btnLoadPlay.text == "重新加载K线"
+    assert window.btnLoadPlay.text == "播放 (Space)"
+    assert window.btnLoadPlay.enabled is False
 
 
 def test_direct_play_action_cannot_resume_dirty_market_data():

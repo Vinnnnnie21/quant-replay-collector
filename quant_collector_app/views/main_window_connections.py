@@ -13,11 +13,15 @@ def setup_table(table: QtWidgets.QTableWidget) -> None:
     table.setAlternatingRowColors(True)
     table.setShowGrid(False)
     table.setWordWrap(False)
+    table.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustIgnored)
+    table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+    table.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+    table.setMinimumWidth(0)
     table.verticalHeader().setDefaultSectionSize(28)
     header = table.horizontalHeader()
     header.setStretchLastSection(True)
     header.setDefaultAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
-    header.setMinimumSectionSize(72)
+    header.setMinimumSectionSize(56)
     header.setSectionResizeMode(QtWidgets.QHeaderView.Interactive)
 
 
@@ -54,6 +58,8 @@ def add_window_shortcut(window, sequence, handler):
 
 
 def connect_main_window_signals(window) -> None:
+    if hasattr(window, "btnApplyMarket"):
+        window.btnApplyMarket.clicked.connect(window.load_data)
     window.btnLoadPlay.clicked.connect(window.load_or_toggle_play)
     window.btnStep.clicked.connect(window.step_once)
     window.btnToEnd.clicked.connect(window.jump_to_end)
@@ -69,12 +75,25 @@ def connect_main_window_signals(window) -> None:
     window.btnUndo.clicked.connect(window.undo)
     window.btnRedo.clicked.connect(window.redo)
     window.btnClearTradeRecords.clicked.connect(window.confirm_clear_trade_records)
+    if hasattr(window, "btnToggleDanger"):
+        window.btnToggleDanger.toggled.connect(window.dangerActions.setVisible)
+        window.btnToggleDanger.toggled.connect(
+            lambda checked: window.btnToggleDanger.setText("隐藏危险操作" if checked else "显示危险操作")
+        )
     window.btnApplyEventMeta.clicked.connect(window.apply_labels_to_selected_event)
     window.symbolSearchEdit.textChanged.connect(window.filter_symbol_list)
     window.symbolList.itemClicked.connect(window.on_symbol_item_selected)
     window.symbolList.itemActivated.connect(window.on_symbol_item_selected)
     window.symbolBox.currentTextChanged.connect(window.on_market_params_changed)
-    window.intervalBox.currentTextChanged.connect(window.on_interval_changed_for_dynamic_switch)
+    window.intervalBox.currentTextChanged.connect(window.on_market_params_changed)
+    for interval, button in getattr(window, "chartIntervalButtons", {}).items():
+        def switch_chart_interval(_checked=False, value=interval):
+            blocked = window.intervalBox.blockSignals(True)
+            window.intervalBox.setCurrentText(value)
+            window.intervalBox.blockSignals(blocked)
+            window.on_interval_changed_for_dynamic_switch(value)
+
+        button.clicked.connect(switch_chart_interval)
     window.startDate.dateChanged.connect(window.on_market_params_changed)
     window.endDate.dateChanged.connect(window.on_market_params_changed)
     window.speedSlider.valueChanged.connect(window.on_speed_changed)

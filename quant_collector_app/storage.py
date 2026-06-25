@@ -30,8 +30,10 @@ except ImportError:  # pragma: no cover - package import path
 
 
 class StorageManager:
-    SCHEMA_VERSION = 5
+    SCHEMA_VERSION = 6
     MANUAL_RESEARCH_TABLES = (
+        "entry_annotation_history",
+        "entry_annotations",
         "research_outcome_labels",
         "event_context_features",
         "strategy_samples",
@@ -58,6 +60,8 @@ class StorageManager:
         "strategy_samples",
         "event_context_features",
         "research_outcome_labels",
+        "entry_annotations",
+        "entry_annotation_history",
     }
     TRADE_COLUMNS = [
         "trade_id", "session_id", "symbol", "interval", "side", "status",
@@ -97,6 +101,7 @@ class StorageManager:
         self._migrate_to_v3()
         self._migrate_to_v4()
         self._migrate_to_v5()
+        self._migrate_to_v6()
         with self.connect() as conn:
             migrations.set_schema_version(conn, self.SCHEMA_VERSION)
 
@@ -119,6 +124,11 @@ class StorageManager:
     def _migrate_to_v5(self):
         with self.connect() as conn:
             migrations.migrate_to_v5(conn)
+
+    def _migrate_to_v6(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v6(conn)
+            research_repository.ensure_entry_annotation_storage(conn)
 
     def schema_version(self) -> int:
         with self.connect() as conn:
@@ -294,6 +304,112 @@ class StorageManager:
     def save_research_outcome_labels(self, rows: Iterable[dict[str, Any]]) -> None:
         with self.connect() as conn:
             research_repository.save_research_outcome_labels(conn, rows)
+
+    def save_entry_annotation(self, row: dict[str, Any]) -> dict[str, Any]:
+        return self.save_or_update_annotation(row)
+
+    def save_or_update_annotation(self, row: dict[str, Any]) -> dict[str, Any]:
+        with self.connect() as conn:
+            return research_repository.save_or_update_entry_annotation(conn, row)
+
+    def save_entry_annotations(self, rows: Iterable[dict[str, Any]]) -> None:
+        with self.connect() as conn:
+            research_repository.save_entry_annotations(conn, rows)
+
+    def get_active_annotation_for_observation(
+        self,
+        *,
+        session_id: str | None,
+        symbol: str | None,
+        interval: str | None,
+        decision_bar_index: int | None,
+        observation_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return research_repository.get_active_annotation_for_observation(
+                conn,
+                session_id=session_id,
+                symbol=symbol,
+                interval=interval,
+                decision_bar_index=decision_bar_index,
+                observation_id=observation_id,
+            )
+
+    def update_active_annotation_for_observation(
+        self,
+        *,
+        session_id: str,
+        symbol: str,
+        interval: str,
+        decision_bar_index: int,
+        observation_id: str | None = None,
+        human_decision: str,
+        confidence: int | None,
+        reason_tags: list[str] | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            return research_repository.update_active_annotation_for_observation(
+                conn,
+                session_id=session_id,
+                symbol=symbol,
+                interval=interval,
+                decision_bar_index=decision_bar_index,
+                observation_id=observation_id,
+                human_decision=human_decision,
+                confidence=confidence,
+                reason_tags=reason_tags,
+                note=note,
+            )
+
+    def list_entry_annotations(
+        self,
+        annotation_id: str | None = None,
+        session_id: str | None = None,
+        human_decision: str | None = None,
+        include_inactive: bool = False,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return research_repository.list_entry_annotations(
+                conn,
+                annotation_id=annotation_id,
+                session_id=session_id,
+                human_decision=human_decision,
+                include_inactive=include_inactive,
+            )
+
+    def delete_entry_annotation(self, annotation_id: str) -> int:
+        return self.soft_delete_annotation(annotation_id)
+
+    def soft_delete_annotation(self, annotation_id: str, reason: str | None = None) -> int:
+        with self.connect() as conn:
+            return research_repository.soft_delete_annotation(conn, annotation_id, reason=reason)
+
+    def list_entry_annotation_history(
+        self,
+        annotation_id: str | None = None,
+        session_id: str | None = None,
+        observation_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return research_repository.list_entry_annotation_history(
+                conn,
+                annotation_id=annotation_id,
+                session_id=session_id,
+                observation_id=observation_id,
+            )
+
+    def list_annotation_history(
+        self,
+        annotation_id: str | None = None,
+        session_id: str | None = None,
+        observation_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.list_entry_annotation_history(
+            annotation_id=annotation_id,
+            session_id=session_id,
+            observation_id=observation_id,
+        )
 
     def list_research_outcome_labels(
         self,

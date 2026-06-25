@@ -24,7 +24,6 @@ try:
         format_summary,
         trade_rows,
     )
-    from ui_style import style_primary_button, style_secondary_button
 except ImportError:  # pragma: no cover - package import path
     from .app_i18n import tr
     from .backtesting.engine import run_backtest
@@ -43,7 +42,6 @@ except ImportError:  # pragma: no cover - package import path
         format_summary,
         trade_rows,
     )
-    from .ui_style import style_primary_button, style_secondary_button
 
 
 class BacktestPanel(QtWidgets.QWidget):
@@ -111,7 +109,7 @@ class BacktestPanel(QtWidgets.QWidget):
         self.btnApplyAnalysis = QtWidgets.QPushButton("Apply params from analysis")
         self.btnReset = QtWidgets.QPushButton("Reset")
         for button in (self.btnLoadDefaults, self.btnApplyAnalysis, self.btnReset):
-            button.setStyleSheet(style_secondary_button())
+            button.setProperty("role", "secondaryButton")
             param_button_row.addWidget(button)
         layout.addLayout(param_button_row)
 
@@ -138,7 +136,7 @@ class BacktestPanel(QtWidgets.QWidget):
         self.ruleIndexSpin.setRange(0, 100000)
         self.ruleIndexSpin.setValue(0)
         self.btnImportRule = QtWidgets.QPushButton("Import candidate rule")
-        self.btnImportRule.setStyleSheet(style_secondary_button())
+        self.btnImportRule.setProperty("role", "secondaryButton")
 
         form.addRow("Strategy", self.strategyBox)
         form.addRow("fast_window", self.fastSpin)
@@ -155,10 +153,10 @@ class BacktestPanel(QtWidgets.QWidget):
         self.btnScan = QtWidgets.QPushButton("Run parameter scan")
         self.btnWalkForward = QtWidgets.QPushButton("Run walk-forward")
         self.btnExport = QtWidgets.QPushButton("Export backtest")
-        self.btnRun.setStyleSheet(style_primary_button())
-        self.btnScan.setStyleSheet(style_secondary_button())
-        self.btnWalkForward.setStyleSheet(style_secondary_button())
-        self.btnExport.setStyleSheet(style_secondary_button())
+        self.btnRun.setProperty("role", "primaryButton")
+        self.btnScan.setProperty("role", "secondaryButton")
+        self.btnWalkForward.setProperty("role", "secondaryButton")
+        self.btnExport.setProperty("role", "secondaryButton")
         button_row.addWidget(self.btnRun)
         button_row.addWidget(self.btnScan)
         button_row.addWidget(self.btnWalkForward)

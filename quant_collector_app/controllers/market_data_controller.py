@@ -37,6 +37,21 @@ except ImportError:  # pragma: no cover - package import path
 logger = get_logger(__name__)
 
 
+def _chart_status_message(message: str) -> str:
+    text = str(message or "").strip()
+    if text.startswith("Loaded cache "):
+        return "已从本地缓存加载K线"
+    if "; cache=" in text:
+        text = text.split("; cache=", 1)[0].strip() + "."
+    if "; quality=" in text:
+        text = text.split("; quality=", 1)[0].strip() + "."
+    if "; reason=" in text:
+        text = text.split("; reason=", 1)[0].strip() + "."
+    if "cache fallback failed" in text:
+        text = "Online load failed; cache fallback failed."
+    return text[:96] + "..." if len(text) > 99 else text
+
+
 def _render_state(window) -> RenderState:
     getter = getattr(window, "_chart_render_state", None)
     if callable(getter):
@@ -77,6 +92,9 @@ def accept_loaded_market_key(window, frame: pd.DataFrame, successful: bool = Tru
         window._display_market_key = window._loaded_market_key
         if not getattr(window, "trades", []) and not getattr(window, "events", []):
             window._sample_market_key = window._display_market_key
+        hint = getattr(window, "marketDirtyHint", None)
+        if hint is not None:
+            hint.setVisible(False)
     window._pending_market_key = None
     window.market_dirty = window._is_market_params_dirty()
 
@@ -147,7 +165,7 @@ def on_interval_changed_for_dynamic_switch(window, new_interval: str) -> None:
 
 
 def on_market_params_changed(window) -> None:
-    window.market_dirty = window._is_market_params_dirty()
+    window.market_dirty = True if window.df.empty else window._is_market_params_dirty()
     if window.market_dirty:
         window.playing = False
         window._accum = 0.0
@@ -161,6 +179,11 @@ def on_market_params_changed(window) -> None:
     window._update_header()
     if window.market_dirty:
         window._show_market_dirty_feedback()
+    else:
+        hint = getattr(window, "marketDirtyHint", None)
+        if hint is not None:
+            hint.setVisible(False)
+        window._update_load_play_button()
 
 
 def clear_timeframe_switch_pending(window) -> None:
@@ -236,7 +259,7 @@ def load_data(
 
 def on_load_progress(window, message: str) -> None:
     window.app_state.data_load.status_message = message
-    window.status.setText(message)
+    window.status.setText(_chart_status_message(message))
     window._log(message)
 
 
@@ -419,11 +442,15 @@ def load_or_toggle_play(window) -> None:
     if window._loading_data:
         return
     if window.df.empty:
-        window.load_data()
+        window.status.setText(window.tr("apply_market_before_play"))
     elif window._is_market_params_dirty():
-        window.load_data(restore=False, use_cache=True)
+        window.market_dirty = True
+        window._show_market_dirty_feedback()
+        window.status.setText(window.tr("apply_market_before_play"))
     else:
         window.toggle_play()
+        return
+    window._update_load_play_button()
 
 
 __all__ = [

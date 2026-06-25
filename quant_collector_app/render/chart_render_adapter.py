@@ -12,7 +12,7 @@ from PySide6 import QtCore
 try:
     from app_config import BJT
     from market_data import clamp
-    from presenters.formatters import fmt_num, short_id
+    from presenters.formatters import fmt_num
     from render.chart_render_plan import build_chart_render_plan, clamp_visible_range
     from render.marker_renderer import MarkerPayloadCache
     from render.visible_window import build_rebuild_plan
@@ -20,7 +20,7 @@ try:
 except ImportError:  # pragma: no cover - package import path
     from ..app_config import BJT
     from ..market_data import clamp
-    from ..presenters.formatters import fmt_num, short_id
+    from ..presenters.formatters import fmt_num
     from .chart_render_plan import build_chart_render_plan, clamp_visible_range
     from .marker_renderer import MarkerPayloadCache
     from .visible_window import build_rebuild_plan
@@ -186,7 +186,8 @@ def autoscale_y(window, x0, x1) -> None:
     if abs(hmax - lmin) < 1e-9:
         hmax += 1.0
         lmin -= 1.0
-    window.pricePlot.setYRange(lmin, hmax, padding=0.0)
+    if not getattr(window.vb_price, "yManual", False):
+        window.pricePlot.setYRange(lmin, hmax, padding=0.0)
     vmax = float(visible["volume"].max()) if len(visible) else 1.0
     window.volPlot.setYRange(0.0, max(vmax, 1.0), padding=0.0)
 
@@ -267,20 +268,13 @@ def render_chart(window, force: bool = False) -> None:
         window._refresh_multi_timeframe_context()
     index = int(clamp(window.cursor, 0, len(window.df) - 1))
     bar_time = pd.to_datetime(window.df.iloc[index]["open_time_bjt"]).tz_convert(BJT).strftime(
-        "%Y-%m-%d %H:%M:%S"
+        "%Y-%m-%d %H:%M"
     )
     bar = window.df.iloc[index]
-    report = window.df.attrs.get("data_quality_report", {})
-    data_source = window.df.attrs.get("data_source", "-")
-    quality = report.get("data_quality_status", "-") if isinstance(report, dict) else "-"
     window.status.setText(
         f"{window.symbolBox.currentText().strip().upper()} {window.intervalBox.currentText().strip()} | "
-        f"{'播放' if window.playing else '暂停'} | 速度 x{window.current_speed():.1f} | "
-        f"cursor={window.cursor}/{max(0, len(window.df) - 1)} | {bar_time} BJT | "
-        f"O={fmt_num(bar.get('open'))} H={fmt_num(bar.get('high'))} "
-        f"L={fmt_num(bar.get('low'))} C={fmt_num(bar.get('close'))} | "
-        f"源={data_source} 质量={quality} 样本={len(window.events)} "
-        f"会话={short_id(window.session_id) if window.session_id else '-'} | "
+        f"{'播放' if window.playing else '暂停'} | {bar_time} | "
+        f"C {fmt_num(bar.get('close'))} | "
         f"{'跟随最新' if window.follow_latest else '自由浏览'}"
     )
     if window._is_market_params_dirty():

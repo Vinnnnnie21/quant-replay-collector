@@ -10,9 +10,19 @@ The goal is not to claim that a strategy is profitable. The goal is to make subj
 
 > This is a research and replay tool, not a live trading system. Backtest results and AI summaries do not represent investment advice or future performance.
 
-## v1.4.1 Stability And Backtesting Hotfix
+## Unreleased changes (UI theming, chart and trade fixes)
 
-Version `1.4.1` is a focused hotfix for replay stability, engineering hygiene and a research-only backtesting workflow:
+These sit on top of `v1.4.1` and are not yet version-tagged:
+
+- Switchable colour presets — `黑色配色` (OKX-style near-black), `灰色配色`, `研究配色`, `高对比配色`. Buttons, period/timeframe chips, inputs and event-tag toggles share one dark rounded "pill" design language. Theming is token-driven, and each control also gets a local stylesheet so its fill renders reliably under the Fusion style.
+- The price (Y) axis can be zoomed freely with `Ctrl` + mouse wheel; plain wheel still zooms time. `重置缩放 / Reset zoom` restores automatic vertical fitting.
+- Manual open/close actions **no longer pause playback** (this supersedes the v1.4.1 behaviour described below); the trade is still recorded against the bar captured when the action is requested.
+- Closing with `C` / `X` now works with several open positions: a recovered `selected_open_trade` plus side-aware auto-selection closes the matching open trade.
+- The data-analysis page is fully localised — no hard-coded Chinese/English mixing (added `entry_logic.reject` / `entry_logic.uncertain` keys and a regression test).
+
+## v1.4.1 Stability, Backtesting And Entry Logic Research Hotfix
+
+Version `1.4.1` is a focused hotfix for replay stability, engineering hygiene, a research-only backtesting workflow and optional entry logic research:
 
 - Premium chart refresh reads only recent premium samples.
 - Manual trade actions pause playback, prevent duplicate trade transactions, and defer heavier research-summary refreshes.
@@ -23,8 +33,9 @@ Version `1.4.1` is a focused hotfix for replay stability, engineering hygiene an
 - The backtest panel accepts a symbol, interval, historical date range and editable rule parameters.
 - Analysis thresholds can be mapped into backtest parameters for review before simulation.
 - `BacktestService` produces historical summary, trade, equity and descriptive manual-vs-rule comparison output.
+- Entry logic research adds `human_decision` annotations, loose observation candidates, decision-time context features, isolated post-event outcome labels, chronological/walk-forward validation, prototype and PU similarity scoring, active review queues, experiment manifests and Markdown/JSON reports.
 
-The backtest panel layout is expanded with parameter, date-range and result controls. Manual trade semantics, SQLite schema and research schema are unchanged. No Binance live-order API, automatic order execution or live-trading behavior is added. Backtest results are historical rule-hypothesis diagnostics, not trading signals, future-return predictions or investment advice.
+The backtest panel layout is expanded with parameter, date-range and result controls. Entry logic research is a study layer for learning where the user's long-entry judgment boundary sits; it is not a trading layer. Manual trade semantics and live-trading behavior are unchanged. SQLite remains backward compatible; schema version `6` only appends the `entry_annotations` table through an idempotent migration. No Binance live-order API, automatic order execution or live-trading behavior is added. Backtest results and entry logic scores are historical research diagnostics, not trading signals, future-return predictions or investment advice.
 
 ### Architecture Boundaries
 
@@ -86,6 +97,12 @@ Existing `sessions`, `trades`, `trade_events`, `event_windows`, `event_features`
 
 Schema version `3` adds read-path indexes for session, symbol, interval, trade and event-time queries. Connections run with WAL mode, `PRAGMA foreign_keys=ON`, normal synchronous mode and a five-second busy timeout. Legacy databases are upgraded conservatively; complete declared foreign-key coverage is not claimed.
 
+Later research migrations append tables without removing legacy data:
+
+- `strategy_profiles`, `observation_universe` and `strategy_samples` support declared research profiles and sample-universe records.
+- `event_context_features` and `research_outcome_labels` keep decision-time inputs separate from post-event labels.
+- Schema version `6` adds `entry_annotations` for `human_decision` labels. Existing sessions remain readable, and reopening an older database creates the table if it is missing.
+
 ### Performance And Stability Diagnostics
 
 The desktop launcher defers export, analysis, backtest and strategy-consistency imports until those tools are opened. The readonly local API is not imported or started by desktop startup. Data exports started from the main window or research page run in a background worker. Large chart histories are reduced to the visible region plus a small margin before plot items are rebuilt.
@@ -100,15 +117,15 @@ python scripts/profile_runtime.py
 
 Reports are written to `performance_reports/`. A missing GUI dependency or unavailable Qt platform is recorded as an explicit failed probe rather than terminating the script without a report.
 
-`python quant_collector_app/self_check.py` now includes runtime directory, SQLite connection and required dependency health checks. Invalid app or theme settings are ignored safely, with a `.broken.json` backup preserved for diagnosis.
+`.\.venv\Scripts\python.exe -m quant_collector_app.self_check --core` includes runtime directory, SQLite connection and required dependency health checks. Invalid app or theme settings are ignored safely, with a `.broken.json` backup preserved for diagnosis.
 
 ### Clean Release
 
 Build a distribution directory without local caches, databases, logs, settings, Python cache directories or backup folders:
 
 ```powershell
-python scripts/clean_release.py --output dist/QuantReplayCollector-v1.4.1-Clean
-python scripts/check_release_clean.py dist/QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.4.1-Clean
 ```
 
 The clean directory contains source code, public documentation, tests, launcher files and audit reports named `clean_release_report.json` and `clean_release_report.md`. Public reports contain aggregate exclusion counts, not local absolute paths or skipped file names. `check_release_clean.py` must pass before a package is uploaded. Local runtime data in the working directory is not deleted. Virtual environments, prior `dist` output, performance reports, databases, cache, exports, logs, local settings, backup folders and local agent workflow directories are not copied.
@@ -118,6 +135,38 @@ The clean directory contains source code, public documentation, tests, launcher 
 Enhanced features include log returns, realized volatility, ATR-normalised candle measures, volume/range z-scores, previous-range breaks, trend slope, volatility regime and time-of-day bucket. These features use only the event bar and earlier bars.
 
 `feature_registry.csv` documents model-input eligibility and leakage risk. Forward returns, post-event windows, MFE, MAE and manual final outcomes remain label/research-result fields and are excluded from model-input datasets and feature-rule strategy conditions.
+
+### Entry Logic Research
+
+Entry logic research models the user's opening judgment boundary for deep-V long-entry setups. The supervised label is `human_decision`, not `future_return`.
+
+`human_decision` has four values:
+
+- `ENTRY`: the user would consider a long entry at that decision point.
+- `REJECT`: the user explicitly rejects that setup.
+- `UNCERTAIN`: the user marks the setup as unclear.
+- `UNLABELED`: the candidate has not been reviewed. It is not a negative sample by default.
+
+The research path keeps three layers separate:
+
+- `entry_context_features.csv` contains decision-time features only.
+- `entry_outcome_labels.csv` contains post-event results for posterior analysis only.
+- `entry_logic_scores.csv` and `entry_review_queue.csv` contain `human_entry_similarity` / `setup_confidence` and active-learning review suggestions. They are not buy/sell instructions.
+
+Financial time-series samples are split chronologically or with walk-forward windows. Purge and embargo remove boundary-adjacent samples that can share overlapping future label windows or near-neighbor information.
+
+The first scoring layer uses pandas / numpy only: ENTRY prototypes, PU-style positive-unlabeled ranking and active learning for manual relabeling efficiency. It does not use sklearn, torch, tensorflow or xgboost, and it does not score expected return.
+
+To generate reports, use the Data Analysis page's `Entry Logic Research` tab and click `生成 Entry Logic 报告`, or export a session normally. Optional files include:
+
+- `entry_annotations.csv`
+- `entry_observation_universe.csv`
+- `entry_context_features.csv`
+- `entry_outcome_labels.csv`
+- `entry_logic_scores.csv`
+- `entry_review_queue.csv`
+- `entry_logic_report.md`
+- `entry_logic_report.json`
 
 ### Event Studies And Backtests
 
@@ -139,13 +188,13 @@ The time-series methodology is limited to explanatory diagnostics commonly used 
 
 ### Verification
 
-From the repository root, after installing `quant_collector_app/requirements.txt`:
+From the repository root, use the project virtual environment. Activate `.venv` first or call its Python executable directly:
 
 ```powershell
-python -m compileall quant_collector_app scripts
-python -m pytest -q
-python quant_collector_app/self_check.py --core
-python -m quant_collector_app.self_check --core
+.\.venv\Scripts\python.exe -m compileall -q quant_collector_app tests
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -q tests\test_entry_logic_research_pipeline.py tests\test_exporter_entry_logic.py tests\test_storage_entry_annotations.py
+.\.venv\Scripts\python.exe -m quant_collector_app.self_check --core
 ```
 
 See `docs/testing.md` for the full local release-validation command set.
@@ -346,10 +395,9 @@ python -m PyInstaller --noconfirm --clean --onefile --windowed --name QuantRepla
 在项目根目录运行：
 
 ```powershell
-python -m compileall quant_collector_app scripts
-python -m pytest -q
-python quant_collector_app/self_check.py --core
-python -m quant_collector_app.self_check --core
+.\.venv\Scripts\python.exe -m compileall -q quant_collector_app tests
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m quant_collector_app.self_check --core
 ```
 
 ## 数据源说明：Binance Futures Kline API
@@ -414,6 +462,16 @@ quant_collector_app/data/exports/
 - `export_manifest.json`：导出版本、session、品种、周期、行数和文件清单。
 - `data_dictionary.md`：导出文件用途和字段说明。
 
+可选的 entry logic research 导出会追加以下文件，不替换旧 CSV / JSON / Markdown / Parquet 文件：
+
+- `entry_annotations.csv`：人工 `human_decision` 标注，取值为 `ENTRY`、`REJECT`、`UNCERTAIN`、`UNLABELED`。
+- `entry_observation_universe.csv`：宽松候选 observation，只表示“值得人工看一眼”，不是开仓建议。
+- `entry_context_features.csv`：只使用决策时可见 K 线生成的模型输入候选。
+- `entry_outcome_labels.csv`：后验结果标签，单独导出，不得作为模型输入。
+- `entry_logic_scores.csv`：`human_entry_similarity` / `setup_confidence` 等相似度分数，不是买卖信号。
+- `entry_review_queue.csv`：active learning 复标队列，用来提高人工标注效率。
+- `entry_logic_report.md` / `entry_logic_report.json`：entry logic research 报告。
+
 ## 快捷键说明
 
 | 快捷键 | 功能 |
@@ -450,6 +508,23 @@ quant_collector_app/data/exports/
 - 把未来收益、MFE、MAE、人工交易结果放入标签表，不混入模型输入。
 - 通过分箱分析和候选规则挖掘，寻找“主观概念”对应的数值区间。
 - 后续再做样本外验证和规则回测。
+
+## 用户开仓逻辑研究
+
+entry logic research 的目标更窄：学习用户在深 V 反转做多场景中的开仓判断边界。标签是 `human_decision`，不是 `future_return`。
+
+`ENTRY` 表示用户会考虑开多；`REJECT` 表示用户明确拒绝该 setup；`UNCERTAIN` 表示需要继续观察；`UNLABELED` 表示尚未人工确认。未开仓、未入选或未复标的样本不能自动当成负样本。
+
+`entry_context_features` 只包含决策时可见数据，例如前序跌幅、影线结构、成交量、波动和相对位置。`entry_outcome_labels` 单独保存未来收益、MFE/MAE、止盈止损触发等后验字段，只能用于报告和风险诊断。
+
+时间切分使用 chronological split 或 walk-forward split。`purge` 用来移除训练/测试边界附近可能共享标签窗口的样本，`embargo` 用来隔离边界后的近邻污染。金融时间序列不做随机切分。
+
+半监督和 PU 原型只用 pandas / numpy，把人工 `ENTRY` 当正例画像，再给 `UNLABELED` 候选计算 `human_entry_similarity`。active learning 只挑出最值得用户复标的候选，不生成交易信号，也不构成投资建议。
+
+报告生成方式：
+
+- 在数据分析页打开 `Entry Logic Research` tab，点击 `生成 Entry Logic 报告`。
+- 或执行普通 session 导出，读取导出目录中的 `entry_logic_report.md` / `entry_logic_report.json` 和 `entry_review_queue.csv`。
 
 ## 新增分析模块
 
@@ -671,5 +746,6 @@ API Key 不在界面保存。外部模型密钥只从环境变量读取。
 - 事件研究：事件研究表和数据集摘要。
 - 策略一致性：检查样本是否适合继续做规则挖掘。
 - 回测研究：运行内置策略、参数扫描和样本外验证。
+- Entry Logic Research：生成用户开仓逻辑研究报告，查看标注数量和 top-k review queue。该入口只导出报告和复标队列，不做自动交易。
 - USDT 溢价：查看最近采样和溢价曲线。
 - AI 摘要：预留入口，导出后可通过本地 API 获取 LLM context。

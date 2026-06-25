@@ -5,32 +5,37 @@ from typing import Any
 
 import pandas as pd
 
-
-RISK_LINES = [
-    "本报告只用于交易训练、复盘和研究。",
-    "统计相关不等于因果。",
-    "样本量不足时不能下结论。",
-    "人工标注存在选择偏差。",
-    "回放收益不代表实盘收益。",
-    "候选规则不是交易建议。",
-    "本报告不构成投资建议。",
-]
+try:
+    from i18n import tr as _i18n_tr
+except ImportError:
+    from ..i18n import tr as _i18n_tr
 
 
-def _df_head_md(df: pd.DataFrame | None, n: int = 10) -> str:
+def _tr(key: str, language: str = "zh_CN", default: str | None = None) -> str:
+    return _i18n_tr(key, language, default)
+
+
+def _risk_lines(language: str) -> list[str]:
+    return [
+        _tr("report.risk_line_train_only", language),
+        _tr("report.risk_line_correlation", language),
+        _tr("report.risk_line_sample_size", language),
+        _tr("report.risk_line_bias", language),
+        _tr("report.risk_line_replay", language),
+        _tr("report.risk_line_rules", language),
+        _tr("report.risk_line_advice", language),
+    ]
+
+
+def _df_head_md(df: pd.DataFrame | None, n: int = 10, language: str = "zh_CN") -> str:
     if df is None or df.empty:
-        return "暂无数据。"
+        return _tr("report.no_data", language)
     head = df.head(n)
     try:
         return head.to_markdown(index=False)
     except Exception:
         return head.to_string(index=False)
 
-
-def _dict_lines(data: dict[str, Any] | None, keys: list[str] | None = None) -> list[str]:
-    data = data or {}
-    items = [(k, data.get(k)) for k in (keys or list(data.keys()))]
-    return [f"- {k}: {v}" for k, v in items if v is not None]
 
 
 def write_strategy_research_report(
@@ -41,6 +46,7 @@ def write_strategy_research_report(
     candidate_rules: pd.DataFrame,
     performance_summary: pd.DataFrame | dict,
     metadata: dict,
+    language: str = "zh_CN",
 ) -> Path:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -52,45 +58,45 @@ def write_strategy_research_report(
 
     event_features = (audit or {}).get("event_features", {})
     ml_dataset = (audit or {}).get("ml_dataset", {})
-    warnings = (audit or {}).get("warnings", [])
+    warnings_list = (audit or {}).get("warnings", [])
 
     lines = [
-        "# Strategy Research Report",
+        f"# {_tr('report.title', language)}",
         "",
-        "Quant Replay Collector 自动生成的策略研究报告。",
+        _tr("report.subtitle", language),
         "",
-        "## 1. 项目和 session 信息",
+        f"## 1. {_tr('report.section_project', language)}",
         "",
-        *_dict_lines(metadata),
+        *[f"- {k}: {v}" for k, v in metadata.items() if v is not None],
         "",
-        "## 2. 样本总览",
+        f"## 2. {_tr('report.section_overview', language)}",
         "",
-        f"- event_features 行数：{event_features.get('row_count', 0)}",
-        f"- ml_features 行数：{ml_dataset.get('ml_features_rows', 0)}",
-        f"- ml_labels 行数：{ml_dataset.get('ml_labels_rows', 0)}",
-        f"- 样本量状态：{(audit or {}).get('sample_warning')}",
+        f"- {_tr('report.label_event_features_rows', language)}：{event_features.get('row_count', 0)}",
+        f"- {_tr('report.label_ml_features_rows', language)}：{ml_dataset.get('ml_features_rows', 0)}",
+        f"- {_tr('report.label_ml_labels_rows', language)}：{ml_dataset.get('ml_labels_rows', 0)}",
+        f"- {_tr('report.label_sample_status', language)}：{(audit or {}).get('sample_warning')}",
         "",
-        "## 3. 数据质量警告",
+        f"## 3. {_tr('report.section_quality', language)}",
         "",
-        *([f"- {w}" for w in warnings] or ["- 暂无明显警告。"]),
+        *([f"- {w}" for w in warnings_list] or [f"- {_tr('report.no_warnings', language)}"]),
         "",
-        "## 4. 标签分布",
+        f"## 4. {_tr('report.section_labels', language)}",
         "",
-        "标签分布需结合 `strategy_labels.csv` 和 `event_study_summary.csv` 查看。样本量小于 30 时仅能作为记录，不能作为结论。",
+        _tr("report.labels_note", language),
         "",
-        "## 5. 事件研究摘要",
+        f"## 5. {_tr('report.section_event_study', language)}",
         "",
-        _df_head_md(event_study, 10),
+        _df_head_md(event_study, 10, language),
         "",
-        "## 6. 特征分箱摘要",
+        f"## 6. {_tr('report.section_binning', language)}",
         "",
-        _df_head_md(binning, 10),
+        _df_head_md(binning, 10, language),
         "",
-        "## 7. 候选规则 Top 10",
+        f"## 7. {_tr('report.section_rules', language)}",
         "",
-        _df_head_md(candidate_rules, 10),
+        _df_head_md(candidate_rules, 10, language),
         "",
-        "## 8. 绩效摘要",
+        f"## 8. {_tr('report.section_performance', language)}",
         "",
         *_dict_lines(
             perf_dict,
@@ -106,26 +112,26 @@ def write_strategy_research_report(
             ],
         ),
         "",
-        "## 9. 权益曲线摘要",
+        f"## 9. {_tr('report.section_equity', language)}",
         "",
-        f"- 初始权益：{perf_dict.get('initial_equity')}",
-        f"- 最终权益：{perf_dict.get('final_equity')}",
-        f"- 总净盈亏：{perf_dict.get('total_net_pnl')}",
+        f"- {_tr('report.label_initial_equity', language)}：{perf_dict.get('initial_equity')}",
+        f"- {_tr('report.label_final_equity', language)}：{perf_dict.get('final_equity')}",
+        f"- {_tr('report.label_total_pnl', language)}：{perf_dict.get('total_net_pnl')}",
         "",
-        "## 10. 未来函数隔离说明",
+        f"## 10. {_tr('report.section_leakage', language)}",
         "",
-        "`ml_features.csv` 不应包含 `fwd_*`、`post_*`、`mfe_10`、`mae_10`、`manual_trade_final_return_pct`、`manual_trade_holding_bars` 等结果或未来字段。",
+        _tr("report.leakage_note", language),
         "",
-        "## 11. 研究限制",
+        f"## 11. {_tr('report.section_limitations', language)}",
         "",
-        *[f"- {line}" for line in RISK_LINES],
+        *[f"- {line}" for line in _risk_lines(language)],
         "",
-        "## 12. 下一步应收集的数据",
+        f"## 12. {_tr('report.section_next', language)}",
         "",
-        "- 收集更多失败样本和未开仓观察样本。",
-        "- 增加大跌后没有反转的负样本。",
-        "- 按不同周期、不同品种拆分验证。",
-        "- 进行样本外验证后再考虑规则回测。",
+        f"- {_tr('report.next_item_collect_failure', language)}",
+        f"- {_tr('report.next_item_negative', language)}",
+        f"- {_tr('report.next_item_multi_interval', language)}",
+        f"- {_tr('report.next_item_oos', language)}",
         "",
     ]
     path = output_dir / "strategy_research_report.md"

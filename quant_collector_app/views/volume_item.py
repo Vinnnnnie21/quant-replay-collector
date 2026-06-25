@@ -4,6 +4,11 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui
 
+try:
+    from ui_style import COLORS
+except ImportError:  # pragma: no cover - package import path
+    from ..ui_style import COLORS
+
 
 class VolumeItem(pg.GraphicsObject):
     def __init__(self):
@@ -12,8 +17,8 @@ class VolumeItem(pg.GraphicsObject):
         self._bounds = QtCore.QRectF(0, 0, 1, 1)
         self._data = None
         self._w = 0.7
-        self._brush_up = pg.mkBrush("#00C853")
-        self._brush_dn = pg.mkBrush("#FF5252")
+        self._brush_up = pg.mkBrush(COLORS["chart_volume_up"])
+        self._brush_dn = pg.mkBrush(COLORS["chart_volume_down"])
         self._pen_none = pg.mkPen(None)
 
     def set_data(self, x, volume, upmask, bar_width=0.7):

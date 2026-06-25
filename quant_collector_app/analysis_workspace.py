@@ -9,7 +9,9 @@ from PySide6 import QtCore, QtGui, QtWidgets
 from app_config import EXPORT_DIR
 from app_i18n import tr
 from app_logger import get_logger
-from ui_style import SPACING, style_secondary_button
+from ui_style import COLORS, SPACING
+from controllers.entry_annotation_controller import EntryAnnotationController
+from services.entry_research_service import EntryResearchService
 
 
 logger = get_logger(__name__)
@@ -72,6 +74,13 @@ RULE_COLUMNS = [
     "warning",
 ]
 WALK_FORWARD_COLUMNS = ["period", "train_start", "train_end", "test_start", "test_end", "test_mean", "test_win_rate", "warning"]
+ENTRY_REVIEW_QUEUE_COLUMNS = [
+    "observation_id",
+    "human_entry_similarity",
+    "setup_confidence",
+    "review_reason",
+    "review_mode",
+]
 RESEARCH_LABELS = [
     "fwd_ret_5_side_adj",
     "fwd_ret_10_side_adj",
@@ -107,15 +116,41 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         super().__init__(parent or app_window)
         self.app_window = app_window
         self.resize(1180, 760)
+        self.setSizeGripEnabled(True)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
         self.last_research_dir: Path | None = None
+        self.last_entry_logic_dir: Path | None = None
         self._research_output_loaded = False
+        self._entry_logic_output_loaded = False
+        self._entry_review_queue_rows: list[dict] = []
+        self._entry_annotation_controller: EntryAnnotationController | None = None
         self.last_time_series_summary: dict | None = None
         self.last_time_series_report_text = ""
+        self.last_entry_logic_report_text = ""
         self._candidate_rule_rows: list[dict] = []
         self._localized_placeholders: list[tuple[QtWidgets.QPlainTextEdit, str, bool]] = []
         self._build_ui()
         self.retranslate_ui()
+        self._apply_button_theme()
+
+    def _apply_button_theme(self) -> None:
+        """Give every button/input in the analysis panel the themed pill look."""
+        theme = getattr(self.app_window, "theme_settings", None)
+        if theme is None:
+            return
+        try:
+            from views.main_window_presentation import (
+                apply_role_button_styles,
+                apply_themed_input_styles,
+            )
+            from views.widget_effects import apply_role_button_shadows
+
+            apply_role_button_styles(self, theme)
+            apply_themed_input_styles(self, theme)
+            apply_role_button_shadows(self)
+        except Exception:
+            pass
 
     def _language(self) -> str:
         return str(getattr(self.app_window, "current_language", "zh_CN") or "zh_CN")
@@ -134,7 +169,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.sessionLabel = QtWidgets.QLabel()
         self.sessionLabel.setProperty("role", "muted")
         self.btnRefresh = QtWidgets.QPushButton()
-        self.btnRefresh.setStyleSheet(style_secondary_button())
+        self.btnRefresh.setProperty("role", "secondaryButton")
         self.btnRefresh.clicked.connect(self.refresh)
         header.addWidget(self.titleLabel)
         header.addWidget(self.sessionLabel)
@@ -143,6 +178,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         root.addLayout(header)
 
         self.tabs = QtWidgets.QTabWidget()
+        self.tabs.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.performanceTab = self._performance_tab()
         self.eventStudyTab = self._event_study_tab()
         self.consistencyTab = self._scrollable_existing_widget(
@@ -178,7 +214,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.performanceTabs.addTab(self.closedTradesTab, "")
         self.performanceTabs.addTab(self.performanceTextTab, "")
         self.performanceTabs.addTab(self.equityTab, "")
-        layout.addWidget(self.performanceTabs)
+        layout.addWidget(self.performanceTabs, stretch=1)
         return tab
 
     def _event_study_tab(self) -> QtWidgets.QWidget:
@@ -190,16 +226,23 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.datasetTab = self._existing_analysis_widget("datasetText", "workspace.no_dataset")
         self.eventTabs.addTab(self.eventStudyTableTab, "")
         self.eventTabs.addTab(self.datasetTab, "")
-        layout.addWidget(self.eventTabs)
+        layout.addWidget(self.eventTabs, stretch=1)
         return tab
 
     def _is_main_trading_tab_widget(self, widget: QtWidgets.QWidget) -> bool:
-        right_tabs = getattr(self.app_window, "rightTabs", None)
-        if not isinstance(right_tabs, QtWidgets.QTabWidget):
-            return False
+        owning_tabs = [
+            tabs
+            for tabs in (
+                getattr(self.app_window, "rightTabs", None),
+                getattr(self.app_window, "bottomTabs", None),
+                getattr(self.app_window, "tradeResultsTabs", None),
+                getattr(self.app_window, "eventResearchTabs", None),
+            )
+            if isinstance(tabs, QtWidgets.QTabWidget)
+        ]
         current = widget
         while current is not None:
-            if right_tabs.indexOf(current) >= 0:
+            if any(tabs.indexOf(current) >= 0 for tabs in owning_tabs):
                 return True
             current = current.parentWidget()
         return False
@@ -270,13 +313,13 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.btnOpenResearchFolder = QtWidgets.QPushButton()
         self.btnCopyResearchContext = QtWidgets.QPushButton()
         for button in (self.btnRunResearch, self.btnExportResearch, self.btnOpenResearchFolder, self.btnCopyResearchContext):
-            button.setStyleSheet(style_secondary_button())
+            button.setProperty("role", "secondaryButton")
             controls.addWidget(button)
         controls.addStretch(1)
         layout.addLayout(controls)
         self.researchWarning = QtWidgets.QLabel()
         self.researchWarning.setWordWrap(True)
-        self.researchWarning.setStyleSheet("color: #d97706; font-weight: 600;")
+        self.researchWarning.setStyleSheet(f"color: {COLORS['warning']}; font-weight: 600;")
         layout.addWidget(self.researchWarning)
         self.researchTabs = QtWidgets.QTabWidget()
         self.auditTable = self._research_table(AUDIT_COLUMNS)
@@ -286,6 +329,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.ruleTable = self._research_table(RULE_COLUMNS)
         self.walkForwardTable = self._research_table(WALK_FORWARD_COLUMNS)
         self.reportText = self._placeholder("")
+        self.entryLogicTab = self._entry_logic_tab()
         for widget in (
             self.auditTable,
             self.researchEventTable,
@@ -294,6 +338,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             self.ruleTable,
             self.walkForwardTable,
             self.reportText,
+            self.entryLogicTab,
         ):
             self.researchTabs.addTab(widget, "")
         layout.addWidget(self.researchTabs, stretch=1)
@@ -301,6 +346,83 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.btnExportResearch.clicked.connect(self.export_research_pack)
         self.btnOpenResearchFolder.clicked.connect(self.open_export_folder)
         self.btnCopyResearchContext.clicked.connect(self.copy_llm_context)
+        self.btnRunEntryLogic.clicked.connect(self.run_entry_logic_report)
+        self.btnExportEntryLogic.clicked.connect(self.export_entry_logic_report)
+        self.entryReviewQueueTable.itemSelectionChanged.connect(self._on_entry_review_selection_changed)
+        self.btnEntryPrevious.clicked.connect(lambda: self._move_entry_candidate("previous"))
+        self.btnEntryNext.clicked.connect(lambda: self._move_entry_candidate("next"))
+        self.btnMarkEntry.clicked.connect(lambda: self._save_entry_logic_annotation("ENTRY"))
+        self.btnMarkReject.clicked.connect(lambda: self._save_entry_logic_annotation("REJECT"))
+        self.btnMarkUncertain.clicked.connect(lambda: self._save_entry_logic_annotation("UNCERTAIN"))
+        return tab
+
+    def _entry_logic_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        tab.setMinimumHeight(0)
+        tab.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Ignored)
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(0, SPACING["sm"], 0, 0)
+        layout.setSpacing(SPACING["sm"])
+
+        controls = QtWidgets.QHBoxLayout()
+        self.btnRunEntryLogic = QtWidgets.QPushButton()
+        self.btnExportEntryLogic = QtWidgets.QPushButton()
+        for button in (self.btnRunEntryLogic, self.btnExportEntryLogic):
+            button.setProperty("role", "secondaryButton")
+            controls.addWidget(button)
+        controls.addStretch(1)
+        layout.addLayout(controls)
+
+        self.entryLogicSummary = QtWidgets.QLabel()
+        self.entryLogicSummary.setWordWrap(True)
+        self.entryLogicSummary.setProperty("role", "muted")
+        layout.addWidget(self.entryLogicSummary)
+
+        self.entryLogicHint = QtWidgets.QLabel()
+        self.entryLogicHint.setWordWrap(True)
+        self.entryLogicHint.setStyleSheet(f"color: {COLORS['warning']}; font-weight: 600;")
+        layout.addWidget(self.entryLogicHint)
+
+        self.entryReviewQueueTable = self._research_table(ENTRY_REVIEW_QUEUE_COLUMNS)
+        self.entryCandidateDetail = QtWidgets.QPlainTextEdit()
+        self.entryCandidateDetail.setReadOnly(True)
+        self.entryCandidateDetail.setMaximumHeight(96)
+        self.entryFeatureText = QtWidgets.QPlainTextEdit()
+        self.entryFeatureText.setReadOnly(True)
+        self.entryFeatureText.setMaximumHeight(120)
+
+        annotation_controls = QtWidgets.QHBoxLayout()
+        self.btnEntryPrevious = QtWidgets.QPushButton(self._tr("entry_logic.previous"))
+        self.btnEntryNext = QtWidgets.QPushButton(self._tr("entry_logic.next"))
+        self.btnMarkEntry = QtWidgets.QPushButton(self._tr("entry_logic.entry"))
+        self.btnMarkReject = QtWidgets.QPushButton(self._tr("entry_logic.reject"))
+        self.btnMarkUncertain = QtWidgets.QPushButton(self._tr("entry_logic.uncertain"))
+        self.entryConfidenceSpin = QtWidgets.QSpinBox()
+        self.entryConfidenceSpin.setRange(1, 5)
+        self.entryConfidenceSpin.setValue(3)
+        self.entryReasonTagsEdit = QtWidgets.QLineEdit()
+        self.entryReasonTagsEdit.setPlaceholderText(self._tr("entry_logic.reason_tags_placeholder"))
+        for button in (self.btnEntryPrevious, self.btnEntryNext, self.btnMarkEntry, self.btnMarkReject, self.btnMarkUncertain):
+            button.setProperty("role", "secondaryButton")
+            annotation_controls.addWidget(button)
+        annotation_controls.addWidget(QtWidgets.QLabel(self._tr("entry_logic.confidence")))
+        annotation_controls.addWidget(self.entryConfidenceSpin)
+        annotation_controls.addWidget(self.entryReasonTagsEdit, stretch=1)
+        layout.addLayout(annotation_controls)
+        self.entryNoteEdit = QtWidgets.QPlainTextEdit()
+        self.entryNoteEdit.setPlaceholderText(self._tr("entry_logic.note"))
+        self.entryNoteEdit.setMaximumHeight(72)
+
+        self.entryLogicReportText = self._placeholder("")
+        for widget in (self.entryReviewQueueTable, self.entryCandidateDetail, self.entryFeatureText, self.entryNoteEdit, self.entryLogicReportText):
+            widget.setMinimumHeight(0)
+            widget.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Ignored)
+        layout.addWidget(self.entryReviewQueueTable, stretch=1)
+        layout.addWidget(self.entryCandidateDetail)
+        layout.addWidget(self.entryFeatureText)
+        layout.addWidget(self.entryNoteEdit)
+        layout.addWidget(self.entryLogicReportText, stretch=1)
+        self._install_entry_logic_shortcuts(tab)
         return tab
 
     def _time_series_tab(self) -> QtWidgets.QWidget:
@@ -312,13 +434,13 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.btnExportTimeSeries = QtWidgets.QPushButton()
         self.btnCopyTimeSeries = QtWidgets.QPushButton()
         for button in (self.btnRunTimeSeries, self.btnExportTimeSeries, self.btnCopyTimeSeries):
-            button.setStyleSheet(style_secondary_button())
+            button.setProperty("role", "secondaryButton")
             controls.addWidget(button)
         controls.addStretch(1)
         layout.addLayout(controls)
         self.timeSeriesHint = QtWidgets.QLabel()
         self.timeSeriesHint.setWordWrap(True)
-        self.timeSeriesHint.setStyleSheet("color: #d97706; font-weight: 600;")
+        self.timeSeriesHint.setStyleSheet(f"color: {COLORS['warning']}; font-weight: 600;")
         layout.addWidget(self.timeSeriesHint)
         self.timeSeriesTabs = QtWidgets.QTabWidget()
         self.tsDistributionTable = self._research_table(AUDIT_COLUMNS)
@@ -385,6 +507,269 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         if target:
             self._run_export_to(Path(target))
 
+    def _run_entry_logic_export_to(self, target: Path):
+        session_id = getattr(self.app_window, "session_id", None)
+        if not session_id:
+            QtWidgets.QMessageBox.warning(self, self._entry_logic_title(), self._tr("research.no_session"))
+            return
+        if not hasattr(self.app_window, "start_export_task"):
+            self.entryLogicHint.setText(self._tr("entry_logic.hint_no_backend"))
+            return
+        if self.app_window.start_export_task(
+            target,
+            self._entry_logic_export_finished,
+            self._language(),
+            self.selectedLabelBox.currentText(),
+        ):
+            self.entryLogicHint.setText(self._tr("entry_logic.hint_generating"))
+        else:
+            self.entryLogicHint.setText(self._tr("entry_logic.hint_export_busy"))
+
+    def run_entry_logic_report(self):
+        self._run_entry_logic_export_to(Path(EXPORT_DIR))
+
+    def export_entry_logic_report(self):
+        target = QtWidgets.QFileDialog.getExistingDirectory(self, self._entry_logic_export_title(), str(EXPORT_DIR))
+        if target:
+            self._run_entry_logic_export_to(Path(target))
+
+    def _entry_logic_export_finished(self, export_dir: Path):
+        self.last_entry_logic_dir = Path(export_dir)
+        self._load_entry_logic_views()
+
+    def _entry_logic_title(self) -> str:
+        return self._tr("entry_logic.title")
+
+    def _entry_logic_export_title(self) -> str:
+        return self._tr("entry_logic.export_title")
+
+    def _entry_logic_initial_hint(self) -> str:
+        return self._tr("entry_logic.hint_signal")
+
+    def _load_entry_logic_views(self):
+        if self.last_entry_logic_dir is None:
+            return
+        directory = self.last_entry_logic_dir
+        report = self._read_json_object(directory / "entry_logic_report.json")
+        overview = report.get("annotation_overview") or {}
+        entry_count = int(overview.get("ENTRY") or 0)
+        reject_count = int(overview.get("REJECT") or 0)
+        uncertain_count = int(overview.get("UNCERTAIN") or 0)
+        unlabeled_count = int(overview.get("UNLABELED") or 0)
+        total = entry_count + reject_count + uncertain_count + unlabeled_count
+        self.entryLogicSummary.setText(
+            self._tr("entry_logic.summary_fmt").format(
+                total=total, entry_count=entry_count, reject_count=reject_count,
+                uncertain_count=uncertain_count, unlabeled_count=unlabeled_count,
+            )
+        )
+
+        queue_rows = self._read_csv_rows(directory / "entry_review_queue.csv")
+        if not queue_rows:
+            queue_rows = list(report.get("review_queue_top_k") or [])
+        self._entry_review_queue_rows = self._normalize_entry_review_rows(queue_rows)
+        self._entry_controller_for_queue().load_review_queue(self._entry_review_queue_rows)
+        self._populate_entry_review_queue()
+
+        self.last_entry_logic_report_text = self._read(directory / "entry_logic_report.md")
+        if not self.last_entry_logic_report_text and report:
+            self.last_entry_logic_report_text = json.dumps(report, ensure_ascii=False, indent=2, default=str)
+        self.entryLogicReportText.setPlainText(
+            self.last_entry_logic_report_text or self._tr("entry_logic.report_not_available")
+        )
+
+        warnings = [str(item) for item in (report.get("warnings") or [])]
+        if not report:
+            warnings.append("entry_logic_report_missing")
+        if warnings:
+            self.entryLogicHint.setText(
+                self._tr("entry_logic.hint_warning") + ": " + "; ".join(warnings)
+            )
+            self.entryLogicHint.setStyleSheet(f"color: {COLORS['warning']}; font-weight: 700;")
+        else:
+            self.entryLogicHint.setText(self._tr("entry_logic.hint_success"))
+            self.entryLogicHint.setStyleSheet(f"color: {COLORS['green']}; font-weight: 600;")
+        self._entry_logic_output_loaded = True
+
+    def _entry_controller_for_queue(self) -> EntryAnnotationController:
+        if self._entry_annotation_controller is None:
+            repository = getattr(self.app_window, "storage", None)
+            if repository is None:
+                raise RuntimeError(self._tr("entry_logic.storage_unavailable"))
+            self._entry_annotation_controller = EntryAnnotationController(
+                EntryResearchService(repository=repository)
+            )
+        return self._entry_annotation_controller
+
+    def _install_entry_logic_shortcuts(self, parent: QtWidgets.QWidget) -> None:
+        for key in ("E", "R", "U", "N", "B", "1", "2", "3", "4", "5"):
+            shortcut = QtGui.QShortcut(QtGui.QKeySequence(key), parent)
+            shortcut.setContext(QtCore.Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(lambda key=key: self._handle_entry_logic_shortcut(key))
+
+    def _handle_entry_logic_shortcut(self, key: str) -> bool:
+        if self._entry_focus_is_text_entry():
+            return False
+        controller = self._entry_controller_for_queue()
+        action = controller.handle_shortcut(key)
+        if action is None:
+            return False
+        action_type, value = action
+        if action_type == "decision":
+            self._save_entry_logic_annotation(str(value))
+        elif action_type == "navigate":
+            self._select_entry_review_row(controller.current_candidate())
+            self._jump_to_entry_candidate()
+        elif action_type == "confidence":
+            self.entryConfidenceSpin.setValue(int(value))
+        self._refresh_entry_candidate_detail()
+        return True
+
+    def _entry_focus_is_text_entry(self) -> bool:
+        widget = QtWidgets.QApplication.focusWidget()
+        return isinstance(
+            widget,
+            (
+                QtWidgets.QLineEdit,
+                QtWidgets.QPlainTextEdit,
+                QtWidgets.QTextEdit,
+                QtWidgets.QSpinBox,
+                QtWidgets.QDoubleSpinBox,
+                QtWidgets.QComboBox,
+            ),
+        )
+
+    def _normalize_entry_review_rows(self, rows: list[dict]) -> list[dict]:
+        normalized: list[dict] = []
+        for row in rows:
+            item = dict(row)
+            item.setdefault("session_id", getattr(self.app_window, "session_id", "") or "")
+            item.setdefault("symbol", self._entry_host_text("symbolBox", "symbol"))
+            item.setdefault("interval", self._entry_host_text("intervalBox", "interval"))
+            if not item.get("decision_bar_index") and item.get("bar_index"):
+                item["decision_bar_index"] = item.get("bar_index")
+            if not item.get("setup_bar_index"):
+                item["setup_bar_index"] = item.get("decision_bar_index")
+            item.setdefault("decision_timing", "CURRENT_BAR_CLOSE")
+            normalized.append(item)
+        return normalized
+
+    def _entry_host_text(self, widget_name: str, attr_name: str) -> str:
+        widget = getattr(self.app_window, widget_name, None)
+        if widget is not None and hasattr(widget, "currentText"):
+            return str(widget.currentText() or "")
+        return str(getattr(self.app_window, attr_name, "") or "")
+
+    def _populate_entry_review_queue(self) -> None:
+        controller = self._entry_controller_for_queue()
+        self._populate_research_table(
+            self.entryReviewQueueTable,
+            controller.review_queue,
+            ENTRY_REVIEW_QUEUE_COLUMNS,
+            sort_column="human_entry_similarity",
+        )
+        self._refresh_entry_candidate_detail()
+        if not controller.review_queue:
+            self.entryLogicHint.setText(self._tr("entry_logic.no_candidates"))
+
+    def _on_entry_review_selection_changed(self) -> None:
+        observation_id = self._selected_entry_observation_id()
+        if not observation_id:
+            return
+        controller = self._entry_controller_for_queue()
+        for index, row in enumerate(controller.review_queue):
+            if str(row.get("observation_id") or "") == observation_id:
+                controller.current_index = index
+                break
+        self._refresh_entry_candidate_detail()
+        self._jump_to_entry_candidate()
+
+    def _selected_entry_observation_id(self) -> str | None:
+        row = self.entryReviewQueueTable.currentRow()
+        if row < 0:
+            return None
+        item = self.entryReviewQueueTable.item(row, 0)
+        return item.text() if item is not None else None
+
+    def _move_entry_candidate(self, direction: str) -> None:
+        controller = self._entry_controller_for_queue()
+        candidate = controller.move_previous() if direction == "previous" else controller.move_next()
+        self._select_entry_review_row(candidate)
+        self._refresh_entry_candidate_detail()
+        self._jump_to_entry_candidate()
+
+    def _select_entry_review_row(self, candidate: dict | None) -> None:
+        if not candidate:
+            return
+        observation_id = str(candidate.get("observation_id") or "")
+        for row in range(self.entryReviewQueueTable.rowCount()):
+            item = self.entryReviewQueueTable.item(row, 0)
+            if item is not None and item.text() == observation_id:
+                self.entryReviewQueueTable.selectRow(row)
+                return
+
+    def _jump_to_entry_candidate(self) -> None:
+        bar_index = self._entry_controller_for_queue().current_jump_bar_index()
+        jump = getattr(self.app_window, "jump_to_bar", None)
+        if bar_index is not None and callable(jump):
+            jump(int(bar_index))
+
+    def _refresh_entry_candidate_detail(self) -> None:
+        controller = self._entry_controller_for_queue()
+        candidate = controller.current_candidate()
+        if candidate is None:
+            self.entryCandidateDetail.setPlainText(self._tr("entry_logic.no_candidates"))
+            self.entryFeatureText.setPlainText("")
+            return
+        detail = controller.current_candidate_detail()
+        detail_lines = [
+            f"observation_id: {detail.get('observation_id')}",
+            f"symbol: {detail.get('symbol')} | interval: {detail.get('interval')}",
+            f"setup_bar_index: {detail.get('setup_bar_index')} | decision_bar_index: {detail.get('decision_bar_index')}",
+            f"decision_timing: {detail.get('decision_timing')}",
+            f"candidate_reason: {detail.get('candidate_reason') or ''}",
+        ]
+        self.entryCandidateDetail.setPlainText("\n".join(detail_lines))
+        features = detail.get("context_features") or {}
+        feature_lines = [f"{key}: {value}" for key, value in sorted(features.items())]
+        self.entryFeatureText.setPlainText("\n".join(feature_lines) or self._tr("entry_logic.context_features_empty"))
+
+    def _entry_reason_tags(self) -> list[str]:
+        text = self.entryReasonTagsEdit.text().strip()
+        if not text:
+            return []
+        return [part.strip() for part in text.split(",") if part.strip()]
+
+    def _save_entry_logic_annotation(self, human_decision: str) -> None:
+        controller = self._entry_controller_for_queue()
+        try:
+            result = controller.save_current_annotation(
+                human_decision,
+                confidence=int(self.entryConfidenceSpin.value()),
+                reason_tags=self._entry_reason_tags(),
+                note=self.entryNoteEdit.toPlainText(),
+                session_id=getattr(self.app_window, "session_id", None),
+            )
+        except ValueError as exc:
+            self.entryLogicHint.setText(str(exc))
+            return
+        if not result.ok:
+            self.entryLogicHint.setText(
+                self._tr("entry_logic.save_failed") + f": {result.message}"
+            )
+            self.entryLogicHint.setStyleSheet(f"color: {COLORS['red']}; font-weight: 700;")
+            return
+        self.entryNoteEdit.clear()
+        self.entryReasonTagsEdit.clear()
+        self._populate_entry_review_queue()
+        if controller.review_queue:
+            self.entryLogicHint.setText(
+                self._tr("entry_logic.save_success").format(decision=human_decision)
+            )
+            self.entryLogicHint.setStyleSheet(f"color: {COLORS['green']}; font-weight: 600;")
+        else:
+            self.entryLogicHint.setText(self._tr("entry_logic.no_candidates"))
+            self.entryLogicHint.setStyleSheet(f"color: {COLORS['warning']}; font-weight: 700;")
     @staticmethod
     def _read(path: Path) -> str:
         return path.read_text(encoding="utf-8") if path.exists() else ""
@@ -503,11 +888,11 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self._research_output_loaded = True
         warning_lower = sample_warning.lower()
         if leakage_status != "PASS" or "severe" in warning_lower:
-            warning_style = "color: #dc2626; font-weight: 700;"
+            warning_style = f"color: {COLORS['red']}; font-weight: 700;"
         elif "exploratory" in warning_lower or "initial analysis" in warning_lower:
-            warning_style = "color: #d97706; font-weight: 700;"
+            warning_style = f"color: {COLORS['warning']}; font-weight: 700;"
         else:
-            warning_style = "color: #16a34a; font-weight: 600;"
+            warning_style = f"color: {COLORS['green']}; font-weight: 600;"
         self.researchWarning.setStyleSheet(warning_style)
 
     def selected_candidate_rule_params(self) -> dict | None:
@@ -645,6 +1030,15 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.researchTabs.setTabText(4, self._tr("research.tab.candidate_rules"))
         self.researchTabs.setTabText(5, self._tr("research.tab.walk_forward"))
         self.researchTabs.setTabText(6, self._tr("research.tab.report"))
+        self.researchTabs.setTabText(7, self._entry_logic_title())
+        self.btnRunEntryLogic.setText(self._tr("entry_logic.generate_report"))
+        self.btnExportEntryLogic.setText(self._entry_logic_export_title())
+        self.btnEntryPrevious.setText(self._tr("entry_logic.previous"))
+        self.btnEntryNext.setText(self._tr("entry_logic.next"))
+        self.btnMarkEntry.setText(self._tr("entry_logic.entry"))
+        self.btnMarkReject.setText(self._tr("entry_logic.reject"))
+        self.btnMarkUncertain.setText(self._tr("entry_logic.uncertain"))
+        self.entryReviewQueueTable.setHorizontalHeaderLabels(self._headers(ENTRY_REVIEW_QUEUE_COLUMNS))
         for table, columns in (
             (self.auditTable, AUDIT_COLUMNS),
             (self.researchEventTable, EVENT_STUDY_COLUMNS),
@@ -657,6 +1051,12 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         if not self._research_output_loaded:
             self.researchWarning.setText(self._tr("research.initial_warning"))
             self.reportText.setPlainText(self._tr("research.no_report"))
+        if not self._entry_logic_output_loaded:
+            self.entryLogicSummary.setText(self._tr("entry_logic.summary_empty"))
+            self.entryLogicHint.setText(self._entry_logic_initial_hint())
+            self.entryLogicReportText.setPlainText(self._tr("entry_logic.report_not_available"))
+            self.entryCandidateDetail.setPlainText(self._tr("entry_logic.no_candidates"))
+            self.entryFeatureText.setPlainText("")
         self.btnRunTimeSeries.setText(self._tr("time_series.run"))
         self.btnExportTimeSeries.setText(self._tr("time_series.export"))
         self.btnCopyTimeSeries.setText(self._tr("time_series.copy"))

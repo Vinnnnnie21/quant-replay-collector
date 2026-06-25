@@ -8,7 +8,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from i18n import tr
+try:
+    from i18n import tr
+except ImportError:  # package import path
+    from ..i18n import tr
 from .event_study import build_event_study
 from .experiment_tracker import create_manifest
 from .factor_audit import leakage_audit

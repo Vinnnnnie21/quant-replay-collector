@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Switchable colour presets: `黑色配色` (OKX-style near-black), `灰色配色`, `研究配色`, `高对比配色`.
+- Unified dark "pill" design language for buttons, period/timeframe chips, inputs and event-tag toggles, applied via per-control local stylesheets (reliable fills under the Fusion style) plus drop shadows.
+- Free vertical (price) zoom with `Ctrl` + mouse wheel; `重置缩放 / Reset zoom` restores automatic fitting.
+- `entry_logic.reject` / `entry_logic.uncertain` translation keys and `tests/test_analysis_i18n.py` (data-analysis page i18n contract).
+
+### Changed
+
+- Manual open/close actions no longer pause replay playback.
+
+### Fixed
+
+- Closing a position with `C` / `X` failed with multiple open positions: restored the truncated `selected_open_trade` and added side-aware auto-selection.
+- Data-analysis page no longer mixes Chinese/English: the `REJECT` / `UNCERTAIN` buttons were hard-coded and now use `_tr`.
+
 ## v1.4.1 Hotfix
 
 ### Added
@@ -10,6 +28,9 @@
 - Added explicit analysis-to-backtest threshold mapping for user review before simulation.
 - Added `BacktestService`, `BacktestController`, backtest presenter and minimal backtest panel controls.
 - Added descriptive manual-vs-rule comparison after rule simulation. Manual trades are not rule inputs.
+- Added entry logic research modules for `human_decision` annotations, loose observation candidates, decision-time context features, isolated post-event outcome labels, chronological and walk-forward validation, distribution diagnostics, prototype scoring, PU-style ranking, active review queues, experiment manifests and Markdown/JSON reports.
+- Added optional entry logic export files: `entry_annotations.csv`, `entry_observation_universe.csv`, `entry_context_features.csv`, `entry_outcome_labels.csv`, `entry_logic_scores.csv`, `entry_review_queue.csv`, `entry_logic_report.md` and `entry_logic_report.json`.
+- Added SQLite schema version `6` with an idempotent `entry_annotations` table migration. Existing sessions and legacy tables remain compatible.
 
 ### Fixed
 
@@ -62,6 +83,9 @@
   and domain SQL behind focused presenter, service, render and repository seams.
 - Added package-mode import regression coverage while retaining the existing
   Windows script and PyInstaller-compatible launch paths.
+- Added a minimal Analysis Workspace entry for generating entry logic reports
+  and loading the top-k review queue through the existing background export
+  task path.
 
 ### Release Hygiene
 
@@ -77,9 +101,21 @@
 
 - Backtests are historical simulations for testing rule hypotheses. They are
   not trading signals, future-return predictions or investment advice.
+- Entry logic research learns the user's opening-judgment boundary. Its labels
+  are `human_decision`, not future returns, and its scores are
+  `human_entry_similarity` / `setup_confidence`, not buy/sell signals.
+- `ENTRY`, `REJECT`, `UNCERTAIN` and `UNLABELED` remain human annotation states.
+  `UNLABELED` and unopened samples are not treated as negative samples by
+  default.
+- Entry context features and outcome labels are exported separately. Outcome
+  labels are for posterior diagnostics only and must not be used as model
+  inputs.
+- Entry logic validation uses chronological or walk-forward splits with purge
+  and embargo; random financial time-series splits are not used.
 - Quant Replay Collector does not connect to Binance live-order APIs or place
   automatic orders.
-- Manual trading semantics, SQLite schema and research schema remain unchanged.
+- Manual trading semantics and existing research/export semantics remain
+  unchanged. SQLite migrations are append-only and keep old sessions readable.
 
 ### Known Limitations
 

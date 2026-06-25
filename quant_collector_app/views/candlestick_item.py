@@ -4,6 +4,11 @@ import numpy as np
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui
 
+try:
+    from ui_style import COLORS
+except ImportError:  # pragma: no cover - package import path
+    from ..ui_style import COLORS
+
 
 class CandlestickItem(pg.GraphicsObject):
     def __init__(self):
@@ -12,11 +17,11 @@ class CandlestickItem(pg.GraphicsObject):
         self._bounds = QtCore.QRectF(0, 0, 1, 1)
         self._data = None
         self._w = 0.7
-        self._pen_up = pg.mkPen("#00C853")
-        self._pen_dn = pg.mkPen("#FF5252")
-        self._brush_up = pg.mkBrush("#00C853")
-        self._brush_dn = pg.mkBrush("#FF5252")
-        self._wick_pen = pg.mkPen("#B0BEC5")
+        self._pen_up = pg.mkPen(COLORS["chart_up"])
+        self._pen_dn = pg.mkPen(COLORS["chart_down"])
+        self._brush_up = pg.mkBrush(COLORS["chart_up"])
+        self._brush_dn = pg.mkBrush(COLORS["chart_down"])
+        self._wick_pen = pg.mkPen(COLORS["chart_wick"])
 
     def set_data(self, x, opening, high, low, close, candle_width=0.7):
         self._data = (

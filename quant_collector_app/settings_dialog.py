@@ -18,7 +18,7 @@ from app_i18n import tr
 from app_settings import load_app_settings, save_app_settings
 from app_settings import build_app_settings_update
 from execution import FILL_MODES
-from ui_style import SPACING, style_primary_button, style_secondary_button
+from ui_style import SPACING
 
 
 class SettingsDialog(QtWidgets.QDialog):
@@ -57,9 +57,9 @@ class SettingsDialog(QtWidgets.QDialog):
         self.okButton = self.buttonBox.button(QtWidgets.QDialogButtonBox.Ok)
         self.cancelButton = self.buttonBox.button(QtWidgets.QDialogButtonBox.Cancel)
         if self.okButton is not None:
-            self.okButton.setStyleSheet(style_primary_button())
+            self.okButton.setProperty("role", "primaryButton")
         if self.cancelButton is not None:
-            self.cancelButton.setStyleSheet(style_secondary_button())
+            self.cancelButton.setProperty("role", "secondaryButton")
         self.buttonBox.accepted.connect(self.accept)
         self.buttonBox.rejected.connect(self.reject)
         root.addWidget(self.buttonBox)
@@ -161,7 +161,7 @@ class SettingsDialog(QtWidgets.QDialog):
         edit = QtWidgets.QLineEdit()
         edit.setPlaceholderText("#21b26f")
         button = QtWidgets.QPushButton("选择")
-        button.setStyleSheet(style_secondary_button())
+        button.setProperty("role", "secondaryButton")
         button.clicked.connect(lambda _=False, k=key: self._choose_color(k))
         layout.addWidget(edit, stretch=1)
         layout.addWidget(button)

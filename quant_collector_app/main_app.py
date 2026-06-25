@@ -41,6 +41,7 @@ from presenters.table_presenter import (
     populate_equity_table,
     populate_event_study_table,
     populate_event_table,
+    populate_recent_event_list,
     populate_trade_tables,
 )
 from presenters.status_presenter import (
@@ -376,6 +377,15 @@ class MainWindow(QtWidgets.QMainWindow):
         from settings_dialog import SettingsDialog
 
         dlg = SettingsDialog(self)
+        try:
+            from views.main_window_presentation import apply_role_button_styles, apply_themed_input_styles
+            from views.widget_effects import apply_role_button_shadows
+
+            apply_role_button_styles(dlg, self.theme_settings)
+            apply_themed_input_styles(dlg, self.theme_settings)
+            apply_role_button_shadows(dlg)
+        except Exception:
+            pass
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             self._update_header()
             self._log("已应用设置。")
@@ -394,6 +404,16 @@ class MainWindow(QtWidgets.QMainWindow):
         if not hasattr(self, "_analysis_workspace") or self._analysis_workspace is None:
             self._analysis_workspace = AnalysisWorkspace(self)
         try:
+            from views.main_window_presentation import apply_role_button_styles, apply_themed_input_styles
+            from views.widget_effects import apply_role_button_shadows
+
+            for _panel in (self.backtestPanel, self.strategyConsistencyPanel, self._analysis_workspace):
+                apply_role_button_styles(_panel, self.theme_settings)
+                apply_themed_input_styles(_panel, self.theme_settings)
+                apply_role_button_shadows(_panel)
+        except Exception:
+            pass
+        try:
             self._analysis_workspace.refresh()
         except Exception as exc:
             self._log(f"数据分析页刷新失败：{type(exc).__name__}: {exc}")
@@ -407,8 +427,16 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def toggle_log_drawer(self, collapsed: bool):
         self.log.setVisible(not collapsed)
-        self.logDrawer.setMaximumHeight(48 if collapsed else 170)
-        self.btnToggleLog.setText("展开" if collapsed else "折叠")
+        self.logSummaryLabel.setVisible(collapsed)
+        if collapsed:
+            self.logDrawer.setMinimumHeight(32)
+            self.logDrawer.setMaximumHeight(36)
+            self.btnToggleLog.setText("展开日志")
+        else:
+            expanded_height = max(160, min(260, int(max(1, self.height()) * 0.23)))
+            self.logDrawer.setMinimumHeight(120)
+            self.logDrawer.setMaximumHeight(expanded_height)
+            self.btnToggleLog.setText("折叠日志")
 
     def toggle_symbol_panel(self, expanded: bool):
         self.symbolPanel.setVisible(expanded)
@@ -900,13 +928,13 @@ class MainWindow(QtWidgets.QMainWindow):
     # ---------- Tables / selection ----------
     def _refresh_tables(self, include_heavy: bool = True):
         started = time.perf_counter()
-        tables = (
+        tables = [
             self.openTradesTable,
             self.closedTradesTable,
             self.eventTable,
             self.equityTable,
             self.eventStudyTable,
-        )
+        ]
         old_signal_state = {table: table.blockSignals(True) for table in tables}
         try:
             for table in tables:
@@ -932,11 +960,32 @@ class MainWindow(QtWidgets.QMainWindow):
             selected_side=selected_side,
             selected_type=selected_type,
         )
+        if hasattr(self, "recentEventsList"):
+            populate_recent_event_list(self.recentEventsList, getattr(self, "recentEventsEmptyState", None), self.events)
         equity_rows = self._current_equity_rows()
         populate_equity_table(self.equityTable, equity_rows)
         if include_heavy:
             self._populate_event_study_table()
             self._refresh_dataset_summary()
+        if hasattr(self, "_update_empty_states"):
+            self._update_empty_states()
+
+    def _update_empty_states(self) -> None:
+        if hasattr(self, "tradeResultsStack"):
+            has_trades = self.openTradesTable.rowCount() > 0 or self.closedTradesTable.rowCount() > 0
+            self.tradeResultsStack.setCurrentIndex(1 if has_trades else 0)
+        if hasattr(self, "equityStack"):
+            self.equityStack.setCurrentIndex(1 if self.equityTable.rowCount() > 0 else 0)
+        if hasattr(self, "performanceStack"):
+            has_closed_trades = self.closedTradesTable.rowCount() > 0
+            self.performanceStack.setCurrentIndex(1 if has_closed_trades else 0)
+        if hasattr(self, "eventResearchStack"):
+            has_research = self.eventStudyTable.rowCount() > 0 or self.eventTable.rowCount() > 0
+            self.eventResearchStack.setCurrentIndex(1 if has_research else 0)
+        if hasattr(self, "datasetStack"):
+            text = self.datasetText.toPlainText().strip() if hasattr(self, "datasetText") else ""
+            has_dataset = bool(text) and not text.startswith("暂无")
+            self.datasetStack.setCurrentIndex(1 if has_dataset else 0)
 
     def _analysis_refresh_snapshot(self) -> AnalysisRefreshSnapshot:
         return AnalysisRefreshSnapshot(
@@ -955,6 +1004,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.datasetText.setPlainText(result.dataset_text)
         if hasattr(self, "performanceText"):
             self.performanceText.setPlainText(result.performance_text)
+        if hasattr(self, "_update_empty_states"):
+            self._update_empty_states()
         for warning in result.warnings:
             self._log(warning)
 
@@ -1161,6 +1212,9 @@ class MainWindow(QtWidgets.QMainWindow):
     # ---------- Utils ----------
     def _log(self, message: str):
         logger.info(message)
+        if hasattr(self, "logSummaryLabel"):
+            summary = str(message).replace("\n", " ").strip()
+            self.logSummaryLabel.setText(summary[:180] if summary else "暂无操作")
         self.log.appendPlainText(f"[{bjt_now_iso()}] {message}")
 
 

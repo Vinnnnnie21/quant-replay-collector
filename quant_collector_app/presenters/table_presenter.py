@@ -154,6 +154,112 @@ def populate_event_table(
             )
 
 
+def _event_dot_color(event: dict[str, Any]) -> str:
+    event_type = str(event.get("event_type") or "").upper()
+    side = str(event.get("side") or "").upper()
+    if side == "LONG":
+        return COLORS["green"]
+    if side == "SHORT":
+        return COLORS["red"]
+    if event_type in {"LABEL", "NOTE"}:
+        return COLORS["info"]
+    return COLORS["text_muted"]
+
+
+def _recent_event_title(event: dict[str, Any]) -> str:
+    event_type = str(event.get("event_type") or "").upper()
+    side = str(event.get("side") or "").upper()
+    labels = {
+        ("OPEN", "LONG"): "开多",
+        ("CLOSE", "LONG"): "平多",
+        ("OPEN", "SHORT"): "开空",
+        ("CLOSE", "SHORT"): "平空",
+    }
+    return labels.get((event_type, side), event_type_label(event.get("event_type")) or "事件")
+
+
+def _recent_event_time(event: dict[str, Any]) -> str:
+    value = event.get("bar_open_time_bjt") or event.get("created_at") or ""
+    try:
+        return pd.to_datetime(value).strftime("%m-%d %H:%M")
+    except Exception:
+        return str(value)
+
+
+def _clear_layout(layout: QtWidgets.QLayout) -> None:
+    while layout.count():
+        item = layout.takeAt(0)
+        widget = item.widget()
+        child_layout = item.layout()
+        if widget is not None:
+            widget.deleteLater()
+        elif child_layout is not None:
+            _clear_layout(child_layout)
+
+
+def populate_recent_event_list(
+    list_widget: QtWidgets.QWidget,
+    empty_widget: QtWidgets.QWidget | None,
+    events: list[dict[str, Any]],
+    limit: int = 6,
+) -> None:
+    layout = list_widget.layout()
+    if layout is None:
+        return
+    visible_events = sorted(events, key=lambda row: row.get("created_at") or row.get("bar_open_time_bjt") or "")
+    recent = list(reversed(visible_events[-max(0, int(limit)) :]))
+    _clear_layout(layout)
+    has_events = bool(recent)
+    list_widget.setVisible(has_events)
+    if empty_widget is not None:
+        empty_widget.setVisible(not has_events)
+    if not has_events:
+        return
+    for event in recent:
+        row = QtWidgets.QFrame()
+        row.setProperty("role", "recentEventItem")
+        row_l = QtWidgets.QHBoxLayout(row)
+        row_l.setContentsMargins(8, 6, 8, 6)
+        row_l.setSpacing(8)
+        dot = QtWidgets.QLabel("●")
+        dot.setStyleSheet(f"color: {_event_dot_color(event)}; background: transparent;")
+        dot.setFixedWidth(12)
+        title = QtWidgets.QLabel(_recent_event_title(event))
+        title.setProperty("role", "statusValue")
+        time_label = QtWidgets.QLabel(_recent_event_time(event))
+        time_label.setProperty("role", "tiny")
+        meta = QtWidgets.QVBoxLayout()
+        meta.setContentsMargins(0, 0, 0, 0)
+        meta.setSpacing(0)
+        meta.addWidget(title)
+        meta.addWidget(time_label)
+        price = QtWidgets.QLabel(fmt_num(event.get("price_proxy")))
+        price.setProperty("role", "statusValue")
+        price.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        row_l.addWidget(dot)
+        row_l.addLayout(meta, stretch=1)
+        row_l.addWidget(price)
+        layout.addWidget(row)
+    layout.addStretch(1)
+
+
+def populate_recent_event_table(table: QtWidgets.QTableWidget, events: list[dict[str, Any]], limit: int = 6) -> None:
+    visible_events = sorted(events, key=lambda row: row.get("created_at") or row.get("bar_open_time_bjt") or "")
+    recent = list(reversed(visible_events[-max(0, int(limit)) :]))
+    table.setRowCount(len(recent))
+    for row_index, event in enumerate(recent):
+        dot = make_table_item("●")
+        dot.setForeground(QtGui.QBrush(QtGui.QColor(_event_dot_color(event))))
+        items = [
+            dot,
+            make_table_item(event.get("bar_open_time_bjt") or event.get("created_at") or ""),
+            make_table_item(event_type_label(event.get("event_type"))),
+            make_table_item(fmt_num(event.get("price_proxy")), numeric=True),
+        ]
+        for col_index, item in enumerate(items):
+            table.setItem(row_index, col_index, item)
+
+
 def populate_equity_table(table: QtWidgets.QTableWidget, equity_rows: list[dict[str, Any]]) -> None:
     table.setRowCount(len(equity_rows))
     for row_index, row in enumerate(equity_rows):

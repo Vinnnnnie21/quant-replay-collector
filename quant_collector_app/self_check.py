@@ -91,6 +91,45 @@ def _gui_dependency_check() -> dict:
     return {"status": "ok", "available": True, "reason": None}
 
 
+
+
+def _database_integrity_probe(
+    db_path: str | Path | None = None,
+    backup_dir: str | Path | None = None,
+    create_backup: bool = False,
+) -> dict:
+    from app_config import BACKUP_DIR, DB_PATH
+    from database_backup import backup_database, export_annotations_jsonl, run_database_integrity_check
+    from storage import StorageManager
+
+    target_db = Path(db_path or DB_PATH)
+    target_backup_dir = Path(backup_dir or BACKUP_DIR)
+    report = run_database_integrity_check(
+        target_db,
+        expected_schema_version=StorageManager.SCHEMA_VERSION,
+    )
+    if create_backup:
+        can_backup = (
+            report.get("database_exists") is True
+            and str(report.get("integrity_check", "")).lower() == "ok"
+        )
+        if can_backup:
+            try:
+                backup = backup_database(target_db, target_backup_dir)
+                annotations = export_annotations_jsonl(target_db, target_backup_dir)
+                report["backup"] = {
+                    "status": "ok",
+                    "backup_path": str(backup["backup_path"]),
+                    "annotations_jsonl_path": str(annotations["jsonl_path"]),
+                    "annotations_row_count": annotations["row_count"],
+                }
+            except Exception as exc:
+                report["backup"] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"}
+                report["status"] = "failed"
+        else:
+            report["backup"] = {"status": "skipped", "reason": "database_integrity_not_ok"}
+    return report
+
 def _run_core_check() -> dict:
     from app_health import run_health_checks
 
@@ -192,7 +231,14 @@ def _run_core_check() -> dict:
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def run_self_check(mode: str = "core", check_gui: bool | None = None) -> dict:
+def run_self_check(
+    mode: str = "core",
+    check_gui: bool | None = None,
+    *,
+    db_path: str | Path | None = None,
+    backup_dir: str | Path | None = None,
+    backup_database_requested: bool = False,
+) -> dict:
     if check_gui is not None:
         mode = "all" if check_gui else "core"
     if mode not in {"core", "gui", "all"}:
@@ -202,12 +248,19 @@ def run_self_check(mode: str = "core", check_gui: bool | None = None) -> dict:
         return {"status": gui["status"], "mode": mode, "gui": gui}
     result = _run_core_check()
     result["mode"] = mode
+    database_integrity = _database_integrity_probe(
+        db_path=db_path,
+        backup_dir=backup_dir,
+        create_backup=backup_database_requested,
+    )
+    result["database_integrity"] = database_integrity
+    if database_integrity.get("status") == "failed":
+        result["status"] = "failed"
     if mode == "all":
         result["gui"] = _gui_dependency_check()
         if result["gui"]["status"] != "ok":
             result["status"] = "failed"
     return result
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Quant Replay Collector health and export checks.")
@@ -215,12 +268,12 @@ def main() -> int:
     mode.add_argument("--core", action="store_true", help="Run non-GUI storage and export checks (default).")
     mode.add_argument("--gui", action="store_true", help="Run GUI dependency and offscreen application probes only.")
     mode.add_argument("--all", action="store_true", help="Run core and GUI probes.")
+    parser.add_argument("--backup-database", action="store_true", help="Create a verified SQLite backup and entry annotation JSONL backup.")
     args = parser.parse_args()
     requested_mode = "all" if args.all else "gui" if args.gui else "core"
-    result = run_self_check(mode=requested_mode)
+    result = run_self_check(mode=requested_mode, backup_database_requested=args.backup_database)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["status"] == "ok" else 1
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

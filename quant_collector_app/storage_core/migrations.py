@@ -464,3 +464,116 @@ def migrate_to_v5(conn) -> None:
             ON research_outcome_labels(session_id, symbol, interval, bar_index);
         """
     )
+
+
+def migrate_to_v6(conn) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS entry_annotations (
+            annotation_id TEXT PRIMARY KEY,
+            session_id TEXT,
+            symbol TEXT,
+            interval TEXT,
+            bar_index INTEGER,
+            bar_time TEXT,
+            setup_bar_index INTEGER,
+            decision_bar_index INTEGER,
+            setup_bar_time TEXT,
+            decision_bar_time TEXT,
+            human_decision TEXT CHECK (
+                human_decision IN ('ENTRY', 'REJECT', 'UNCERTAIN', 'UNLABELED')
+            ),
+            confidence INTEGER CHECK (
+                confidence IS NULL OR (confidence >= 1 AND confidence <= 5)
+            ),
+            reason_tags_json TEXT,
+            note TEXT,
+            decision_timing TEXT CHECK (
+                decision_timing IN ('CURRENT_BAR_CLOSE', 'NEXT_BAR_CONFIRMATION')
+            ),
+            annotation_version TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            superseded_by TEXT,
+            app_version TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_entry_annotations_session_market
+            ON entry_annotations(session_id, symbol, interval, bar_index);
+        CREATE INDEX IF NOT EXISTS idx_entry_annotations_decision
+            ON entry_annotations(human_decision, created_at);
+
+        CREATE TABLE IF NOT EXISTS entry_annotation_history (
+            history_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            annotation_id TEXT NOT NULL,
+            revision_no INTEGER NOT NULL,
+            operation TEXT NOT NULL,
+            session_id TEXT,
+            symbol TEXT,
+            interval TEXT,
+            decision_bar_index INTEGER,
+            changed_at TEXT,
+            superseded_by TEXT,
+            snapshot_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_entry_annotation_history_annotation
+            ON entry_annotation_history(annotation_id, revision_no);
+        CREATE INDEX IF NOT EXISTS idx_entry_annotation_history_session
+            ON entry_annotation_history(session_id, symbol, interval, decision_bar_index);
+        """
+    )
+    for column, column_type in {
+        "setup_bar_index": "INTEGER",
+        "decision_bar_index": "INTEGER",
+        "setup_bar_time": "TEXT",
+        "decision_bar_time": "TEXT",
+        "annotation_version": "TEXT",
+        "updated_at": "TEXT",
+        "is_active": "INTEGER NOT NULL DEFAULT 1",
+        "superseded_by": "TEXT",
+    }.items():
+        ensure_column(conn, "entry_annotations", column, column_type)
+    conn.executescript(
+        """
+        UPDATE entry_annotations
+        SET decision_bar_index=bar_index
+        WHERE decision_bar_index IS NULL AND bar_index IS NOT NULL;
+
+        UPDATE entry_annotations
+        SET setup_bar_index=decision_bar_index
+        WHERE setup_bar_index IS NULL
+          AND decision_timing='CURRENT_BAR_CLOSE'
+          AND decision_bar_index IS NOT NULL;
+
+        UPDATE entry_annotations
+        SET setup_bar_index=decision_bar_index - 1
+        WHERE setup_bar_index IS NULL
+          AND decision_timing='NEXT_BAR_CONFIRMATION'
+          AND decision_bar_index IS NOT NULL;
+
+        UPDATE entry_annotations
+        SET decision_bar_time=bar_time
+        WHERE decision_bar_time IS NULL AND bar_time IS NOT NULL;
+
+        UPDATE entry_annotations
+        SET setup_bar_time=decision_bar_time
+        WHERE setup_bar_time IS NULL
+          AND decision_timing='CURRENT_BAR_CLOSE'
+          AND decision_bar_time IS NOT NULL;
+
+        UPDATE entry_annotations
+        SET annotation_version='entry_annotations_v1'
+        WHERE annotation_version IS NULL OR annotation_version='';
+
+        UPDATE entry_annotations
+        SET updated_at=created_at
+        WHERE updated_at IS NULL OR updated_at='';
+
+        UPDATE entry_annotations
+        SET is_active=1
+        WHERE is_active IS NULL;
+
+        CREATE INDEX IF NOT EXISTS idx_entry_annotations_active_decision
+            ON entry_annotations(session_id, symbol, interval, decision_bar_index, is_active);
+        """
+    )

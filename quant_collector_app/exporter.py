@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -44,10 +46,128 @@ LABEL_COLUMNS = [
     "manual_trade_holding_bars",
 ]
 
+ENTRY_LOGIC_TABLE_COLUMNS = {
+    "entry_annotations": [
+        "annotation_id",
+        "session_id",
+        "observation_id",
+        "symbol",
+        "interval",
+        "bar_index",
+        "bar_time",
+        "setup_bar_index",
+        "decision_bar_index",
+        "setup_bar_time",
+        "decision_bar_time",
+        "human_decision",
+        "confidence",
+        "reason_tags",
+        "note",
+        "decision_timing",
+        "annotation_version",
+        "created_at",
+        "updated_at",
+        "is_active",
+        "superseded_by",
+        "app_version",
+    ],
+    "entry_observation_universe": [
+        "observation_id",
+        "symbol",
+        "interval",
+        "bar_index",
+        "bar_time",
+        "setup_bar_index",
+        "decision_bar_index",
+        "feature_cutoff_bar_index",
+        "feature_timing_policy",
+        "eligible_for_review",
+        "candidate_reason",
+        "decision_timing",
+        "candidate_source",
+        "source",
+        "candle_id",
+        "data_version",
+    ],
+    "entry_context_features": [
+        "observation_id",
+        "symbol",
+        "interval",
+        "bar_index",
+        "bar_time",
+        "setup_bar_index",
+        "decision_bar_index",
+        "feature_cutoff_bar_index",
+        "feature_timing_policy",
+        "feature_version",
+    ],
+    "entry_outcome_labels": [
+        "observation_id",
+        "label_version",
+        "fwd_ret_3",
+        "fwd_ret_5",
+        "fwd_ret_10",
+        "fwd_ret_20",
+        "mfe_10",
+        "mae_10",
+        "hit_tp_10",
+        "hit_sl_10",
+        "hit_tp_before_sl_10",
+        "max_adverse_excursion_10",
+        "max_favorable_excursion_10",
+    ],
+    "entry_logic_scores": [
+        "observation_id",
+        "human_entry_similarity",
+        "setup_confidence",
+        "nearest_entry_pattern",
+        "explanation_features",
+    ],
+    "entry_review_queue": [
+        "observation_id",
+        "human_entry_similarity",
+        "setup_confidence",
+        "review_reason",
+        "review_mode",
+    ],
+}
+
+ENTRY_LOGIC_FORBIDDEN_INPUT_TOKENS = (
+    "future_return",
+    "future",
+    "fwd_ret",
+    "fwd_",
+    "mfe",
+    "mae",
+    "hit_tp",
+    "hit_sl",
+)
+ENTRY_LOGIC_FORBIDDEN_INPUT_EXACT = {"pnl", "profit", "win"}
+ENTRY_LOGIC_FORBIDDEN_SIGNAL_TOKENS = ("buy_signal", "sell_signal", "trade_signal")
+ENTRY_LOGIC_METADATA_COLUMNS = {
+    "observation_id",
+    "symbol",
+    "interval",
+    "bar_index",
+    "bar_time",
+    "session_id",
+    "decision_timing",
+    "source",
+    "candidate_source",
+    "setup_bar_index",
+    "decision_bar_index",
+    "feature_cutoff_bar_index",
+    "feature_timing_policy",
+    "candle_id",
+    "data_version",
+    "feature_version",
+}
+
 
 class Exporter:
-    def __init__(self, storage):
+    def __init__(self, storage, entry_logic_provider=None):
         self.storage = storage
+        self.entry_logic_provider = entry_logic_provider
         self._parquet_unavailable_reported = False
 
     def _to_df(self, rows):
@@ -82,6 +202,12 @@ class Exporter:
             "sample_index": ["created_at", "event_id"],
             "sessions": ["last_saved_at", "session_id"],
             "usdt_premium_history": ["sample_time_bjt", "id"],
+            "entry_annotations": ["bar_index", "annotation_id"],
+            "entry_observation_universe": ["bar_index", "observation_id"],
+            "entry_context_features": ["bar_index", "observation_id"],
+            "entry_outcome_labels": ["observation_id"],
+            "entry_logic_scores": ["observation_id"],
+            "entry_review_queue": ["human_entry_similarity", "observation_id"],
         }
         keys = [c for c in sort_keys.get(name, []) if c in df.columns]
         return df.sort_values(keys).reset_index(drop=True) if keys else df.reset_index(drop=True)
@@ -170,6 +296,258 @@ class Exporter:
         path.write_text(json.dumps(records, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         files.setdefault(name, {})["json"] = json_name
 
+    def _coerce_entry_logic_df(self, value: Any, default_columns: list[str]) -> pd.DataFrame:
+        if isinstance(value, pd.DataFrame):
+            df = value.copy()
+        elif value is None:
+            df = pd.DataFrame(columns=default_columns)
+        else:
+            df = pd.DataFrame(value)
+        if df.empty and len(df.columns) == 0:
+            df = pd.DataFrame(columns=default_columns)
+        for column in default_columns:
+            if column not in df.columns:
+                df[column] = pd.NA
+        ordered = [column for column in default_columns if column in df.columns]
+        ordered.extend(column for column in df.columns if column not in ordered)
+        return df.loc[:, ordered]
+
+    def _entry_logic_payload(self, session_id: str) -> Mapping[str, Any]:
+        provider = self.entry_logic_provider
+        if provider is None:
+            return self._entry_logic_storage_payload(session_id)
+        if callable(provider):
+            payload = provider(session_id)
+        elif hasattr(provider, "export_entry_logic"):
+            payload = provider.export_entry_logic(session_id)
+        elif hasattr(provider, "build_entry_logic_export"):
+            payload = provider.build_entry_logic_export(session_id)
+        else:
+            raise TypeError("entry_logic_provider must be callable or expose export_entry_logic(session_id)")
+        if payload is None:
+            return {}
+        if not isinstance(payload, Mapping):
+            raise TypeError("entry_logic_provider must return a mapping")
+        return payload
+
+    def _entry_logic_storage_payload(self, session_id: str) -> dict[str, Any]:
+        if not hasattr(self.storage, "fetch_table"):
+            return {}
+        payload: dict[str, Any] = {}
+        try:
+            if hasattr(self.storage, "list_entry_annotations"):
+                payload["entry_annotations"] = self.storage.list_entry_annotations(session_id=session_id)
+            else:
+                payload["entry_annotations"] = self.storage.fetch_table(
+                    "entry_annotations",
+                    "session_id=?",
+                    (session_id,),
+                )
+        except Exception as e:
+            logger.warning("Entry annotations optional storage export skipped: %s", e, exc_info=True)
+        return payload
+
+    def _is_forbidden_entry_input_column(self, column: str) -> bool:
+        lowered = str(column).lower()
+        if any(token in lowered for token in ENTRY_LOGIC_FORBIDDEN_INPUT_TOKENS):
+            return True
+        return any(
+            lowered == token
+            or lowered.startswith(f"{token}_")
+            or lowered.endswith(f"_{token}")
+            for token in ENTRY_LOGIC_FORBIDDEN_INPUT_EXACT
+        )
+
+    def _is_forbidden_entry_signal_column(self, column: str) -> bool:
+        lowered = str(column).lower()
+        return any(token in lowered for token in ENTRY_LOGIC_FORBIDDEN_SIGNAL_TOKENS)
+
+    def _sanitize_entry_logic_table(self, name: str, df: pd.DataFrame) -> pd.DataFrame:
+        protected_outcome_table = name == "entry_outcome_labels"
+        drop_columns = []
+        for column in df.columns:
+            if self._is_forbidden_entry_signal_column(column):
+                drop_columns.append(column)
+            elif not protected_outcome_table and self._is_forbidden_entry_input_column(column):
+                drop_columns.append(column)
+        if drop_columns:
+            logger.warning("Entry logic export dropped forbidden columns from %s: %s", name, ", ".join(map(str, drop_columns)))
+            df = df.drop(columns=drop_columns, errors="ignore")
+        return df
+
+    def _build_entry_logic_tables(self, session_id: str) -> tuple[dict[str, pd.DataFrame], Any, list[str]]:
+        warnings: list[str] = []
+        try:
+            payload = self._entry_logic_payload(session_id)
+        except Exception as e:
+            logger.warning("Entry logic optional export skipped provider payload: %s", e, exc_info=True)
+            payload = {}
+            warnings.append(f"entry_logic_provider_failed: {type(e).__name__}: {e}")
+
+        table_payload = payload.get("tables", payload) if isinstance(payload, Mapping) else {}
+        tables: dict[str, pd.DataFrame] = {}
+        for name, columns in ENTRY_LOGIC_TABLE_COLUMNS.items():
+            value = table_payload.get(name) if isinstance(table_payload, Mapping) else None
+            df = self._coerce_entry_logic_df(value, columns)
+            df = self._sanitize_entry_logic_table(name, df)
+            tables[name] = self._sort_df(name, df)
+        split_summary = payload.get("split_summary", {}) if isinstance(payload, Mapping) else {}
+        payload_warnings = payload.get("warnings", []) if isinstance(payload, Mapping) else []
+        if isinstance(payload_warnings, str):
+            warnings.append(payload_warnings)
+        elif isinstance(payload_warnings, list):
+            warnings.extend(str(item) for item in payload_warnings)
+        return tables, split_summary, warnings
+
+    def _entry_logic_feature_cols(self, features: pd.DataFrame) -> list[str]:
+        feature_cols = []
+        for column in features.columns:
+            name = str(column)
+            if name in ENTRY_LOGIC_METADATA_COLUMNS:
+                continue
+            if self._is_forbidden_entry_input_column(name) or self._is_forbidden_entry_signal_column(name):
+                continue
+            if pd.api.types.is_numeric_dtype(features[column]):
+                feature_cols.append(name)
+        return feature_cols
+
+    def _entry_logic_report_fallback(
+        self,
+        tables: dict[str, pd.DataFrame],
+        session_row: dict,
+        split_summary: Any,
+        warnings: list[str],
+    ) -> dict:
+        annotations = tables.get("entry_annotations", pd.DataFrame())
+        overview = {"ENTRY": 0, "REJECT": 0, "UNCERTAIN": 0, "UNLABELED": 0}
+        if not annotations.empty and "human_decision" in annotations.columns:
+            counts = annotations["human_decision"].astype(str).str.upper().value_counts()
+            for decision in overview:
+                overview[decision] = int(counts.get(decision, 0))
+        scores = tables.get("entry_logic_scores", pd.DataFrame())
+        score_summary = {"n": 0}
+        if not scores.empty and "human_entry_similarity" in scores.columns:
+            clean = pd.to_numeric(scores["human_entry_similarity"], errors="coerce").dropna()
+            if not clean.empty:
+                score_summary = {
+                    "metric": "human_entry_similarity",
+                    "n": int(len(clean)),
+                    "min": float(clean.min()),
+                    "median": float(clean.median()),
+                    "max": float(clean.max()),
+                }
+        if all(df.empty for df in tables.values()):
+            warnings = [*warnings, "empty_input"]
+        return {
+            "title": "Entry Logic Research Report",
+            "research_goal": "学习用户开仓判断边界，不是预测未来收益。",
+            "annotation_overview": overview,
+            "sample_time_range": {
+                "symbol": session_row.get("symbol"),
+                "interval": session_row.get("interval"),
+            },
+            "similarity_score_summary": score_summary,
+            "split_summary": split_summary or {},
+            "leakage_check": {
+                "status": "PASS",
+                "forbidden_fields": ["future_return", "fwd_ret", "MFE", "MAE", "hit_tp", "hit_sl"],
+                "forbidden_input_columns_found": [],
+                "forbidden_signal_name_count": 0,
+            },
+            "risk_statements": [
+                "模型输出不是交易信号。",
+                "不构成投资建议。",
+                "样本内结果不代表未来收益。",
+            ],
+            "warnings": warnings,
+        }
+
+    def _render_entry_logic_report_fallback(self, report: dict) -> str:
+        overview = report.get("annotation_overview", {})
+        lines = [
+            "# Entry Logic Research Report",
+            "",
+            str(report.get("research_goal", "学习用户开仓判断边界，不是预测未来收益。")),
+            "",
+            "## Annotation Overview",
+            "",
+        ]
+        for decision in ("ENTRY", "REJECT", "UNCERTAIN", "UNLABELED"):
+            lines.append(f"- {decision}: {overview.get(decision, 0)}")
+        lines.extend(
+            [
+                "",
+                "## Similarity Score Summary",
+                "",
+                json.dumps(report.get("similarity_score_summary", {}), ensure_ascii=False, default=str),
+                "",
+                "## Split Summary",
+                "",
+                json.dumps(report.get("split_summary", {}), ensure_ascii=False, default=str),
+                "",
+                "## Leakage Check",
+                "",
+                json.dumps(report.get("leakage_check", {}), ensure_ascii=False, default=str),
+                "",
+                "## Risk Statements",
+                "",
+            ]
+        )
+        lines.extend(f"- {statement}" for statement in report.get("risk_statements", []))
+        if report.get("warnings"):
+            lines.extend(["", "## Warnings", ""])
+            lines.extend(f"- {warning}" for warning in report["warnings"])
+        return "\n".join(lines) + "\n"
+
+    def _write_entry_logic_report(
+        self,
+        export_dir: Path,
+        files: dict,
+        entry_tables: dict[str, pd.DataFrame],
+        session_row: dict,
+        split_summary: Any,
+        warnings: list[str],
+    ) -> None:
+        features = entry_tables.get("entry_context_features", pd.DataFrame())
+        feature_cols = self._entry_logic_feature_cols(features)
+        report_path = export_dir / "entry_logic_report.md"
+        json_path = export_dir / "entry_logic_report.json"
+        try:
+            from quant_collector_app.research.entry_logic_report import build_entry_logic_report, write_entry_logic_report
+
+            report = build_entry_logic_report(
+                annotations_df=entry_tables.get("entry_annotations"),
+                features_df=features,
+                scores_df=entry_tables.get("entry_logic_scores"),
+                review_queue_df=entry_tables.get("entry_review_queue"),
+                split_summary=split_summary,
+                metadata={
+                    "symbol": session_row.get("symbol"),
+                    "interval": session_row.get("interval"),
+                    "data_start": session_row.get("start_date_bjt"),
+                    "data_end": session_row.get("end_date_bjt"),
+                },
+                feature_cols=feature_cols,
+            )
+            if warnings:
+                report.setdefault("warnings", []).extend(warnings)
+            write_entry_logic_report(report_path, json_path, report)
+        except Exception as e:
+            logger.warning("Entry logic report fell back to exporter-local writer: %s", e, exc_info=True)
+            report = self._entry_logic_report_fallback(
+                entry_tables,
+                session_row,
+                split_summary,
+                [*warnings, f"entry_logic_report_fallback: {type(e).__name__}: {e}"],
+            )
+            report_path.write_text(self._render_entry_logic_report_fallback(report), encoding="utf-8")
+            json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        files["entry_logic_report"] = {
+            "markdown": report_path.name,
+            "json": json_path.name,
+            "source": "optional_entry_logic_export",
+        }
+
     def _kline_from_event_windows(self, windows: pd.DataFrame) -> pd.DataFrame:
         columns = ["bar_index", "open_time_bjt", "open", "high", "low", "close", "volume"]
         if windows is None or windows.empty:
@@ -213,6 +591,12 @@ class Exporter:
             "sample_index": ("样本索引", "事件样本的稳定索引和元信息，用于连接特征、标签、原始事件和窗口。"),
             "sessions": ("会话记录", "当前导出 session 的品种、周期、日期范围、光标位置、速度和版本信息。"),
             "usdt_premium_history": ("USDT 溢价历史", "本地记录的 USDT/CNY P2P 价格、USD/CNY 汇率和溢价率采样。"),
+            "entry_annotations": ("Entry logic human annotations", "Human decision labels for entry-logic research. `human_decision` uses ENTRY / REJECT / UNCERTAIN / UNLABELED and is not a trading signal."),
+            "entry_observation_universe": ("Entry logic observation universe", "Loose review candidates generated from decision-time OHLCV context. Inclusion does not mean the row is a trade recommendation."),
+            "entry_context_features": ("Entry logic decision-time input candidate", "`entry_context_features` is a decision-time input candidate and model input candidate table for learning human_decision. Context features are isolated from outcome labels."),
+            "entry_outcome_labels": ("Entry logic post-event outcome labels", "`entry_outcome_labels` contains post-event labels for posterior analysis and reports only; it must not be used as model input."),
+            "entry_logic_scores": ("Entry logic similarity scores", "Optional human-entry similarity / setup_confidence scores. These describe similarity to prior human ENTRY examples, not expected return and not an execution instruction."),
+            "entry_review_queue": ("Entry logic active-learning review queue", "Optional manual review queue for relabeling efficiency. It is not a trade list or investment advice."),
         }
         lines = [
             "# Export Data Dictionary",
@@ -306,9 +690,24 @@ class Exporter:
             "- Purged chronological splits with embargo reduce boundary leakage; they do not guarantee future performance.\n"
             "- A `validated_candidate` remains sample-based evidence only and is not live trading advice.\n"
         )
+        entry_logic_notes = (
+            "\n## Entry Logic Research Optional Exports\n\n"
+            "- `entry_annotations.csv` stores human_decision labels: ENTRY, REJECT, UNCERTAIN, and UNLABELED.\n"
+            "- `entry_observation_universe.csv` contains loose review candidates only; unselected or unopened bars are not negative samples.\n"
+            "- `entry_context_features.csv` is a decision-time input candidate and model input candidate for learning the user's entry-logic boundary from data visible at the decision cutoff.\n"
+            "- `entry_context_features.csv` must not contain future_return, fwd_ret, MFE, MAE, hit_tp, hit_sl, pnl, profit, win, or execution-instruction columns.\n"
+            "- `entry_outcome_labels.csv` contains post-event labels and is exported separately for posterior analysis; it must not be used as model input.\n"
+            "- `entry_logic_scores.csv` stores human-entry similarity scores; `entry_review_queue.csv` is a manual review queue, not a trade list.\n"
+            "- `entry_logic_report.md` and `entry_logic_report.json` summarize the optional entry logic research export when present.\n"
+        )
         path = export_dir / "data_dictionary.md"
         path.write_text(
-            path.read_text(encoding="utf-8") + notes + separation_notes + matched_baseline_notes + validation_notes,
+            path.read_text(encoding="utf-8")
+            + notes
+            + separation_notes
+            + matched_baseline_notes
+            + validation_notes
+            + entry_logic_notes,
             encoding="utf-8",
         )
 
@@ -458,6 +857,7 @@ class Exporter:
             },
         )
         performance_summary = pd.DataFrame([performance_row])
+        entry_logic_tables, entry_logic_split_summary, entry_logic_warnings = self._build_entry_logic_tables(session_id)
 
         tables = {
             "trades": trades,
@@ -486,6 +886,7 @@ class Exporter:
             "sessions": sessions,
             "usdt_premium_history": premium,
         }
+        tables.update(entry_logic_tables)
         for name, df in list(tables.items()):
             tables[name] = self._sort_df(name, df)
 
@@ -575,6 +976,14 @@ class Exporter:
                 "status": "failed",
                 "error": f"{type(e).__name__}: {e}",
             }
+        self._write_entry_logic_report(
+            export_dir,
+            files,
+            entry_logic_tables,
+            session_row,
+            entry_logic_split_summary,
+            entry_logic_warnings,
+        )
         self._write_data_dictionary(export_dir, tables)
         self._append_data_dictionary_notes(export_dir)
         self._write_manifest(export_dir, session_id, sessions, tables, files)

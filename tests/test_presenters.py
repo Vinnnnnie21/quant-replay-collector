@@ -21,6 +21,7 @@ from presenters.table_presenter import (
     populate_equity_table,
     populate_event_study_table,
     populate_event_table,
+    populate_recent_event_list,
     populate_trade_tables,
 )
 
@@ -175,6 +176,35 @@ def test_equity_and_event_study_tables_are_presented_without_main_window():
     assert equity_table.item(0, 1).data(QtCore.Qt.UserRole) == "trd_1234567890"
     assert study_table.item(0, 0).text() == "wick"
     assert study_table.item(0, 4).text() == "0.010000"
+
+
+def test_recent_event_list_toggles_empty_state_without_table_widget():
+    _app()
+    list_widget = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout(list_widget)
+    empty_widget = QtWidgets.QLabel("empty")
+    events = [
+        {
+            "event_id": "evt_open_1234567890",
+            "event_type": "OPEN",
+            "side": "LONG",
+            "bar_open_time_bjt": "2026-01-01T00:00:00+08:00",
+            "price_proxy": 100.0,
+            "created_at": "2026-01-01T00:00:00+08:00",
+        }
+    ]
+
+    populate_recent_event_list(list_widget, empty_widget, events)
+
+    assert list_widget.isVisible()
+    assert not empty_widget.isVisible()
+    assert layout.count() == 2
+    assert layout.itemAt(0).widget().property("role") == "recentEventItem"
+
+    populate_recent_event_list(list_widget, empty_widget, [])
+
+    assert not list_widget.isVisible()
+    assert empty_widget.isVisible()
 
 
 def test_main_window_table_refresh_uses_presenters_without_full_window():

@@ -83,9 +83,16 @@ def on_timer(window) -> None:
 
 def toggle_play(window) -> None:
     if len(window.df) == 0:
+        status = getattr(window, "status", None)
+        if status is not None:
+            status.setText(window.tr("apply_market_before_play"))
+        window._update_load_play_button()
         return
     if window._is_market_params_dirty():
         window.on_market_params_changed()
+        status = getattr(window, "status", None)
+        if status is not None:
+            status.setText(window.tr("apply_market_before_play"))
         return
     window.replay_controller.load_state(
         window.cursor,
@@ -176,6 +183,10 @@ def reset_view(window) -> None:
     x0 = max(0.0, x1 - span)
     window.manual_xrange = (x0, x1)
     window.user_view_lock = False
+    # Re-enable automatic vertical fitting (clears any manual Ctrl+wheel Y zoom).
+    reset_y = getattr(getattr(window, "vb_price", None), "reset_y_auto", None)
+    if callable(reset_y):
+        reset_y()
     window._set_xrange(x0, x1, force=True)
     _render_state(window).mark_visible_range_changed()
     window._render(force=True)

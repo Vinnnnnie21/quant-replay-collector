@@ -89,6 +89,122 @@ def test_panel_is_read_only_and_builds_cache_first_context_requests(qapp):
     panel.shutdown()
 
 
+def test_primary_interval_is_shown_separately_from_selectable_contexts(qapp):
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=False)
+
+    panel.configure_for_primary("5m")
+
+    assert "主周期" in panel.primaryIntervalLabel.text()
+    assert "✓ 5m" in panel.primaryIntervalLabel.text()
+    assert "高周期上下文" in panel.contextIntervalsLabel.text()
+    assert panel.intervalChecks["5m"].isHidden()
+    assert "5m" not in panel.selected_intervals()
+    assert panel.selected_intervals() == ("15m", "1h")
+    panel.shutdown()
+
+
+def test_context_interval_buttons_show_checked_mark_and_reload_once(qapp):
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=False)
+    panel.configure_for_primary("1m")
+    calls: list[tuple] = []
+    args = ("BTCUSDT", "1m", object(), object())
+    panel._last_request_args = args
+    panel.request_context_load = lambda *payload: calls.append(payload)
+
+    assert panel.intervalChecks["5m"].text() == "✓ 5m"
+    assert panel.intervalChecks["15m"].text() == "✓ 15m"
+
+    panel.intervalChecks["15m"].setChecked(False)
+    assert panel.selected_intervals() == ("5m",)
+    assert panel.intervalChecks["15m"].text() == "15m"
+    assert calls == [args]
+
+    calls.clear()
+    panel.intervalChecks["15m"].setChecked(True)
+    assert panel.selected_intervals() == ("5m", "15m")
+    assert panel.intervalChecks["15m"].text() == "✓ 15m"
+    assert calls == [args]
+    panel.shutdown()
+
+
+def test_context_render_translates_internal_status_without_duplicate_notice(qapp):
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=False)
+    panel.configure_for_primary("5m")
+    context = {
+        "1h": {
+            "sync_status": "previous_completed_for_no_future",
+            "htf_bar_index": None,
+            "containing_htf_bar_index": None,
+            "history_status": "insufficient_history",
+            "htf_open_time_bjt": pd.Timestamp("2024-04-01 00:00:00", tz="Asia/Shanghai"),
+            "close": 70486.0,
+            "available_bars": 0,
+            "pre_simple_ret_20": None,
+            "realized_vol_20": None,
+            "trend_regime": None,
+            "volatility_regime": None,
+        }
+    }
+
+    panel._latest_context = context
+    panel._render_context(context)
+    text = panel.summaryText.toPlainText()
+
+    assert panel.noticeLabel.text() not in text
+    assert "使用上一根已完成K线" in text
+    assert "高周期时间" in text
+    assert "收盘价" in text
+    assert "历史不足" in text
+    for forbidden in (
+        "previous_completed_for_no_future",
+        "contains_cursor",
+        "HTF time",
+        "close:",
+        "ret20",
+        "vol20",
+        "trend:",
+        "normal_vol",
+        "high_vol",
+        "low_vol",
+    ):
+        assert forbidden not in text
+    panel.shutdown()
+
+
+def test_context_render_retranslates_existing_summary_to_english(qapp):
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=False)
+    context = {
+        "1h": {
+            "sync_status": "previous_completed_for_no_future",
+            "htf_bar_index": 19,
+            "containing_htf_bar_index": 20,
+            "history_status": "available",
+            "htf_open_time_bjt": pd.Timestamp("2024-04-01 20:00:00", tz="Asia/Shanghai"),
+            "close": 70486.0,
+            "available_bars": 20,
+            "pre_simple_ret_20": 0.0124,
+            "realized_vol_20": 0.0218,
+            "trend_regime": "uptrend",
+            "volatility_regime": "normal_vol",
+        }
+    }
+    panel._latest_context = context
+    panel._render_context(context)
+
+    panel.retranslate_ui("en_US")
+    text = panel.summaryText.toPlainText()
+
+    assert "Previous completed candle" in text
+    assert "HTF Time" in text
+    assert "Close" in text
+    assert "20-Bar Return" in text
+    assert "Uptrend" in text
+    assert "Normal volatility" in text
+    assert "previous_completed_for_no_future" not in text
+    assert "normal_vol" not in text
+    panel.shutdown()
+
+
 def test_cursor_change_refreshes_context_summary(qapp):
     panel = MultiTimeframePanel(language="zh_CN", start_worker=False)
     panel.set_context_frames({"5m": _htf_frame()})
