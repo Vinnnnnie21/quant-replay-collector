@@ -37,6 +37,12 @@ jobs:
       run: |
         python -m compileall -q quant_collector_app tests
 
+    - name: Find broken test imports
+      env:
+        QT_QPA_PLATFORM: offscreen
+      run: |
+        python find_broken_test_import.py
+
     - name: Check pytest collection
       env:
         QT_QPA_PLATFORM: offscreen
