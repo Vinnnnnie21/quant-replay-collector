@@ -10,6 +10,7 @@ on:
 jobs:
   test:
     runs-on: windows-latest
+    timeout-minutes: 30
 
     steps:
     - name: Checkout code
@@ -26,15 +27,34 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r quant_collector_app/requirements.txt
 
+    - name: Verify Qt platform
+      env:
+        QT_QPA_PLATFORM: offscreen
+      run: |
+        python -c "import os; print('QT_QPA_PLATFORM:', os.environ.get('QT_QPA_PLATFORM')); from PySide6 import QtWidgets; app = QtWidgets.QApplication([]); print('QApplication created successfully')"
+
     - name: Compile Python modules
       run: |
         python -m compileall -q quant_collector_app tests
 
-    - name: Run tests
+    - name: Check pytest collection
       env:
         QT_QPA_PLATFORM: offscreen
       run: |
-        python -m pytest -q --tb=short
+        python -m pytest --collect-only -q
+      continue-on-error: true
+
+    - name: Run smoke tests
+      env:
+        QT_QPA_PLATFORM: offscreen
+      run: |
+        python -m pytest tests/test_import_smoke.py tests/test_lazy_imports.py tests/test_storage_no_import_side_effect.py -v --tb=short
+
+    - name: Run all tests
+      env:
+        QT_QPA_PLATFORM: offscreen
+      run: |
+        python -m pytest -v --tb=short --maxfail=1 -rA
 
     - name: Run core self check
       env:
