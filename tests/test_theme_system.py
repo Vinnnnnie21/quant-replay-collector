@@ -293,15 +293,19 @@ def _rendered_color(host, widget, x: int, y: int):
     QtCore = pytest.importorskip("PySide6.QtCore")
     point = widget.mapTo(host, QtCore.QPoint(x, y))
     image = host.grab().toImage()
+    assert not image.isNull(), widget.objectName()
+    assert 0 <= point.x() < image.width(), (widget.objectName(), point.x(), image.width())
+    assert 0 <= point.y() < image.height(), (widget.objectName(), point.y(), image.height())
     return image.pixelColor(point)
 
 
-def _assert_color_close(actual, expected, tolerance: int = 8):
+def _assert_color_close(actual, expected, context: str = "", tolerance: int = 8):
     QtGui = pytest.importorskip("PySide6.QtGui")
     expected_color = QtGui.QColor(expected)
-    assert abs(actual.red() - expected_color.red()) <= tolerance
-    assert abs(actual.green() - expected_color.green()) <= tolerance
-    assert abs(actual.blue() - expected_color.blue()) <= tolerance
+    message = f"{context}: actual={actual.name(QtGui.QColor.HexArgb)} expected={expected_color.name()}"
+    assert abs(actual.red() - expected_color.red()) <= tolerance, message
+    assert abs(actual.green() - expected_color.green()) <= tolerance, message
+    assert abs(actual.blue() - expected_color.blue()) <= tolerance, message
 
 
 def test_main_window_effective_background_layers_and_no_local_button_styles(monkeypatch, tmp_path):
@@ -320,9 +324,11 @@ def test_main_window_effective_background_layers_and_no_local_button_styles(monk
         monkeypatch.setattr(presentation, "save_theme_settings", lambda _theme: None)
         presentation.apply_main_window_theme(host, EXCHANGE_DARK_THEME)
         host.resize(1366, 768)
-        # Do not show() the window: grab() renders the styled widgets to a pixmap
-        # without a native window. Showing a full pyqtgraph window here aborts
-        # (native crash) when it is torn down under the offscreen platform.
+        # Under the Windows offscreen platform, hidden widgets can grab as
+        # transparent even after styles are applied. Showing the offscreen host
+        # gives Qt a real layout/render pass while the test fixture avoids
+        # forcing native DeferredDelete during teardown.
+        host.show()
         app.processEvents()
 
         expected_roles = {
@@ -342,7 +348,7 @@ def test_main_window_effective_background_layers_and_no_local_button_styles(monk
             assert widget is not None, name
             assert widget.isVisibleTo(host), name
             color = _rendered_color(host, widget, point[0], point[1])
-            _assert_color_close(color, expected)
+            _assert_color_close(color, expected, name)
 
         button_roles = {
             host.btnApplyMarket: "primaryButton",

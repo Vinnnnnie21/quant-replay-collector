@@ -1,5 +1,6 @@
 @echo off
-REM Local verification script to match GitHub Actions workflow
+REM Local verification script for the GitHub Actions quality workflow
+
 echo ========================================
 echo Testing locally before pushing to GitHub
 echo ========================================
@@ -35,9 +36,9 @@ if errorlevel 1 (
 echo PASSED: Self check passed
 
 echo.
-echo [4/4] Verifying .github directory exists...
-if not exist ".github\workflows\test.yml" (
-    echo FAILED: .github\workflows\test.yml not found
+echo [4/4] Verifying GitHub Actions workflow exists...
+if not exist ".github\workflows\ci.yml" (
+    echo FAILED: .github\workflows\ci.yml not found
     exit /b 1
 )
 echo PASSED: GitHub workflow file exists
