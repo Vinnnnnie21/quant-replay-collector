@@ -1,14 +1,72 @@
 # Quant Replay Collector / 量化回放采集器
 
-Quant Replay Collector is a Windows desktop research tool for replaying crypto K-line data and turning discretionary chart observations into structured, auditable, exportable research samples. It is built for review, annotation and research, not live execution. It does not connect to Binance order APIs, place trades, or provide investment advice.
+Quant Replay Collector is a local Windows desktop research system for replaying crypto K-line data and turning discretionary chart-reading decisions into structured research samples. It is designed for review, annotation, dataset building and strategy research. It is not a live trading system, does not connect to Binance order APIs, does not place orders and does not provide investment advice.
 
-Quant Replay Collector 是一个 Windows 桌面研究工具，用来回放加密货币 K 线，并把主观看盘判断整理成可记录、可审计、可导出的研究样本。它服务于复盘、标注和研究，不是实盘交易系统；它不连接 Binance 下单 API，不自动下单，也不提供投资建议。
+Quant Replay Collector 是一个本地 Windows 桌面研究系统，用来回放加密货币 K 线，并把主观看盘决策整理成结构化研究样本。它面向复盘、标注、数据集构建和策略研究，不是实盘交易系统；它不连接 Binance 下单 API，不自动下单，也不提供投资建议。
+
+## What The Project Can Do / 项目能做什么
+
+The app lets you replay market data bar by bar, pause at important candles, record manual open/close decisions, attach event tags and write notes. This keeps the original discretionary decision close to the chart context where it happened, instead of turning it into a vague after-the-fact memory.
+
+应用可以逐根回放市场 K 线，在关键 K 线处暂停，记录人工开仓和平仓决策，添加事件标签并写备注。这样做能把主观决策保留在它真实发生的图表上下文里，而不是事后只剩下模糊印象。
+
+It turns replay observations into research artifacts: event windows, decision-time context features, post-event outcome labels, performance summaries, event-study tables, time-series diagnostics, backtest results and strategy-consistency reports. These exports are meant to help you study whether a repeated visual setup has stable behavior, enough samples and a clean research boundary.
+
+它会把回放观察整理成研究文件：事件窗口、决策时特征、后验结果标签、绩效摘要、事件研究表、时间序列诊断、回测结果和策略一致性报告。这些导出内容用于研究一个反复出现的图形 setup 是否有稳定行为、样本量是否足够、研究边界是否干净。
+
+It also provides a research-only backtesting path. Backtests use historical bars and declared strategy parameters to compare rule behavior with manual samples. They are diagnostic simulations, not trading recommendations, and their assumptions about fill timing, fees, slippage and holding rules must be reviewed before interpreting results.
+
+项目也提供研究型回测路径。回测使用历史 K 线和声明好的策略参数，把规则行为和人工样本进行对比。它只是诊断性模拟，不是交易建议；成交时点、手续费、滑点和持仓规则这些假设，都需要在解读结果前先检查清楚。
+
+## Research Method / 研究方法
+
+The core research idea is simple: first record what the trader actually saw and decided, then extract only the information that was visible at that decision point, and only then compare the later outcome. This prevents future information from leaking into the input features and makes the exported dataset usable for later rule mining, event studies and model experiments.
+
+核心研究思路很直接：先记录交易者当时看到了什么、做了什么判断；再只提取决策点之前已经可见的信息；最后再单独比较后续结果。这样可以避免把未来信息混进输入特征里，让导出的数据集能继续用于规则挖掘、事件研究和模型实验。
+
+```text
+replay K-lines
+  -> mark manual decisions and chart events
+  -> extract decision-time context features
+  -> store post-event outcome labels separately
+  -> audit data quality and leakage risk
+  -> run event studies, backtests and consistency review
+```
+
+```text
+回放 K 线
+  -> 标记人工决策和图表事件
+  -> 提取决策时可见特征
+  -> 单独保存后验结果标签
+  -> 审计数据质量和未来函数风险
+  -> 运行事件研究、回测和一致性检查
+```
+
+## Entry Logic Research / 开仓逻辑研究
+
+Entry Logic Research focuses on one narrower question: what does the user's long-entry judgment boundary look like in deep-V reversal setups? The supervised label is `human_decision`, not future return. `ENTRY` means the user would consider a long entry, `REJECT` means the setup is rejected, `UNCERTAIN` means the structure is unclear, and `UNLABELED` means the candidate still needs review.
+
+开仓逻辑研究只关注一个更窄的问题：用户在深 V 反转做多场景里的开仓判断边界到底长什么样？监督标签是 `human_decision`，不是未来收益。`ENTRY` 表示用户会考虑开多，`REJECT` 表示拒绝该 setup，`UNCERTAIN` 表示结构不清晰，`UNLABELED` 表示候选点还没有复核。
+
+Scores such as `human_entry_similarity` and `setup_confidence` are used to prioritize review and compare candidate setups with known manual decisions. They do not predict expected return, do not create buy/sell signals and should not be wired into live order execution.
+
+`human_entry_similarity` 和 `setup_confidence` 这类分数只用于安排复核优先级，或者把候选 setup 和已有人工决策做相似度比较。它们不预测期望收益，不生成买卖信号，也不应该接入实盘下单。
+
+## Research Boundaries / 研究边界
+
+Input features and outcome labels are physically separated. Decision-time features may use only current and historical OHLCV/context data. Forward returns, MFE, MAE, win/loss, manual final outcome, stop/take results and post-event windows belong to labels, reports or audits, not to model inputs.
+
+输入特征和结果标签是物理隔离的。决策时特征只能使用当前和历史 OHLCV 及上下文数据。未来收益、MFE、MAE、胜负、人工最终结果、止盈止损结果和事件后的窗口数据，只能进入标签、报告或审计，不能进入模型输入。
+
+This boundary is the main reason the project is useful: it preserves the trader's subjective judgment while still making the later analysis reproducible. If a rule looks good only because future data leaked into the input, it is not a research finding.
+
+这个边界是项目有用的关键：它保留了交易者的主观判断，同时让后续分析可以复现。如果一条规则看起来有效只是因为未来数据混进了输入，那就不是有效研究结论。
 
 ## Screenshots / 截图
 
-The screenshots below show the main replay workspace, the research analysis workspace and the strategy consistency panel. Replace these files when the UI changes so the GitHub project page reflects the current product.
+The screenshots below show the main replay workspace, the research analysis workspace and the strategy consistency panel.
 
-下面的截图展示主回放工作区、研究分析工作区和策略一致性面板。界面变化后，直接替换这些图片文件，GitHub 首页就会显示新的项目状态。
+下面的截图展示主回放工作区、研究分析工作区和策略一致性面板。
 
 ![Main replay workspace / 主回放工作区](docs/screenshots/main_ui.png)
 
@@ -16,74 +74,32 @@ The screenshots below show the main replay workspace, the research analysis work
 
 ![Strategy consistency panel / 策略一致性面板](docs/screenshots/strategy_consistency.png)
 
-## What It Does / 项目能做什么
+## Install And Run / 安装和运行
 
-Quant Replay Collector supports bar-by-bar market replay, manual trade and event annotation, decision-time feature extraction, post-event outcome labeling, research artifact export, event studies, factor checks, time-series diagnostics, research-only backtests and strategy-consistency review. Its purpose is to make subjective trading behavior observable and testable, not to turn research output into live orders.
+Use the project virtual environment from the repository root. The root `requirements.txt` points to the application dependency list.
 
-Quant Replay Collector 支持逐根 K 线回放、人工交易和事件标注、决策时特征提取、后验结果标签隔离、研究文件导出、事件研究、因子检查、时间序列诊断、研究型回测和策略一致性审计。它的目标是让主观交易行为变得可观察、可复查、可测试，而不是把研究结果直接变成实盘下单。
-
-## Current Scope / 当前范围
-
-Current version: `1.4.1`. SQLite schema: `6`. The desktop stack is PySide6, pyqtgraph, pandas and numpy. The primary runtime environment is Windows PowerShell. Local runtime data is stored under `quant_collector_app/data/`, `quant_collector_app/logs/` and cache/export directories. Exported statistics, scores and reports are research evidence only.
-
-当前版本是 `1.4.1`，SQLite schema 是 `6`。桌面技术栈是 PySide6、pyqtgraph、pandas 和 numpy。主要运行环境是 Windows PowerShell。本地运行数据保存在 `quant_collector_app/data/`、`quant_collector_app/logs/` 以及缓存和导出目录。导出的统计、分数和报告只能作为研究证据。
-
-## Install / 安装
-
-Create a virtual environment from the repository root and install the declared dependencies. If `.venv` already exists, rerun only the final install command.
-
-在仓库根目录创建虚拟环境并安装依赖。如果 `.venv` 已经存在，只需要重新执行最后一条安装命令。
+在仓库根目录使用项目虚拟环境。根目录的 `requirements.txt` 会指向应用依赖清单。
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe run_app.py
 ```
 
-## Run / 运行
+You can also start the package entry point directly.
 
-Launch the desktop app from the repository root. The package entry point is equivalent and is useful when you want to verify the installed package path.
-
-从仓库根目录启动桌面应用。包入口和 `run_app.py` 等价，适合用来确认包路径和依赖环境是否正常。
+也可以直接使用包入口启动。
 
 ```powershell
-.\.venv\Scripts\python.exe run_app.py
 .\.venv\Scripts\python.exe -m quant_collector_app
 ```
 
-## Research Workflow / 研究流程
+## Validate Before Publishing / 发布前验证
 
-A typical research pass starts with replay and annotation, then extracts decision-time features, keeps post-event outcome labels physically separate, and finally runs analysis, export, backtesting and consistency review. Research models may only use data visible at the decision point. Forward returns, MFE, MAE, win/loss and stop/take outcomes are for audit and reporting only.
+Run the same checks through `.venv` before publishing code or release artifacts. The clean release scripts build and inspect a public source package that excludes databases, logs, caches, virtual environments, backup folders, previous `dist/` output and local agent files.
 
-典型研究流程是先回放和标注，再提取决策时可见特征，把后验结果标签单独隔离，最后做分析、导出、回测和一致性检查。研究模型只能使用决策点之前已经可见的数据。未来收益、MFE、MAE、胜负和止盈止损结果只能用于审计和报告。
-
-```text
-load/replay K-lines
-  -> mark trades, events and observations
-  -> extract decision-time context features
-  -> keep post-event outcome labels separate
-  -> analyze, export, backtest and review consistency
-```
-
-```text
-加载/回放 K 线
-  -> 标记交易、事件和观察点
-  -> 提取决策时可见特征
-  -> 隔离后验结果标签
-  -> 分析、导出、回测并检查一致性
-```
-
-## Entry Logic Research / 开仓逻辑研究
-
-Entry Logic Research studies the user's long-entry judgment boundary in deep-V reversal setups. The supervised label is `human_decision`, not future return. `ENTRY` means the user would consider a long entry, `REJECT` means the user rejects the setup, `UNCERTAIN` means the setup is unclear, and `UNLABELED` means the candidate has not been reviewed. Scores such as `human_entry_similarity` and `setup_confidence` are review-prioritization signals, not trading instructions.
-
-Entry Logic Research 研究的是用户在深 V 反转做多场景中的开仓判断边界。监督标签是 `human_decision`，不是未来收益。`ENTRY` 表示用户会考虑开多，`REJECT` 表示用户拒绝该 setup，`UNCERTAIN` 表示结构不清晰，`UNLABELED` 表示候选点尚未复核。`human_entry_similarity` 和 `setup_confidence` 这类分数只用于排序复核优先级，不是交易指令。
-
-## Validate / 验证
-
-Run validation through the project virtual environment so the checks use the same dependencies as the desktop app. `verify_before_push.bat` runs the local pre-push release gate.
-
-使用项目虚拟环境运行验证，避免误用缺少依赖的系统 Python。`verify_before_push.bat` 会运行发布前的本地门禁。
+发布代码或发布包之前，用 `.venv` 跑同一套检查。干净发布脚本会生成并检查公开源码包，排除数据库、日志、缓存、虚拟环境、备份目录、旧 `dist/` 输出和本地 agent 文件。
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall -q quant_collector_app tests
@@ -93,23 +109,17 @@ Run validation through the project virtual environment so the checks use the sam
 .\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-CI
 ```
 
-## Clean Release Policy / 干净发布策略
+## Project Structure / 项目结构
 
-`scripts/clean_release.py` builds a public source package and excludes local runtime state: virtual environments, previous `dist/` output, local SQLite databases, logs, caches, exports, settings, Python cache directories, backup folders, local agent workflow files and performance-report directories. The generated directory includes `clean_release_report.json` and `clean_release_report.md`; run `scripts/check_release_clean.py` on that directory before uploading any release artifact.
+The main app code lives under `quant_collector_app/`. UI widgets are under `quant_collector_app/views/`. Research modules are under `quant_collector_app/research/`. Research-only backtesting is under `quant_collector_app/backtesting/`. SQLite migrations and repositories are under `quant_collector_app/storage_core/`. Release and diagnostic tools live in `scripts/`, tests live in `tests/`, and long-form documentation lives in `docs/`.
 
-`scripts/clean_release.py` 会生成公开源码包，并排除本地运行状态：虚拟环境、旧 `dist/` 输出、本地 SQLite 数据库、日志、缓存、导出文件、本地设置、Python 缓存目录、备份目录、本地 agent 工作流文件和性能报告目录。生成目录会包含 `clean_release_report.json` 和 `clean_release_report.md`；上传任何发布包之前，都要先对生成目录运行 `scripts/check_release_clean.py`。
-
-## Project Layout / 项目结构
-
-The main source code lives under `quant_collector_app/`. UI widgets and presentation helpers live under `quant_collector_app/views/`. Research modules live under `quant_collector_app/research/`, research-only backtesting lives under `quant_collector_app/backtesting/`, SQLite migrations and repositories live under `quant_collector_app/storage_core/`, release and diagnostic tooling lives under `scripts/`, tests live under `tests/`, and longer explanations live under `docs/`.
-
-主要源码在 `quant_collector_app/`。UI 组件和展示辅助代码在 `quant_collector_app/views/`。研究模块在 `quant_collector_app/research/`，研究型回测在 `quant_collector_app/backtesting/`，SQLite 迁移和仓储层在 `quant_collector_app/storage_core/`，发布与诊断工具在 `scripts/`，测试在 `tests/`，更完整的说明文档在 `docs/`。
+主要应用代码在 `quant_collector_app/`。UI 组件在 `quant_collector_app/views/`。研究模块在 `quant_collector_app/research/`。研究型回测在 `quant_collector_app/backtesting/`。SQLite 迁移和仓储层在 `quant_collector_app/storage_core/`。发布与诊断工具在 `scripts/`，测试在 `tests/`，长文档在 `docs/`。
 
 ## Documentation / 文档
 
-Read the architecture, backtesting, research workflow, daily research workflow, entry logic research, strategy consistency, testing and release hygiene notes for deeper context.
+Read these documents for implementation details and research methodology.
 
-更深入的项目背景可以阅读架构、回测、研究流程、每日研究流程、开仓逻辑研究、策略一致性、测试和发布卫生文档。
+实现细节和研究方法可以继续阅读这些文档。
 
 - [Architecture](docs/architecture.md) / [架构](docs/architecture.md)
 - [Backtesting](docs/backtesting.md) / [回测](docs/backtesting.md)

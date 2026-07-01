@@ -7,7 +7,7 @@ Each script resolves the repo root from its own location, so it can be run from
 anywhere:
 
 ```powershell
-cd D:\Trading
+cd <repo-root>
 .\.venv\Scripts\python.exe scripts\diagnostics\theme_button_probe.py
 ```
 
