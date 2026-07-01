@@ -22,10 +22,15 @@ _QAPP_HOLDER = None
 
 @pytest.fixture(autouse=True)
 def _isolate_qt_test_lifecycle():
-    """Keep one QApplication alive and flush deferred widget deletion per test."""
+    """Keep one QApplication alive and close top-level widgets between tests.
+
+    Forcing Qt DeferredDelete processing under the Windows offscreen platform can
+    abort the interpreter during teardown. Closing widgets is enough isolation
+    for these tests and avoids driving native deletion from the fixture.
+    """
     global _QAPP_HOLDER
     try:
-        from PySide6 import QtCore, QtWidgets
+        from PySide6 import QtWidgets
     except ModuleNotFoundError:
         yield
         return
@@ -36,8 +41,6 @@ def _isolate_qt_test_lifecycle():
     for widget in list(_QAPP_HOLDER.topLevelWidgets()):
         try:
             widget.close()
-            widget.deleteLater()
         except RuntimeError:
             continue
-    QtCore.QCoreApplication.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
     _QAPP_HOLDER.processEvents()

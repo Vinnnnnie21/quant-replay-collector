@@ -1,22 +1,19 @@
 """Reusable Qt widget effects.
 
-Qt style sheets cannot render ``box-shadow``. The obvious alternative — a
-``QGraphicsDropShadowEffect`` on each button — proved unsafe in this Qt build:
+Qt style sheets cannot render ``box-shadow``. A native drop shadow attached to
+each button proved unsafe in this Qt build:
 
 1. Over a window-level QSS fill it strips the button background (black buttons),
    and
 2. a widget that still owns a graphics effect can abort (native crash) when it is
-   torn down via ``deleteLater`` / ``DeferredDelete`` — which happens whenever the
+   torn down via ``deleteLater`` / ``DeferredDelete`` - which happens whenever the
    analysis window is closed or the test suite isolates Qt between tests.
 
 Because the effect crashes on teardown, these helpers are intentional NO-OPS. The
 dark "pill" buttons already separate from the near-black chrome on their own. A
 real drop shadow would require wrapping each button in a container widget and
-applying the effect to the wrapper (so no button ever owns an effect); that is a
+applying the effect to the wrapper, so no button ever owns an effect. That is a
 structural change and is deliberately not done here.
-
-Do NOT re-introduce ``QGraphicsDropShadowEffect`` / ``setGraphicsEffect`` on the
-buttons directly.
 """
 
 from __future__ import annotations
