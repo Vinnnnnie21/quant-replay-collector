@@ -35,6 +35,8 @@ class _Worker:
 class _ViewBox:
     def __init__(self):
         self.userInteracted = _Signal()
+        self.dragStarted = _Signal()
+        self.dragFinished = _Signal()
         self.sigXRangeChanged = _Signal()
 
 
@@ -127,6 +129,8 @@ class _DummyWindow:
     def on_multi_timeframe_load_failed(self, *args): self._record("on_multi_timeframe_load_failed", *args)
     def on_premium_sample(self, *args): self._record("on_premium_sample", *args)
     def on_user_interaction(self, *args): self._record("on_user_interaction", *args)
+    def on_chart_drag_started(self, *args): self._record("on_chart_drag_started", *args)
+    def on_chart_drag_finished(self, *args): self._record("on_chart_drag_finished", *args)
     def on_price_view_range_changed(self, *args): self._record("on_price_view_range_changed", *args)
     def on_open_trade_selected(self): self._record("on_open_trade_selected")
     def on_closed_trade_selected(self): self._record("on_closed_trade_selected")
@@ -167,6 +171,17 @@ def test_market_and_play_buttons_have_separate_connections():
     assert any(call[0] == "on_market_params_changed" for call in window.calls)
     assert ("on_interval_changed_for_dynamic_switch", ("1m",)) in window.calls
     assert not hasattr(window, "btnReloadData")
+    app.processEvents()
+
+
+def test_price_chart_drag_lifecycle_is_connected():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = _DummyWindow()
+
+    connect_main_window_signals(window)
+
+    assert window.on_chart_drag_started in window.vb_price.dragStarted.connections
+    assert window.on_chart_drag_finished in window.vb_price.dragFinished.connections
     app.processEvents()
 
 

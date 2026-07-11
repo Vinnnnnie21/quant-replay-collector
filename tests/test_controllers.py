@@ -89,6 +89,35 @@ def test_trade_controller_prepares_and_commits_open_sides(side):
     assert storage.calls[0][0] == "commit_open"
 
 
+def test_trade_controller_snapshots_take_profit_and_stop_loss_on_open():
+    controller, _storage = _controller()
+    df = _bars()
+
+    transaction = controller.prepare_open(
+        df,
+        df.iloc[20],
+        event_idx=20,
+        session_id="sess_1",
+        symbol="BTCUSDT",
+        interval="1m",
+        side="LONG",
+        event_id="evt_open_long",
+        trade_id="trd_long",
+        label_tags=[],
+        note="open",
+        settings=controller.execution_settings("close", 4, 1, 1000),
+        take_profit_pct=2.0,
+        stop_loss_pct=1.0,
+        now_iso=NOW,
+    )
+
+    entry = transaction.trade_row["entry_fill_price"]
+    assert transaction.trade_row["take_profit_pct"] == 2.0
+    assert transaction.trade_row["stop_loss_pct"] == 1.0
+    assert transaction.trade_row["take_profit_price"] == pytest.approx(entry * 1.02)
+    assert transaction.trade_row["stop_loss_price"] == pytest.approx(entry * 0.99)
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_trade_controller_prepares_and_commits_close_sides(side):
     controller, storage = _controller()
@@ -113,6 +142,49 @@ def test_trade_controller_prepares_and_commits_close_sides(side):
     assert transaction.close_update["status"] == "CLOSED"
     assert transaction.feature_row["manual_trade_final_return_pct"] == transaction.outcome["net_return_pct"]
     assert storage.calls[0][0] == "commit_close"
+
+
+def test_trade_controller_automatic_close_uses_trigger_price_and_exit_reason():
+    controller, _storage = _controller()
+    df = _bars()
+    open_transaction = controller.prepare_open(
+        df,
+        df.iloc[20],
+        event_idx=20,
+        session_id="sess_1",
+        symbol="BTCUSDT",
+        interval="1m",
+        side="LONG",
+        event_id="evt_open_long",
+        trade_id="trd_long",
+        label_tags=[],
+        note="open",
+        settings=controller.execution_settings("close", 4, 1, 1000),
+        take_profit_pct=2.0,
+        stop_loss_pct=1.0,
+        now_iso=NOW,
+    )
+    target_price = open_transaction.trade_row["take_profit_price"]
+
+    transaction = controller.prepare_close(
+        df,
+        df.iloc[22],
+        event_idx=22,
+        trade=open_transaction.trade_row,
+        event_id="evt_close_long",
+        label_tags=["auto"],
+        note="take profit",
+        fallback_settings=controller.execution_settings("close", 4, 1, 1000),
+        exit_reason="TAKE_PROFIT",
+        override_exit_price=target_price,
+        now_iso=NOW,
+    )
+
+    assert transaction.close_update["exit_reason"] == "TAKE_PROFIT"
+    assert transaction.close_update["exit_price_proxy"] == pytest.approx(target_price)
+    assert transaction.close_update["exit_price_raw"] == pytest.approx(target_price)
+    assert transaction.close_update["exit_fill_price"] == pytest.approx(target_price)
+    assert transaction.event_row["price_proxy"] == pytest.approx(target_price)
 
 
 def test_trade_controller_open_undo_and_redo_call_storage_transaction():

@@ -19,7 +19,7 @@ echo PASSED: All modules compile successfully
 echo.
 echo [2/4] Running pytest...
 set QT_QPA_PLATFORM=offscreen
-.\.venv\Scripts\python.exe -m pytest -q --tb=short
+.\.venv\Scripts\python.exe -m pytest -q --tb=short --basetemp=.scratch\pytest-verify -o cache_dir=.scratch\pytest-cache-verify
 if errorlevel 1 (
     echo FAILED: Some tests failed
     exit /b 1

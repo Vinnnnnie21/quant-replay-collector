@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
 
 XRange = tuple[float, float]
+FOLLOW_LATEST_CURSOR_FRACTION = 0.85
 
 
 @dataclass(frozen=True)
@@ -105,13 +107,14 @@ def build_chart_render_plan(
             span = max(5.0, manual_xrange[1] - manual_xrange[0])
         else:
             span = float(min(window_bars, max(40, row_count)))
-        right = float(cursor + pad_right)
+        follow_padding = max(float(pad_right), span * (1.0 - FOLLOW_LATEST_CURSOR_FRACTION))
+        right = float(cursor) + follow_padding
         visible_range = clamp_visible_range(
             right - span,
             right,
             row_count=row_count,
             cursor=cursor,
-            pad_right=pad_right,
+            pad_right=int(math.ceil(follow_padding)),
         )
         set_xrange = bool(
             force
@@ -139,6 +142,8 @@ def build_chart_render_plan(
         resolved_manual_xrange = visible_range
         set_xrange = bool(force and _ranges_differ(current_xrange, visible_range))
 
+    refresh_status = bool(force or force_clean or state.should_refresh_header())
+    refresh_header = bool(force or force_clean or state.should_refresh_header())
     return ChartRenderPlan(
         is_empty=False,
         visible_range=visible_range,
@@ -150,8 +155,8 @@ def build_chart_render_plan(
         refresh_markers=refresh_markers,
         refresh_price_line=refresh_price_line,
         refresh_multi_timeframe=refresh_multi_timeframe,
-        refresh_status=True,
-        refresh_header=True,
+        refresh_status=refresh_status,
+        refresh_header=refresh_header,
     )
 
 

@@ -72,6 +72,7 @@ class StorageManager:
         "entry_price_raw", "exit_price_raw", "entry_fill_price", "exit_fill_price",
         "entry_fee_quote", "exit_fee_quote", "gross_pnl_quote", "net_pnl_quote",
         "gross_return_pct", "net_return_pct", "fee_return_pct",
+        "take_profit_pct", "stop_loss_pct", "take_profit_price", "stop_loss_price", "exit_reason",
         "created_at", "updated_at",
     ]
 

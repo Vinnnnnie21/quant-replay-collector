@@ -10,8 +10,9 @@ def upsert_session(conn, row: dict[str, Any]) -> None:
         INSERT INTO sessions (
             session_id, symbol, interval, start_date_bjt, end_date_bjt,
             cursor_bar_index, follow_latest, speed, last_opened_at, last_saved_at, app_version,
-            initial_equity, trade_notional, fee_bps, slippage_bps, fill_mode
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            initial_equity, trade_notional, fee_bps, slippage_bps, fill_mode,
+            take_profit_pct, stop_loss_pct
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
             symbol=excluded.symbol,
             interval=excluded.interval,
@@ -27,7 +28,9 @@ def upsert_session(conn, row: dict[str, Any]) -> None:
             trade_notional=excluded.trade_notional,
             fee_bps=excluded.fee_bps,
             slippage_bps=excluded.slippage_bps,
-            fill_mode=excluded.fill_mode
+            fill_mode=excluded.fill_mode,
+            take_profit_pct=excluded.take_profit_pct,
+            stop_loss_pct=excluded.stop_loss_pct
         """,
         (
             row.get("session_id"),
@@ -46,6 +49,8 @@ def upsert_session(conn, row: dict[str, Any]) -> None:
             row.get("fee_bps"),
             row.get("slippage_bps"),
             row.get("fill_mode"),
+            row.get("take_profit_pct"),
+            row.get("stop_loss_pct"),
         ),
     )
 

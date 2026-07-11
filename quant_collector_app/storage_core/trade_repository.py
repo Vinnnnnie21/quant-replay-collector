@@ -39,6 +39,7 @@ def update_trade_close(conn, row: dict[str, Any]) -> None:
             gross_return_pct=?,
             net_return_pct=?,
             fee_return_pct=?,
+            exit_reason=?,
             updated_at=?
         WHERE trade_id=?
         """,
@@ -48,7 +49,8 @@ def update_trade_close(conn, row: dict[str, Any]) -> None:
             row.get("holding_bars"), row.get("final_return_pct"), row.get("quantity"),
             row.get("exit_price_raw"), row.get("exit_fill_price"), row.get("exit_fee_quote"),
             row.get("gross_pnl_quote"), row.get("net_pnl_quote"), row.get("gross_return_pct"),
-            row.get("net_return_pct"), row.get("fee_return_pct"), row.get("updated_at"), row.get("trade_id"),
+            row.get("net_return_pct"), row.get("fee_return_pct"), row.get("exit_reason"), row.get("updated_at"),
+            row.get("trade_id"),
         ),
     )
 
@@ -74,6 +76,7 @@ def reopen_trade(conn, row: dict[str, Any]) -> None:
             gross_return_pct=NULL,
             net_return_pct=NULL,
             fee_return_pct=NULL,
+            exit_reason=NULL,
             updated_at=?
         WHERE trade_id=?
         """,
@@ -141,6 +144,7 @@ def close_trade_bundle(
             gross_return_pct=?,
             net_return_pct=?,
             fee_return_pct=?,
+            exit_reason=?,
             updated_at=?
         WHERE trade_id=? AND status='OPEN'
         """,
@@ -150,7 +154,8 @@ def close_trade_bundle(
             close_update.get("holding_bars"), close_update.get("final_return_pct"), close_update.get("quantity"),
             close_update.get("exit_price_raw"), close_update.get("exit_fill_price"), close_update.get("exit_fee_quote"),
             close_update.get("gross_pnl_quote"), close_update.get("net_pnl_quote"), close_update.get("gross_return_pct"),
-            close_update.get("net_return_pct"), close_update.get("fee_return_pct"), close_update.get("updated_at"),
+            close_update.get("net_return_pct"), close_update.get("fee_return_pct"), close_update.get("exit_reason"),
+            close_update.get("updated_at"),
             close_update.get("trade_id"),
         ),
     )
@@ -190,6 +195,7 @@ def undo_close_trade_bundle(conn, trade_id: str, event_id: str, entry_event_id: 
             gross_return_pct=NULL,
             net_return_pct=NULL,
             fee_return_pct=NULL,
+            exit_reason=NULL,
             updated_at=?
         WHERE trade_id=?
         """,

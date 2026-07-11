@@ -25,6 +25,8 @@ class _TradeController:
         self.prepares = 0
         self.undos = 0
         self.fail_commit = fail_commit
+        self.close_trade_ids: list[str] = []
+        self.close_kwargs: list[dict] = []
 
     def prepare_open(self, *_args, **_kwargs):
         self.prepares += 1
@@ -44,6 +46,8 @@ class _TradeController:
     def prepare_close(self, *_args, **kwargs):
         self.prepares += 1
         trade = kwargs["trade"]
+        self.close_trade_ids.append(trade["trade_id"])
+        self.close_kwargs.append(dict(kwargs))
         return SimpleNamespace(
             original_trade=dict(trade),
             event_row={
@@ -58,6 +62,8 @@ class _TradeController:
                 "status": "CLOSED",
                 "exit_event_id": kwargs["event_id"],
                 "exit_bar_index": kwargs["event_idx"],
+                "exit_reason": kwargs.get("exit_reason"),
+                "exit_fill_price": kwargs.get("override_exit_price"),
             },
         )
 
@@ -88,6 +94,8 @@ def test_request_open_trade_pauses_replay_and_clears_accumulated_bars():
         df=pd.DataFrame([row]),
         cursor=10,
         playing=True,
+        follow_latest=True,
+        user_view_lock=False,
         _accum=3.5,
         replay_controller=SimpleNamespace(playing=True, accumulated_bars=3.5),
         _is_trade_recording_allowed=lambda: True,
@@ -132,6 +140,8 @@ def test_request_open_trade_pauses_replay_and_clears_accumulated_bars():
     assert window.replay_controller.playing is True
     assert window.replay_controller.accumulated_bars == 3.5
     assert window._accum == 3.5
+    assert window.follow_latest is True
+    assert window.replay_controller.follow_latest is True
     assert trade_controller.commits == 1
     assert window._trade_transaction_active is False
     assert window.trades[0]["trade_id"] == "trd_1"
@@ -236,6 +246,8 @@ def test_request_close_trade_pauses_replay_and_updates_memory_without_heavy_refr
         df=pd.DataFrame([row]),
         cursor=12,
         playing=True,
+        follow_latest=True,
+        user_view_lock=False,
         _accum=2.0,
         replay_controller=SimpleNamespace(playing=True, accumulated_bars=2.0),
         _is_trade_recording_allowed=lambda: True,
@@ -276,6 +288,8 @@ def test_request_close_trade_pauses_replay_and_updates_memory_without_heavy_refr
     assert window.replay_controller.playing is True
     assert window.replay_controller.accumulated_bars == 2.0
     assert window._accum == 2.0
+    assert window.follow_latest is True
+    assert window.replay_controller.follow_latest is True
     assert trade_controller.commits == 1
     assert window._trade_transaction_active is False
     assert trade["status"] == "CLOSED"
@@ -289,6 +303,176 @@ def test_request_close_trade_pauses_replay_and_updates_memory_without_heavy_refr
     assert "heavy_event_study" not in calls
     assert "heavy_dataset_summary" not in calls
     assert "heavy_performance_summary" not in calls
+
+
+def test_request_close_trade_without_selection_closes_earliest_matching_position():
+    QtCore = pytest.importorskip("PySide6.QtCore")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    trade_controller = _TradeController()
+    calls: list[str] = []
+    row = pd.Series(
+        {
+            "bar_index": 12,
+            "open_time_bjt": "2024-04-01T10:10:00+08:00",
+            "open": 102.0,
+            "high": 103.0,
+            "low": 101.0,
+            "close": 102.5,
+            "volume": 1000.0,
+        }
+    )
+    earliest = {
+        "trade_id": "trd_earliest",
+        "session_id": "sess_1",
+        "symbol": "BTCUSDT",
+        "interval": "5m",
+        "side": "LONG",
+        "status": "OPEN",
+        "entry_event_id": "evt_1",
+        "entry_bar_index": 8,
+        "created_at": "2024-04-01T10:00:00+08:00",
+    }
+    later = {
+        **earliest,
+        "trade_id": "trd_later",
+        "entry_event_id": "evt_2",
+        "entry_bar_index": 10,
+        "created_at": "2024-04-01T10:05:00+08:00",
+    }
+    table = QtWidgets.QTableWidget()
+    table.setColumnCount(1)
+    table.setRowCount(2)
+    for index, trade_id in enumerate(("trd_later", "trd_earliest")):
+        item = QtWidgets.QTableWidgetItem(trade_id)
+        item.setData(QtCore.Qt.UserRole, trade_id)
+        table.setItem(index, 0, item)
+    table.clearSelection()
+    window = SimpleNamespace(
+        df=pd.DataFrame([row]),
+        cursor=12,
+        playing=False,
+        _accum=0.0,
+        replay_controller=SimpleNamespace(playing=False, accumulated_bars=0.0),
+        _is_trade_recording_allowed=lambda: True,
+        _warn_trade_interval_mismatch=lambda: None,
+        selected_open_trade=lambda verify_db=False: None,
+        _selected_id_from_table=lambda _table: None,
+        openTradesTable=table,
+        current_bar=lambda: row,
+        current_tags_and_note=lambda: ([], ""),
+        _new_id=lambda prefix: {"evt": "evt_close"}.get(prefix, f"{prefix}_1"),
+        trade_controller=trade_controller,
+        execution_settings=lambda: object(),
+        _trade_by_id={"trd_earliest": earliest, "trd_later": later},
+        _event_by_id={},
+        trades=[earliest, later],
+        events=[],
+        _sample_cursor_bar_index=10,
+        persist_session_state=lambda: calls.append("persist"),
+        _sync_equity_curve=lambda: calls.append("sync_equity"),
+        _refresh_tables=lambda include_heavy=True: calls.append(f"refresh_tables:{include_heavy}"),
+        analysis_refresh_controller=SimpleNamespace(schedule=lambda: calls.append("deferred_analysis_refresh")),
+        _render=lambda force=False: calls.append(f"render:{force}"),
+        _log=lambda message: calls.append(message),
+        _update_load_play_button=lambda: calls.append("button"),
+        _update_trade_buttons_enabled=lambda: calls.append("trade_buttons"),
+        _log_slow_operation=lambda *_args, **_kwargs: None,
+        _trade_transaction_active=False,
+        execute_command=lambda command: command.do() or True,
+    )
+
+    MainWindow.request_close_trade(window, "LONG")
+
+    assert trade_controller.close_trade_ids == ["trd_earliest"]
+    assert earliest["status"] == "CLOSED"
+    assert later["status"] == "OPEN"
+    app.processEvents()
+
+
+def test_apply_tp_sl_triggers_closes_open_trade_at_trigger_price():
+    trade_controller = _TradeController()
+    calls: list[str] = []
+    bars = pd.DataFrame(
+        [
+            {
+                "bar_index": 0,
+                "open_time_bjt": "2024-04-01T10:00:00+08:00",
+                "open": 100.0,
+                "high": 100.5,
+                "low": 99.5,
+                "close": 100.0,
+                "volume": 1000.0,
+            },
+            {
+                "bar_index": 1,
+                "open_time_bjt": "2024-04-01T10:05:00+08:00",
+                "open": 100.0,
+                "high": 103.0,
+                "low": 100.0,
+                "close": 102.0,
+                "volume": 1000.0,
+            },
+        ]
+    )
+    trade = {
+        "trade_id": "trd_1",
+        "session_id": "sess_1",
+        "symbol": "BTCUSDT",
+        "interval": "5m",
+        "side": "LONG",
+        "status": "OPEN",
+        "entry_event_id": "evt_open",
+        "entry_bar_index": 0,
+        "entry_fill_price": 100.0,
+        "take_profit_price": 102.0,
+        "stop_loss_price": 99.0,
+    }
+    window = SimpleNamespace(
+        df=bars,
+        cursor=1,
+        trade_controller=trade_controller,
+        execution_settings=lambda: object(),
+        _trade_by_id={"trd_1": trade},
+        _event_by_id={},
+        trades=[trade],
+        events=[],
+        _new_id=lambda prefix: {"evt": "evt_auto_close"}.get(prefix, f"{prefix}_1"),
+        persist_session_state=lambda: calls.append("persist"),
+        _sync_equity_curve=lambda: calls.append("sync_equity"),
+        _refresh_tables=lambda include_heavy=True: calls.append(f"refresh_tables:{include_heavy}"),
+        analysis_refresh_controller=SimpleNamespace(schedule=lambda: calls.append("deferred_analysis_refresh")),
+        _log=lambda message: calls.append(message),
+        _chart_render_state=lambda: SimpleNamespace(mark_events_changed=lambda: calls.append("events_changed")),
+    )
+
+    MainWindow._apply_tp_sl_triggers(window, 0, 1)
+
+    assert trade["status"] == "CLOSED"
+    assert trade["exit_reason"] == "TAKE_PROFIT"
+    assert trade["exit_fill_price"] == 102.0
+    assert trade_controller.close_kwargs[0]["override_exit_price"] == 102.0
+    assert trade_controller.close_kwargs[0]["exit_reason"] == "TAKE_PROFIT"
+    assert calls.count("persist") == 1
+    assert "sync_equity" in calls
+    assert "refresh_tables:False" in calls
+
+
+def test_tp_sl_scan_skips_dataframe_conversion_without_risk_managed_open_positions():
+    class Frame:
+        def __len__(self):
+            return 14_880
+
+        def to_dict(self, *_args, **_kwargs):
+            raise AssertionError("full dataframe conversion must not run")
+
+    window = SimpleNamespace(
+        df=Frame(),
+        trades=[{"trade_id": "closed", "status": "CLOSED"}],
+        _trade_by_id={},
+    )
+
+    assert MainWindow._apply_tp_sl_triggers(window, 100, 101) == 0
 
 
 def test_request_open_trade_restores_trade_buttons_after_transaction_error():

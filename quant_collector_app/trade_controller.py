@@ -8,6 +8,7 @@ import pandas as pd
 from app_config import BJT
 from execution import ExecutionSettings, fill_price, trade_outcome
 from market_data.features import build_feature_row, build_window_rows, compute_price_proxy
+from tp_sl_engine import MANUAL, risk_prices_for_trade
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,8 @@ class TradeController:
         label_tags: list[str],
         note: str,
         settings: ExecutionSettings,
+        take_profit_pct: float | None = None,
+        stop_loss_pct: float | None = None,
         now_iso: str,
     ) -> OpenTradeTransaction:
         side = str(side).upper()
@@ -121,6 +124,12 @@ class TradeController:
             raise ValueError(f"Unsupported open side: {side}")
         price_proxy = compute_price_proxy(bar)
         entry_raw_price, entry_fill_price = fill_price(bar, side, "OPEN", settings)
+        risk_prices = risk_prices_for_trade(
+            side,
+            entry_fill_price,
+            take_profit_pct=take_profit_pct,
+            stop_loss_pct=stop_loss_pct,
+        )
         entry_fee_quote = settings.notional_quote * max(0.0, settings.fee_bps) / 10_000.0
         bar_time = self._bar_time(bar)
         trade_row = {
@@ -158,6 +167,11 @@ class TradeController:
             "gross_return_pct": None,
             "net_return_pct": None,
             "fee_return_pct": None,
+            "take_profit_pct": take_profit_pct,
+            "stop_loss_pct": stop_loss_pct,
+            "take_profit_price": risk_prices["take_profit_price"],
+            "stop_loss_price": risk_prices["stop_loss_price"],
+            "exit_reason": None,
             "created_at": now_iso,
             "updated_at": now_iso,
         }
@@ -217,6 +231,8 @@ class TradeController:
         label_tags: list[str],
         note: str,
         fallback_settings: ExecutionSettings,
+        exit_reason: str = MANUAL,
+        override_exit_price: float | None = None,
         now_iso: str,
     ) -> CloseTradeTransaction:
         side = str(trade["side"]).upper()
@@ -226,7 +242,7 @@ class TradeController:
         entry_bar_index = int(trade["entry_bar_index"])
         if bar_index < entry_bar_index:
             raise ValueError("Close bar cannot precede entry bar.")
-        price_proxy = compute_price_proxy(bar)
+        price_proxy = float(override_exit_price) if override_exit_price is not None else compute_price_proxy(bar)
         entry_price = float(trade["entry_price_proxy"])
         if side == "LONG":
             final_return_pct = ((price_proxy / entry_price) - 1.0) * 100.0 if entry_price else None
@@ -234,7 +250,11 @@ class TradeController:
             final_return_pct = ((entry_price - price_proxy) / entry_price) * 100.0 if entry_price else None
         holding_bars = bar_index - entry_bar_index
         settings = self._close_settings(trade, fallback_settings)
-        exit_raw_price, exit_fill_price = fill_price(bar, side, "CLOSE", settings)
+        if override_exit_price is None:
+            exit_raw_price, exit_fill_price = fill_price(bar, side, "CLOSE", settings)
+        else:
+            exit_raw_price = float(override_exit_price)
+            exit_fill_price = float(override_exit_price)
         entry_fill_price = float(trade.get("entry_fill_price") or trade.get("entry_price_proxy") or entry_price)
         outcome = trade_outcome(side, entry_fill_price, exit_fill_price, settings)
         event_row = self.event_row(
@@ -275,6 +295,7 @@ class TradeController:
             "gross_return_pct": outcome["gross_return_pct"],
             "net_return_pct": outcome["net_return_pct"],
             "fee_return_pct": outcome["fee_return_pct"],
+            "exit_reason": str(exit_reason or MANUAL),
             "updated_at": now_iso,
         }
         return CloseTradeTransaction(

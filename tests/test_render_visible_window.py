@@ -11,6 +11,16 @@ def test_visible_bar_bounds_slices_large_series_with_margin():
     assert visible_bar_bounds(50_000, (10_000.0, 10_200.0)) == (9900, 10300)
 
 
+def test_free_drag_cache_preloads_twelve_hundred_candles():
+    plan = build_rebuild_plan(
+        available_bars=50_000,
+        visible_range=(10_000.0, 10_300.0),
+        cache_window=1200,
+    )
+
+    assert (plan.start, plan.end) == (9550, 10750)
+
+
 def test_rebuild_key_ignores_cursor_when_visible_window_is_old_free_view():
     first = build_rebuild_plan(available_bars=5001, visible_range=(1200.0, 1320.0))
     second = build_rebuild_plan(available_bars=5101, visible_range=(1200.0, 1320.0))

@@ -2,13 +2,24 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 from pathlib import Path
 
+import numpy as np
+import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
 from app_config import EXPORT_DIR
 from app_i18n import tr
 from app_logger import get_logger
+from analytics.metrics import max_drawdown, payoff_ratio, profit_factor, sharpe_ratio
+from accounting import build_continuous_equity_curve
+from performance_analysis import (
+    build_performance_snapshot,
+    performance_curve_end,
+    smooth_curve_values,
+    split_signed_curve,
+)
 from ui_style import COLORS, SPACING
 from controllers.entry_annotation_controller import EntryAnnotationController
 from services.entry_research_service import EntryResearchService
@@ -98,6 +109,24 @@ BACKTEST_PARAM_SOURCE_FIELDS = {
     "tp_threshold",
     "sl_threshold",
 }
+EQUITY_CURVE_MODE = "equity"
+PNL_CURVE_MODE = "pnl"
+
+
+def _safe_float(value, default: float = 0.0) -> float:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return default
+    return out if math.isfinite(out) else default
+
+
+def _fmt_money(value: float) -> str:
+    return f"{value:.2f}" if math.isfinite(value) else "-"
+
+
+def _fmt_pct(value: float) -> str:
+    return f"{value:.2f}%" if math.isfinite(value) else "-"
 
 
 class SortableTableItem(QtWidgets.QTableWidgetItem):
@@ -204,18 +233,215 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         root.addWidget(self.tabs, stretch=1)
 
     def _performance_tab(self) -> QtWidgets.QWidget:
+        scroll = QtWidgets.QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
         layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        self.performanceTabs = QtWidgets.QTabWidget()
-        self.closedTradesTab = self._existing_analysis_widget("closedTradesTable", "workspace.no_closed_trades")
-        self.performanceTextTab = self._existing_analysis_widget("performanceText", "workspace.no_performance")
-        self.equityTab = self._existing_analysis_widget("equityTable", "workspace.no_equity")
-        self.performanceTabs.addTab(self.closedTradesTab, "")
-        self.performanceTabs.addTab(self.performanceTextTab, "")
-        self.performanceTabs.addTab(self.equityTab, "")
-        layout.addWidget(self.performanceTabs, stretch=1)
-        return tab
+        layout.setSpacing(SPACING["md"])
+        controls = QtWidgets.QHBoxLayout()
+        controls.addWidget(QtWidgets.QLabel(self._tr("performance.session")))
+        self.performanceSessionBox = QtWidgets.QComboBox()
+        self._populate_performance_sessions()
+        self.performanceSessionBox.currentIndexChanged.connect(self._refresh_performance_workspace)
+        controls.addWidget(self.performanceSessionBox)
+        controls.addStretch(1)
+        controls.addWidget(QtWidgets.QLabel(self._tr("performance.curve_mode")))
+        self.performanceCurveMode = QtWidgets.QComboBox()
+        self.performanceCurveMode.addItem(self._tr("performance.equity_curve"), EQUITY_CURVE_MODE)
+        self.performanceCurveMode.addItem(self._tr("performance.pnl_curve"), PNL_CURVE_MODE)
+        self.performanceCurveMode.currentIndexChanged.connect(self._refresh_performance_workspace)
+        controls.addWidget(self.performanceCurveMode)
+        layout.addLayout(controls)
+
+        summary = QtWidgets.QFrame()
+        summary.setProperty("role", "statusBlock")
+        summary_l = QtWidgets.QVBoxLayout(summary)
+        summary_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
+        summary_l.setSpacing(SPACING["md"])
+        self.performanceMetricLabels = {}
+        primary_metrics = (
+            ("current_equity", "performance.current_equity"),
+            ("total_pnl", "performance.total_pnl"),
+            ("total_return", "performance.total_return"),
+            ("unrealized_pnl", "performance.unrealized_pnl"),
+        )
+        secondary_metrics = (
+            ("realized_pnl", "performance.realized_pnl"),
+            ("win_rate", "performance.win_rate"),
+            ("payoff", "performance.payoff"),
+            ("sharpe", "performance.sharpe"),
+            ("max_drawdown", "performance.max_drawdown"),
+            ("trade_count", "performance.trade_count"),
+        )
+        for metric_defs, primary in ((primary_metrics, True), (secondary_metrics, False)):
+            row_layout = QtWidgets.QGridLayout()
+            row_layout.setHorizontalSpacing(SPACING["lg"])
+            for index, (key, label_key) in enumerate(metric_defs):
+                block = QtWidgets.QWidget()
+                block_l = QtWidgets.QVBoxLayout(block)
+                block_l.setContentsMargins(0, 0, 0, 0)
+                name = QtWidgets.QLabel(self._tr(label_key))
+                name.setProperty("role", "muted")
+                value = QtWidgets.QLabel("-")
+                value.setProperty("role", "metricValue" if primary else "statusValue")
+                self.performanceMetricLabels[key] = value
+                block_l.addWidget(name)
+                block_l.addWidget(value)
+                row_layout.addWidget(block, 0, index)
+            summary_l.addLayout(row_layout)
+        layout.addWidget(summary)
+
+        self.equityCurvePlot = pg.PlotWidget()
+        self.equityCurvePlot.setMinimumHeight(280)
+        self.equityCurvePlot.showGrid(x=True, y=True, alpha=0.16)
+        self.equityCurvePlot.setMouseEnabled(x=True, y=True)
+        self.equityCurvePlot.setAntialiasing(True)
+        self.equityCurve = self.equityCurvePlot.plot([], [], pen=pg.mkPen(COLORS["accent"], width=2))
+        self.performanceCurveItems: list[pg.PlotDataItem] = []
+        self.performanceBaseline = pg.InfiniteLine(angle=0, pen=pg.mkPen(COLORS["text_tertiary"], style=QtCore.Qt.DashLine))
+        self.equityCurvePlot.addItem(self.performanceBaseline)
+        self.performanceTradeMarkers = pg.ScatterPlotItem(size=11, pxMode=True)
+        self.performanceTradeMarkers.sigClicked.connect(self._on_performance_trade_marker_clicked)
+        self.equityCurvePlot.addItem(self.performanceTradeMarkers)
+        self.equityCurvePlot.scene().sigMouseMoved.connect(self._on_performance_curve_mouse_moved)
+        self.equityCurveData: list[float] = []
+        layout.addWidget(self.equityCurvePlot, stretch=2)
+        self.performanceHoverLabel = QtWidgets.QLabel(self._tr("performance.hover_empty"))
+        self.performanceHoverLabel.setProperty("role", "muted")
+        layout.addWidget(self.performanceHoverLabel)
+
+        filter_row = QtWidgets.QHBoxLayout()
+        self.performanceTradeFilter = QtWidgets.QComboBox()
+        for key in ("all", "profit", "loss", "open", "closed", "flat"):
+            self.performanceTradeFilter.addItem(self._tr(f"performance.filter.{key}"), key)
+        self.performanceTradeFilter.setCurrentIndex(self.performanceTradeFilter.findData("closed"))
+        self.performanceSideFilter = QtWidgets.QComboBox()
+        for key in ("all", "long", "short"):
+            self.performanceSideFilter.addItem(self._tr(f"performance.side.{key}"), key.upper())
+        self.performanceTradeFilter.currentIndexChanged.connect(self._refresh_performance_workspace)
+        self.performanceSideFilter.currentIndexChanged.connect(self._refresh_performance_workspace)
+        filter_row.addWidget(self.performanceTradeFilter)
+        filter_row.addWidget(self.performanceSideFilter)
+        filter_row.addStretch(1)
+        layout.addLayout(filter_row)
+
+        self.tradePnlTable = QtWidgets.QTableWidget()
+        self.tradePnlTable.setColumnCount(13)
+        self.tradePnlTable.setHorizontalHeaderLabels(
+            [self._tr(f"performance.trade.{key}") for key in (
+                "side", "entry_time", "exit_time", "entry_price", "exit_price", "notional",
+                "fees", "pnl", "return", "holding", "take_profit", "stop_loss", "exit_reason",
+            )]
+        )
+        self.tradePnlTable.verticalHeader().setVisible(False)
+        self.tradePnlTable.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self.tradePnlTable.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+        self.tradePnlTable.setAlternatingRowColors(True)
+        self.tradePnlTable.setSortingEnabled(True)
+        self.tradePnlTable.setMinimumHeight(260)
+        self.tradePnlTable.horizontalHeader().setStretchLastSection(True)
+        layout.addWidget(self.tradePnlTable, stretch=2)
+
+        distribution = QtWidgets.QFrame()
+        distribution.setProperty("role", "statusBlock")
+        distribution_l = QtWidgets.QHBoxLayout(distribution)
+        stats = QtWidgets.QGridLayout()
+        self.performanceDistributionLabels = {}
+        distribution_defs = (
+            "win_count", "loss_count", "win_rate", "average_win", "average_loss",
+            "largest_win", "largest_loss", "gross_profit", "gross_loss",
+        )
+        for index, key in enumerate(distribution_defs):
+            name = QtWidgets.QLabel(self._tr(f"performance.distribution.{key}"))
+            name.setProperty("role", "muted")
+            value = QtWidgets.QLabel("-")
+            self.performanceDistributionLabels[key] = value
+            stats.addWidget(name, index // 3, (index % 3) * 2)
+            stats.addWidget(value, index // 3, (index % 3) * 2 + 1)
+        distribution_l.addLayout(stats, 1)
+        histogram_panel = QtWidgets.QWidget()
+        histogram_l = QtWidgets.QVBoxLayout(histogram_panel)
+        histogram_l.setContentsMargins(0, 0, 0, 0)
+        histogram_l.setSpacing(SPACING["xs"])
+        self.performanceHistogramTitle = QtWidgets.QLabel(
+            self._tr("performance.histogram.title")
+        )
+        self.performanceHistogramTitle.setProperty("role", "statusValue")
+        self.performanceHistogramDefinition = QtWidgets.QLabel(
+            self._tr("performance.histogram.definition")
+        )
+        self.performanceHistogramDefinition.setProperty("role", "muted")
+        self.performanceHistogramDefinition.setWordWrap(True)
+        histogram_l.addWidget(self.performanceHistogramTitle)
+        histogram_l.addWidget(self.performanceHistogramDefinition)
+        self.performanceHistogramPlot = pg.PlotWidget()
+        self.performanceHistogramPlot.setMinimumHeight(170)
+        self.performanceHistogramPlot.showGrid(x=False, y=True, alpha=0.12)
+        self.performanceHistogram = pg.BarGraphItem(x=[], height=[], width=0.75)
+        self.performanceHistogramPlot.addItem(self.performanceHistogram)
+        histogram_l.addWidget(self.performanceHistogramPlot, 1)
+        distribution_l.addWidget(histogram_panel, 1)
+        layout.addWidget(distribution)
+        scroll.setWidget(tab)
+        return scroll
+
+    def _populate_performance_sessions(self) -> None:
+        current_id = str(getattr(self.app_window, "session_id", "") or "")
+        self.performanceSessionBox.blockSignals(True)
+        self.performanceSessionBox.clear()
+        self.performanceSessionBox.addItem(self._tr("performance.current_session"), current_id)
+        storage = getattr(self.app_window, "storage", None)
+        if storage is not None and hasattr(storage, "fetch_table"):
+            try:
+                sessions = storage.fetch_table("sessions")
+            except Exception:
+                sessions = []
+            for session in sorted(sessions, key=lambda row: str(row.get("last_saved_at") or ""), reverse=True):
+                session_id = str(session.get("session_id") or "")
+                if not session_id or session_id == current_id:
+                    continue
+                label = f"{session.get('symbol') or '-'} {session.get('interval') or '-'} | {session_id[-8:]}"
+                self.performanceSessionBox.addItem(label, session_id)
+        self.performanceSessionBox.blockSignals(False)
+
+    def _on_performance_trade_marker_clicked(self, _item, points, _event=None) -> None:
+        if not points:
+            return
+        trade_id = str(points[0].data() or "")
+        for row in range(self.tradePnlTable.rowCount()):
+            item = self.tradePnlTable.item(row, 0)
+            if item is not None and str(item.data(QtCore.Qt.UserRole) or "") == trade_id:
+                self.tradePnlTable.selectRow(row)
+                self.tradePnlTable.scrollToItem(item)
+                return
+
+    def _on_performance_curve_mouse_moved(self, scene_pos) -> None:
+        if not self.equityCurvePlot.sceneBoundingRect().contains(scene_pos):
+            return
+        point = self.equityCurvePlot.getPlotItem().vb.mapSceneToView(scene_pos)
+        self._update_performance_hover(int(round(point.x())))
+
+    def _update_performance_hover(self, index: int) -> None:
+        rows = getattr(self, "_performanceHoverRows", [])
+        if index < 0 or index >= len(rows):
+            return
+        row = rows[index]
+        initial = float(getattr(self, "_performanceInitialEquity", 0.0))
+        equity = _safe_float(row.get("current_equity"), _safe_float(row.get("equity_after"), initial))
+        realized = _safe_float(row.get("realized_net_pnl"))
+        unrealized = _safe_float(row.get("unrealized_pnl"))
+        text = self._tr("performance.hover_detail").format(
+            time=row.get("time") or row.get("created_at") or "-",
+            equity=_fmt_money(equity),
+            pnl=_fmt_money(equity - initial),
+            realized=_fmt_money(realized),
+            unrealized=_fmt_money(unrealized),
+            positions=int(_safe_float(row.get("open_position_count"))),
+        )
+        self.performanceHoverLabel.setText(text)
 
     def _event_study_tab(self) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget()
@@ -228,6 +454,252 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.eventTabs.addTab(self.datasetTab, "")
         layout.addWidget(self.eventTabs, stretch=1)
         return tab
+
+    def _spin_value(self, name: str, default: float) -> float:
+        widget = getattr(self.app_window, name, None)
+        if widget is None or not hasattr(widget, "value"):
+            return float(default)
+        return _safe_float(widget.value(), float(default))
+
+    def _trade_notional(self, trade: dict) -> float:
+        default_notional = self._spin_value("tradeNotionalSpin", 1_000.0)
+        notional = _safe_float(trade.get("notional_quote"), default_notional)
+        return notional if notional > 0 else default_notional
+
+    def _trade_pnl(self, trade: dict) -> float:
+        pnl = _safe_float(trade.get("net_pnl_quote"), float("nan"))
+        if math.isfinite(pnl):
+            return pnl
+        ret = _safe_float(trade.get("net_return_pct"), _safe_float(trade.get("final_return_pct"), 0.0))
+        return ret / 100.0 * self._trade_notional(trade)
+
+    def _trade_return_pct(self, trade: dict) -> float:
+        value = _safe_float(trade.get("net_return_pct"), float("nan"))
+        if math.isfinite(value):
+            return value
+        notional = self._trade_notional(trade)
+        return self._trade_pnl(trade) / notional * 100.0 if notional > 0 else 0.0
+
+    def _performance_equity_rows(self) -> list[dict]:
+        trades = [dict(trade) for trade in getattr(self.app_window, "trades", []) or []]
+        frame = getattr(self.app_window, "df", None)
+        initial = self._spin_value("initialEquitySpin", 10_000.0)
+        notional = self._spin_value("tradeNotionalSpin", 1_000.0)
+        if frame is not None and hasattr(frame, "empty") and not frame.empty:
+            try:
+                raw_cursor = getattr(self.app_window, "cursor", len(frame) - 1)
+                replay_cursor = raw_cursor if isinstance(raw_cursor, (int, float)) else len(frame) - 1
+                end = performance_curve_end(
+                    trades,
+                    cursor=int(replay_cursor),
+                    row_count=len(frame),
+                )
+                return build_continuous_equity_curve(
+                    frame.iloc[:end].to_dict("records"),
+                    trades,
+                    str(getattr(self.app_window, "session_id", "") or ""),
+                    initial,
+                    notional,
+                )
+            except Exception:
+                logger.exception("Failed to build continuous equity curve for analysis workspace")
+        current_rows = getattr(self.app_window, "_current_equity_rows", None)
+        if callable(current_rows):
+            try:
+                return [dict(row) for row in current_rows()]
+            except Exception:
+                logger.exception("Failed to read current equity rows")
+        return []
+
+    def _refresh_performance_workspace(self) -> None:
+        selected_id = str(self.performanceSessionBox.currentData() or "")
+        current_id = str(getattr(self.app_window, "session_id", "") or "")
+        initial = self._spin_value("initialEquitySpin", 10_000.0)
+        notional = self._spin_value("tradeNotionalSpin", 1_000.0)
+        if not selected_id or selected_id == current_id:
+            trades = [dict(trade) for trade in getattr(self.app_window, "trades", []) or []]
+            equity_rows = self._performance_equity_rows()
+        else:
+            storage = getattr(self.app_window, "storage", None)
+            session = None
+            trades = []
+            equity_rows = []
+            if storage is not None:
+                try:
+                    session, trades, _events = storage.load_session_snapshot(selected_id)
+                    equity_rows = storage.fetch_table("account_equity", "session_id=?", (selected_id,))
+                except Exception:
+                    logger.exception("Failed to load historical performance session")
+            if session:
+                initial = _safe_float(session.get("initial_equity"), initial)
+                notional = _safe_float(session.get("trade_notional"), notional)
+
+        snapshot = build_performance_snapshot(
+            equity_rows=equity_rows,
+            trades=trades,
+            initial_equity=initial,
+            default_notional=notional,
+        )
+        self._performanceHoverRows = list(equity_rows)
+        self._performanceInitialEquity = initial
+        raw_metrics = snapshot["metrics"]
+        metric_values = {
+            "current_equity": _fmt_money(raw_metrics["current_equity"]),
+            "total_pnl": _fmt_money(raw_metrics["total_pnl"]),
+            "total_return": _fmt_pct(raw_metrics["total_return_pct"]),
+            "unrealized_pnl": _fmt_money(raw_metrics["unrealized_pnl"]),
+            "realized_pnl": _fmt_money(raw_metrics["realized_pnl"]),
+            "win_rate": _fmt_pct(raw_metrics["win_rate_pct"]),
+            "payoff": _fmt_money(raw_metrics["payoff_ratio"] if raw_metrics["payoff_ratio"] is not None else float("nan")),
+            "sharpe": _fmt_money(raw_metrics["sharpe_ratio"] if raw_metrics["sharpe_ratio"] is not None else float("nan")),
+            "max_drawdown": _fmt_pct(raw_metrics["max_drawdown_pct"] if raw_metrics["max_drawdown_pct"] is not None else float("nan")),
+            "trade_count": str(raw_metrics["trade_count"]),
+        }
+        signed_metric_keys = {"total_pnl", "total_return", "unrealized_pnl", "realized_pnl"}
+        signed_values = {
+            "total_pnl": raw_metrics["total_pnl"],
+            "total_return": raw_metrics["total_return_pct"],
+            "unrealized_pnl": raw_metrics["unrealized_pnl"],
+            "realized_pnl": raw_metrics["realized_pnl"],
+        }
+        for key, value in metric_values.items():
+            label = self.performanceMetricLabels[key]
+            label.setText(value)
+            if key in signed_metric_keys:
+                number = signed_values[key]
+                color = COLORS["success"] if number > 0 else COLORS["danger"] if number < 0 else COLORS["text_secondary"]
+                label.setStyleSheet(f"color: {color};")
+
+        self.equityCurveData = list(snapshot["equity_values"])
+        self.equityCurve.setData([], [])
+        for item in self.performanceCurveItems:
+            self.equityCurvePlot.removeItem(item)
+        self.performanceCurveItems.clear()
+        curve_mode = str(self.performanceCurveMode.currentData() or "equity")
+        curve_values = snapshot["pnl_values"] if curve_mode == "pnl" else snapshot["equity_values"]
+        display_curve_values = smooth_curve_values(curve_values, window=5)
+        baseline = 0.0 if curve_mode == "pnl" else initial
+        self.performanceBaseline.setValue(baseline)
+        for side, points in split_signed_curve(display_curve_values, baseline):
+            item = self.equityCurvePlot.plot(
+                [point[0] for point in points],
+                [point[1] for point in points],
+                pen=pg.mkPen(COLORS["success"] if side == "positive" else COLORS["danger"], width=2),
+                antialias=True,
+            )
+            item.setDownsampling(auto=True, method="mean")
+            item.setClipToView(True)
+            self.performanceCurveItems.append(item)
+        bar_positions = {
+            int(row.get("bar_index", index)): index
+            for index, row in enumerate(equity_rows)
+            if row.get("bar_index", index) is not None
+        }
+        marker_spots = []
+        for trade in snapshot["trades"]:
+            trade_id = str(trade.get("trade_id") or "")
+            for index_key, symbol, color in (
+                ("entry_bar_index", "t1", COLORS["chart_up"]),
+                ("exit_bar_index", "x", COLORS["chart_down"]),
+            ):
+                try:
+                    curve_index = bar_positions[int(trade.get(index_key))]
+                    y_value = display_curve_values[curve_index]
+                except (KeyError, TypeError, ValueError, IndexError):
+                    continue
+                marker_spots.append(
+                    {
+                        "pos": (float(curve_index), float(y_value)),
+                        "data": trade_id,
+                        "symbol": symbol,
+                        "brush": pg.mkBrush(color),
+                        "pen": pg.mkPen(color),
+                    }
+                )
+        self.performanceTradeMarkers.setData(marker_spots)
+
+        distribution = snapshot["distribution"]
+        distribution_values = {
+            "win_count": str(distribution["win_count"]),
+            "loss_count": str(distribution["loss_count"]),
+            "win_rate": _fmt_pct(raw_metrics["win_rate_pct"]),
+            "average_win": _fmt_money(distribution["average_win"]),
+            "average_loss": _fmt_money(distribution["average_loss"]),
+            "largest_win": _fmt_money(distribution["largest_win"]),
+            "largest_loss": _fmt_money(distribution["largest_loss"]),
+            "gross_profit": _fmt_money(distribution["gross_profit"]),
+            "gross_loss": _fmt_money(distribution["gross_loss"]),
+        }
+        for key, value in distribution_values.items():
+            self.performanceDistributionLabels[key].setText(value)
+
+        pnls = np.asarray(snapshot["closed_pnls"], dtype=float)
+        if pnls.size:
+            bin_count = min(12, max(3, int(math.sqrt(pnls.size)) + 1))
+            counts, edges = np.histogram(pnls, bins=bin_count)
+            centers = (edges[:-1] + edges[1:]) / 2.0
+            width = max(1e-9, float(edges[1] - edges[0]) * 0.82)
+            brushes = [pg.mkBrush(COLORS["success"] if center >= 0 else COLORS["danger"]) for center in centers]
+            self.performanceHistogram.setOpts(x=centers, height=counts, width=width, brushes=brushes)
+        else:
+            self.performanceHistogram.setOpts(x=[], height=[], width=0.75)
+
+        trade_filter = str(self.performanceTradeFilter.currentData() or "all")
+        side_filter = str(self.performanceSideFilter.currentData() or "ALL")
+        filtered = []
+        for trade in snapshot["trades"]:
+            status = str(trade.get("status") or "").upper()
+            pnl = self._trade_pnl(trade)
+            if side_filter != "ALL" and str(trade.get("side") or "").upper() != side_filter:
+                continue
+            if trade_filter == "profit" and pnl <= 0:
+                continue
+            if trade_filter == "loss" and pnl >= 0:
+                continue
+            if trade_filter == "open" and status != "OPEN":
+                continue
+            if trade_filter == "closed" and status != "CLOSED":
+                continue
+            if trade_filter == "flat" and abs(pnl) > 1e-12:
+                continue
+            filtered.append(trade)
+        filtered.sort(key=lambda trade: str(trade.get("exit_bar_time_bjt") or trade.get("entry_bar_time_bjt") or ""), reverse=True)
+        self.tradePnlTable.setSortingEnabled(False)
+        self.tradePnlTable.setRowCount(len(filtered))
+        for row, trade in enumerate(filtered):
+            fees = _safe_float(trade.get("entry_fee_quote")) + _safe_float(trade.get("exit_fee_quote"))
+            trade_pnl = self._trade_pnl(trade)
+            trade_return = self._trade_return_pct(trade)
+            values = (
+                str(trade.get("side") or "-"),
+                str(trade.get("entry_bar_time_bjt") or "-"),
+                str(trade.get("exit_bar_time_bjt") or "-"),
+                _fmt_money(_safe_float(trade.get("entry_fill_price"), float("nan"))),
+                _fmt_money(_safe_float(trade.get("exit_fill_price"), float("nan"))),
+                _fmt_money(self._trade_notional(trade)),
+                _fmt_money(fees),
+                _fmt_money(trade_pnl),
+                _fmt_pct(trade_return),
+                str(trade.get("holding_bars") or "-"),
+                _fmt_money(_safe_float(trade.get("take_profit_price"), float("nan"))),
+                _fmt_money(_safe_float(trade.get("stop_loss_price"), float("nan"))),
+                str(trade.get("exit_reason") or "-"),
+            )
+            for col, value in enumerate(values):
+                item = SortableTableItem(value)
+                if col in {7, 8}:
+                    signed_value = trade_pnl if col == 7 else trade_return
+                    color = (
+                        COLORS["success"]
+                        if signed_value > 0
+                        else COLORS["danger"]
+                        if signed_value < 0
+                        else COLORS["text_secondary"]
+                    )
+                    item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+                self.tradePnlTable.setItem(row, col, item)
+            self.tradePnlTable.item(row, 0).setData(QtCore.Qt.UserRole, str(trade.get("trade_id") or ""))
+        self.tradePnlTable.setSortingEnabled(True)
 
     def _is_main_trading_tab_widget(self, widget: QtWidgets.QWidget) -> bool:
         owning_tabs = [
@@ -1013,9 +1485,14 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.tabs.setTabText(self.tabs.indexOf(self.aiTab), self._tr("ai_summary"))
         self.tabs.setTabText(self.tabs.indexOf(self.researchTab), self._tr("research.pipeline"))
         self.tabs.setTabText(self.tabs.indexOf(self.timeSeriesTab), self._tr("time_series.workspace"))
-        self.performanceTabs.setTabText(self.performanceTabs.indexOf(self.closedTradesTab), self._tr("closed_trades"))
-        self.performanceTabs.setTabText(self.performanceTabs.indexOf(self.performanceTextTab), self._tr("trading_performance"))
-        self.performanceTabs.setTabText(self.performanceTabs.indexOf(self.equityTab), self._tr("workspace.equity"))
+        self.performanceHistogramTitle.setText(self._tr("performance.histogram.title"))
+        self.performanceHistogramDefinition.setText(self._tr("performance.histogram.definition"))
+        self.performanceHistogramPlot.setLabel(
+            "bottom", self._tr("performance.histogram.x_axis")
+        )
+        self.performanceHistogramPlot.setLabel(
+            "left", self._tr("performance.histogram.y_axis")
+        )
         self.eventTabs.setTabText(self.eventTabs.indexOf(self.eventStudyTableTab), self._tr("event_study"))
         self.eventTabs.setTabText(self.eventTabs.indexOf(self.datasetTab), self._tr("dataset"))
         self.btnRunResearch.setText(self._tr("research.run"))
@@ -1091,6 +1568,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
                     method()
                 except Exception:
                     logger.exception("Analysis workspace refresh failed: %s", method_name)
+        self._refresh_performance_workspace()
 
     def closeEvent(self, event):
         event.ignore()

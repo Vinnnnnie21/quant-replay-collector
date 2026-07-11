@@ -24,6 +24,7 @@ from presenters.table_presenter import (
     populate_recent_event_list,
     populate_trade_tables,
 )
+from presenters.status_presenter import update_header
 
 
 def _app():
@@ -178,6 +179,34 @@ def test_equity_and_event_study_tables_are_presented_without_main_window():
     assert study_table.item(0, 4).text() == "0.010000"
 
 
+def test_equity_table_supports_continuous_mark_to_market_rows():
+    _app()
+    equity_table = QtWidgets.QTableWidget()
+    equity_table.setColumnCount(8)
+
+    populate_equity_table(
+        equity_table,
+        [
+            {
+                "sequence_no": 2,
+                "bar_index": 11,
+                "realized_net_pnl": 20.0,
+                "unrealized_pnl": 10.0,
+                "open_position_count": 1,
+                "current_equity": 1030.0,
+                "total_return_pct": 3.0,
+                "drawdown_pct": 0.0,
+            }
+        ],
+    )
+
+    assert equity_table.item(0, 1).text() == "11"
+    assert equity_table.item(0, 3).text() == "10.00"
+    assert equity_table.item(0, 4).text() == "1"
+    assert equity_table.item(0, 5).text() == "1030.00"
+    assert equity_table.item(0, 6).text() == "3.00"
+
+
 def test_recent_event_list_toggles_empty_state_without_table_widget():
     _app()
     list_widget = QtWidgets.QWidget()
@@ -205,6 +234,113 @@ def test_recent_event_list_toggles_empty_state_without_table_widget():
 
     assert not list_widget.isVisible()
     assert empty_widget.isVisible()
+
+
+def test_recent_event_list_defaults_to_latest_event_only():
+    _app()
+    list_widget = QtWidgets.QWidget()
+    layout = QtWidgets.QVBoxLayout(list_widget)
+    empty_widget = QtWidgets.QLabel("empty")
+    events = [
+        {
+            "event_id": f"evt_{index}",
+            "event_type": "OPEN",
+            "side": "LONG",
+            "bar_open_time_bjt": f"2026-01-01T00:0{index}:00+08:00",
+            "price_proxy": 100.0 + index,
+            "created_at": f"2026-01-01T00:0{index}:00+08:00",
+        }
+        for index in range(3)
+    ]
+
+    populate_recent_event_list(list_widget, empty_widget, events)
+
+    items = [
+        layout.itemAt(index).widget()
+        for index in range(layout.count())
+        if layout.itemAt(index).widget() is not None
+        and layout.itemAt(index).widget().property("role") == "recentEventItem"
+    ]
+    visible_text = " ".join(label.text() for label in list_widget.findChildren(QtWidgets.QLabel))
+
+    assert len(items) == 1
+    assert "102.00" in visible_text
+    assert "101.00" not in visible_text
+
+
+def test_status_account_overview_includes_unrealized_pnl():
+    _app()
+    labels = {
+        name: QtWidgets.QLabel("-")
+        for name in (
+            "accountEquityValue",
+            "accountReturnValue",
+            "accountPnlValue",
+            "accountWinRateValue",
+            "accountSharpeValue",
+            "accountProfitFactorValue",
+            "accountPayoffValue",
+            "accountMaxDrawdownValue",
+            "headerMainLabel",
+            "headerPlayBadge",
+            "headerViewBadge",
+            "headerSessionBadge",
+        )
+    }
+    mini_table = QtWidgets.QTableWidget()
+    mini_table.setColumnCount(6)
+    window = SimpleNamespace(
+        **labels,
+        openPositionsMiniTable=mini_table,
+        df=pd.DataFrame(
+            [
+                {
+                    "bar_index": 2,
+                    "open_time_bjt": "2026-01-01T00:02:00+08:00",
+                    "open": 101.0,
+                    "high": 103.0,
+                    "low": 100.0,
+                    "close": 102.0,
+                    "volume": 10.0,
+                }
+            ]
+        ),
+        cursor=0,
+        trades=[
+            {"trade_id": "closed", "status": "CLOSED", "net_pnl_quote": 20.0, "net_return_pct": 2.0, "exit_bar_index": 1},
+            {
+                "trade_id": "open",
+                "status": "OPEN",
+                "side": "LONG",
+                "entry_fill_price": 100.0,
+                "notional_quote": 500.0,
+            },
+        ],
+        symbolBox=SimpleNamespace(currentText=lambda: "BTCUSDT"),
+        intervalBox=SimpleNamespace(currentText=lambda: "1m"),
+        initialEquitySpin=SimpleNamespace(value=lambda: 1000.0),
+        tradeNotionalSpin=SimpleNamespace(value=lambda: 500.0),
+        playing=False,
+        follow_latest=False,
+        session_id="sess_1234567890",
+        chartIntervalButtons={},
+        _display_interval=lambda: "1m",
+        _sample_interval=lambda: "1m",
+        _set_widget_role=lambda *_args: None,
+        _update_load_play_button=lambda: None,
+        _update_trade_buttons_enabled=lambda: None,
+        tr=lambda key, default=None: {"paused": "暂停", "free_view": "自由浏览", "session": "session"}.get(key, default or key),
+    )
+
+    update_header(window)
+
+    assert window.accountEquityValue.text() == "1030.00"
+    assert window.accountPnlValue.text() == "30.00"
+    assert window.accountReturnValue.text() == "3.00%"
+    assert window.accountWinRateValue.text() == "100.00%"
+    assert mini_table.rowCount() == 1
+    assert mini_table.item(0, 1).text() == "LONG"
+    assert mini_table.item(0, 3).text() == "10.00"
 
 
 def test_main_window_table_refresh_uses_presenters_without_full_window():
@@ -246,18 +382,9 @@ def test_main_window_table_refresh_uses_presenters_without_full_window():
                 "created_at": "2026-01-01T00:00:00+08:00",
             }
         ],
-        _current_equity_rows=lambda: [
-            {
-                "sequence_no": 1,
-                "trade_id": "trd_open_1234567890",
-                "equity_before": 10000.0,
-                "realized_net_pnl": 0.0,
-                "realized_fee": 0.4,
-                "equity_after": 9999.6,
-                "equity_return_pct": -0.004,
-                "drawdown_pct": -0.004,
-            }
-        ],
+        _current_equity_rows=lambda: (_ for _ in ()).throw(
+            AssertionError("light trade refresh must not rebuild the full equity curve")
+        ),
         _populate_event_study_table=lambda: None,
         _refresh_dataset_summary=lambda: None,
     )
@@ -273,5 +400,5 @@ def test_main_window_table_refresh_uses_presenters_without_full_window():
 
     assert window.openTradesTable.rowCount() == 1
     assert window.eventTable.rowCount() == 1
-    assert window.equityTable.rowCount() == 1
+    assert window.equityTable.rowCount() == 0
     assert window.openTradesTable.item(0, 0).data(QtCore.Qt.UserRole) == "trd_open_1234567890"

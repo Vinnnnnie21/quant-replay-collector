@@ -21,6 +21,11 @@ from ui_style import COLORS
 ROLE_ID = QtCore.Qt.UserRole
 
 
+def _fmt_money(value: Any) -> str:
+    number = safe_float(value, default=float("nan"))
+    return f"{number:.2f}" if math.isfinite(number) else ""
+
+
 def make_table_item(
     value: Any,
     role_id: Any = None,
@@ -201,7 +206,7 @@ def populate_recent_event_list(
     list_widget: QtWidgets.QWidget,
     empty_widget: QtWidgets.QWidget | None,
     events: list[dict[str, Any]],
-    limit: int = 6,
+    limit: int = 1,
 ) -> None:
     layout = list_widget.layout()
     if layout is None:
@@ -263,26 +268,40 @@ def populate_recent_event_table(table: QtWidgets.QTableWidget, events: list[dict
 def populate_equity_table(table: QtWidgets.QTableWidget, equity_rows: list[dict[str, Any]]) -> None:
     table.setRowCount(len(equity_rows))
     for row_index, row in enumerate(equity_rows):
-        values = [
-            row.get("sequence_no") or row_index + 1,
-            row.get("trade_id") or "",
-            fmt_num(row.get("equity_before")),
-            fmt_num(row.get("realized_net_pnl")),
-            fmt_num(row.get("realized_fee")),
-            fmt_num(row.get("equity_after")),
-            fmt_num(row.get("equity_return_pct")),
-            fmt_num(row.get("drawdown_pct")),
-        ]
+        if "current_equity" in row:
+            values = [
+                row.get("sequence_no") or row_index + 1,
+                row.get("bar_index") if row.get("bar_index") is not None else row.get("time") or "",
+                _fmt_money(row.get("realized_net_pnl")),
+                _fmt_money(row.get("unrealized_pnl")),
+                row.get("open_position_count") if row.get("open_position_count") is not None else "",
+                _fmt_money(row.get("current_equity")),
+                _fmt_money(row.get("total_return_pct")),
+                _fmt_money(row.get("drawdown_pct")),
+            ]
+            role_id = None
+        else:
+            values = [
+                row.get("sequence_no") or row_index + 1,
+                row.get("trade_id") or "",
+                fmt_num(row.get("equity_before")),
+                fmt_num(row.get("realized_net_pnl")),
+                fmt_num(row.get("realized_fee")),
+                fmt_num(row.get("equity_after")),
+                fmt_num(row.get("equity_return_pct")),
+                fmt_num(row.get("drawdown_pct")),
+            ]
+            role_id = row.get("trade_id")
         for col_index, value in enumerate(values):
             table.setItem(
                 row_index,
                 col_index,
                 make_table_item(
                     value,
-                    role_id=row.get("trade_id") if col_index == 1 else None,
+                    role_id=role_id if col_index == 1 else None,
                     numeric=col_index in {0, 2, 3, 4, 5, 6, 7},
                     pnl=col_index in {3, 6, 7},
-                    shorten_id=col_index == 1,
+                    shorten_id=bool(role_id) and col_index == 1,
                 ),
             )
 

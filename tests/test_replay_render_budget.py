@@ -80,6 +80,37 @@ def test_playback_tick_does_not_call_rebuild_before_render():
     assert window._render_dirty is True
 
 
+def test_playback_tick_uses_incremental_drag_frame_while_pointer_is_down():
+    drag_frames = []
+    render_calls = []
+    window = SimpleNamespace(
+        df=_large_frame(),
+        cursor=100,
+        playing=True,
+        follow_latest=False,
+        _chart_drag_active=True,
+        _accum=0.0,
+        _last_tick=_Elapsed(),
+        replay_controller=ReplayController(),
+        current_speed=lambda: 6.0,
+        _base_bars_per_sec=1.0,
+        _last_cursor_for_series=-1,
+        _render_dirty=False,
+        _should_render_now=lambda force=False: False,
+        _render_active_drag_frame=lambda: drag_frames.append(window.cursor),
+        _render=lambda force=False: render_calls.append(force),
+        _apply_tp_sl_triggers=lambda *_args: None,
+        _log_slow_operation=lambda *_args, **_kwargs: None,
+        _log=lambda _message: None,
+        analysis_refresh_controller=SimpleNamespace(resume_if_idle=lambda: None),
+    )
+
+    MainWindow.on_timer(window)
+
+    assert drag_frames == [window.cursor]
+    assert render_calls == []
+
+
 def test_large_rebuild_uses_visible_window_and_skips_same_bounds():
     candle = _Item()
     volume = _Item()
@@ -90,6 +121,7 @@ def test_large_rebuild_uses_visible_window_and_skips_same_bounds():
         volItem=volume,
         _drawn_n=-1,
         _last_rebuild_key=None,
+        follow_latest=False,
         _current_xrange=lambda: (4950.0, 5050.0),
         _log_slow_operation=lambda *_args, **_kwargs: None,
     )
@@ -99,9 +131,9 @@ def test_large_rebuild_uses_visible_window_and_skips_same_bounds():
 
     assert len(candle.calls) == 1
     x_values = candle.calls[0][0]
-    assert len(x_values) < 300
-    assert x_values.min() >= 4800
-    assert x_values.max() <= 5100
+    assert len(x_values) == 1200
+    assert x_values.min() >= 3800
+    assert x_values.max() <= 5000
 
 
 def test_free_view_rebuild_cache_ignores_cursor_when_visible_window_unchanged():
@@ -213,6 +245,53 @@ def test_render_dirty_flags_do_not_refresh_series_or_context_for_header_only_cha
     assert context_calls == []
 
 
+def test_visible_range_render_skips_header_and_status_refresh():
+    rebuild_calls = []
+    price_line_calls = []
+    header_calls = []
+    status_calls = []
+    df = _large_frame()
+    df["open_time_bjt"] = pd.date_range("2024-04-01", periods=len(df), freq="5min", tz="Asia/Shanghai")
+    render_state = RenderState()
+    render_state.clear()
+    render_state.mark_visible_range_changed()
+    window = SimpleNamespace(
+        df=df,
+        cursor=5000,
+        pad_right=12,
+        window_bars=120,
+        follow_latest=False,
+        manual_xrange=(1200.0, 1320.0),
+        render_state=render_state,
+        _render_dirty=True,
+        playing=False,
+        _current_xrange=lambda: (1200.0, 1320.0),
+        _clamp_xrange=lambda x0, x1: (x0, x1),
+        _set_xrange=lambda *_args, **_kwargs: None,
+        _rebuild_items=lambda *args, **kwargs: rebuild_calls.append((args, kwargs)),
+        _autoscale_y=lambda *_args: None,
+        _sync_markers=lambda: None,
+        _update_current_price_line=lambda *args: price_line_calls.append(args),
+        _refresh_multi_timeframe_context=lambda: None,
+        current_speed=lambda: 1.0,
+        session_id="sess_1",
+        _is_market_params_dirty=lambda: False,
+        _update_header=lambda: header_calls.append(True),
+        status=SimpleNamespace(setText=lambda text: status_calls.append(text)),
+        symbolBox=SimpleNamespace(currentText=lambda: "BTCUSDT"),
+        intervalBox=SimpleNamespace(currentText=lambda: "5m"),
+        events=[],
+        _log_slow_operation=lambda *_args, **_kwargs: None,
+    )
+
+    MainWindow._render(window, force=False)
+
+    assert rebuild_calls
+    assert price_line_calls
+    assert header_calls == []
+    assert status_calls == []
+
+
 def test_follow_latest_render_rebuilds_target_window_before_moving_view():
     rebuild_calls = []
     set_xrange_calls = []
@@ -251,5 +330,5 @@ def test_follow_latest_render_rebuilds_target_window_before_moving_view():
     MainWindow._render(window, force=True)
 
     assert rebuild_calls
-    assert rebuild_calls[0][1]["visible_range"] == (4892.0, 5012.0)
-    assert set_xrange_calls == [(4892.0, 5012.0, True)]
+    assert rebuild_calls[0][1]["visible_range"] == (4898.0, 5018.0)
+    assert set_xrange_calls == [(4898.0, 5018.0, True)]

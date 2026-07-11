@@ -46,8 +46,27 @@ def test_legacy_database_is_upgraded_without_losing_existing_rows(tmp_path):
     with storage.connect() as conn:
         session_columns = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
         trade_columns = {row[1] for row in conn.execute("PRAGMA table_info(trades)")}
-    assert {"symbol", "interval", "initial_equity", "fee_bps", "fill_mode"} <= session_columns
-    assert {"symbol", "interval", "entry_fill_price", "net_pnl_quote", "net_return_pct"} <= trade_columns
+    assert {
+        "symbol",
+        "interval",
+        "initial_equity",
+        "fee_bps",
+        "fill_mode",
+        "take_profit_pct",
+        "stop_loss_pct",
+    } <= session_columns
+    assert {
+        "symbol",
+        "interval",
+        "entry_fill_price",
+        "net_pnl_quote",
+        "net_return_pct",
+        "take_profit_pct",
+        "stop_loss_pct",
+        "take_profit_price",
+        "stop_loss_price",
+        "exit_reason",
+    } <= trade_columns
 
 
 def test_kline_and_quality_report_writes_are_upserts(tmp_path):

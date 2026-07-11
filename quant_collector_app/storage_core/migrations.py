@@ -37,7 +37,9 @@ def migrate_to_v1(conn) -> None:
             trade_notional REAL,
             fee_bps REAL,
             slippage_bps REAL,
-            fill_mode TEXT
+            fill_mode TEXT,
+            take_profit_pct REAL,
+            stop_loss_pct REAL
         );
 
         CREATE TABLE IF NOT EXISTS trades (
@@ -75,6 +77,11 @@ def migrate_to_v1(conn) -> None:
             gross_return_pct REAL,
             net_return_pct REAL,
             fee_return_pct REAL,
+            take_profit_pct REAL,
+            stop_loss_pct REAL,
+            take_profit_price REAL,
+            stop_loss_price REAL,
+            exit_reason TEXT,
             created_at TEXT,
             updated_at TEXT
         );
@@ -216,6 +223,8 @@ def migrate_to_v1(conn) -> None:
         "fee_bps": "REAL",
         "slippage_bps": "REAL",
         "fill_mode": "TEXT",
+        "take_profit_pct": "REAL",
+        "stop_loss_pct": "REAL",
     }.items():
         ensure_column(conn, "sessions", column, column_type)
     for column, column_type in {
@@ -250,6 +259,11 @@ def migrate_to_v1(conn) -> None:
         "gross_return_pct": "REAL",
         "net_return_pct": "REAL",
         "fee_return_pct": "REAL",
+        "take_profit_pct": "REAL",
+        "stop_loss_pct": "REAL",
+        "take_profit_price": "REAL",
+        "stop_loss_price": "REAL",
+        "exit_reason": "TEXT",
         "created_at": "TEXT",
         "updated_at": "TEXT",
     }.items():

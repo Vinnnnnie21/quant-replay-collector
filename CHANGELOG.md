@@ -1,9 +1,15 @@
 # Changelog
 
-## Unreleased
+## v1.5.0 - 2026-07-11
 
 ### Added
 
+- Exchange-style free chart pan and zoom, explicit follow-latest framing, dual price axes and a right-axis current-price badge.
+- Session-level initial equity, per-trade notional and optional TP/SL settings.
+- Multiple independent long and short replay positions with FIFO fallback for manual close and per-position automatic TP/SL exits.
+- A funds-management performance workspace with continuous equity including unrealized PnL, signed equity/PnL curves, account metrics, closed-trade details and a labeled PnL distribution.
+- OpenGL acceleration for the main chart with automatic software fallback, plus 120 Hz target-machine validation.
+- `0.1x` to `10x` centered playback stops and left/right arrow speed control; `Shift+Right` retains single-bar stepping.
 - Switchable colour presets: `黑色配色` (OKX-style near-black), `灰色配色`, `研究配色`, `高对比配色`.
 - Unified dark "pill" design language for buttons, period/timeframe chips, inputs and event-tag toggles, applied via per-control local stylesheets (reliable fills under the Fusion style) plus drop shadows.
 - Free vertical (price) zoom with `Ctrl` + mouse wheel; `重置缩放 / Reset zoom` restores automatic fitting.
@@ -12,9 +18,15 @@
 ### Changed
 
 - Manual open/close actions no longer pause replay playback.
+- Manual open/close actions preserve follow-latest state and use lightweight table refreshes during playback.
+- Performance trade results and distribution use signed red/green presentation, and redundant legacy performance tabs were removed.
 
 ### Fixed
 
+- Removed full-dataframe TP/SL scans and full-chart picture rebuilds from the replay hot path.
+- Kept new K-lines visible while replay continues during chart dragging.
+- Prevented session restore controls from overwriting the saved replay cursor before market data loads.
+- Prevented the current-price label and long account-setting labels from covering or clipping chart and form content.
 - Closing a position with `C` / `X` failed with multiple open positions: restored the truncated `selected_open_trade` and added side-aware auto-selection.
 - Data-analysis page no longer mixes Chinese/English: the `REJECT` / `UNCERTAIN` buttons were hard-coded and now use `_tr`.
 

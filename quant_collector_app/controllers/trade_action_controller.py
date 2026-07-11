@@ -14,12 +14,14 @@ try:
     from presenters.formatters import status_label
     from render_state import RenderState
     from services.trade_use_cases import TradeActionResult, TradeUseCase
+    from tp_sl_engine import find_tp_sl_triggers
 except ImportError:  # pragma: no cover - package import path
     from ..app_logger import get_logger
     from ..market_data import bjt_now_iso, clamp
     from ..presenters.formatters import status_label
     from ..render_state import RenderState
     from ..services.trade_use_cases import TradeActionResult, TradeUseCase
+    from ..tp_sl_engine import find_tp_sl_triggers
 
 
 logger = get_logger(__name__)
@@ -60,6 +62,16 @@ def pause_replay_for_manual_trade(window) -> None:
     # recorded against the bar captured before this call, so replay can keep
     # running without affecting which bar the transaction is attributed to.
     return
+
+
+def _restore_follow_latest(window, was_following: bool) -> None:
+    if not was_following:
+        return
+    window.follow_latest = True
+    window.user_view_lock = False
+    replay = getattr(window, "replay_controller", None)
+    if replay is not None:
+        replay.follow_latest = True
 
 
 def current_bar(window):
@@ -183,6 +195,90 @@ def undo_close_trade_result(window, result: TradeActionResult, trade: dict[str, 
     _render_state(window).mark_events_changed()
 
 
+def _bar_for_index(window, bar_index: int):
+    try:
+        candidate = window.df.iloc[int(bar_index)]
+        if int(candidate.get("bar_index", bar_index)) == int(bar_index):
+            return candidate
+    except Exception:
+        pass
+    try:
+        frame = window.df
+        matches = frame[frame["bar_index"].astype(int) == int(bar_index)]
+        if not matches.empty:
+            return matches.iloc[0]
+    except Exception:
+        pass
+    try:
+        return window.df.iloc[int(bar_index)]
+    except Exception:
+        return None
+
+
+def apply_tp_sl_triggers(window, from_bar_index: int, to_bar_index: int) -> int:
+    if int(to_bar_index) <= int(from_bar_index):
+        return 0
+    if getattr(window, "df", None) is None or len(window.df) == 0:
+        return 0
+    eligible_trades = [
+        trade
+        for trade in getattr(window, "trades", [])
+        if str(trade.get("status") or "").upper() == "OPEN"
+        and (trade.get("take_profit_price") is not None or trade.get("stop_loss_price") is not None)
+    ]
+    if not eligible_trades:
+        return 0
+    changed_bars = []
+    for bar_index in range(int(from_bar_index) + 1, int(to_bar_index) + 1):
+        bar = _bar_for_index(window, bar_index)
+        if bar is not None:
+            changed_bars.append(dict(bar))
+    triggers = find_tp_sl_triggers(
+        changed_bars,
+        eligible_trades,
+        from_bar_index=int(from_bar_index),
+        to_bar_index=int(to_bar_index),
+    )
+    closed = 0
+    for trigger in triggers:
+        trade_id = str(trigger.get("trade_id") or "")
+        trade = window._trade_by_id.get(trade_id)
+        if not trade or str(trade.get("status") or "").upper() != "OPEN":
+            continue
+        bar_index = int(trigger["bar_index"])
+        bar = _bar_for_index(window, bar_index)
+        if bar is None:
+            continue
+        result = trade_use_case(window).close_trade(
+            window.df,
+            bar,
+            event_idx=bar_index,
+            trade=trade,
+            event_id=window._new_id("evt"),
+            label_tags=[],
+            note=f"auto {trigger['exit_reason']}",
+            fallback_settings=window.execution_settings(),
+            exit_reason=str(trigger["exit_reason"]),
+            override_exit_price=float(trigger["exit_price"]),
+            now_iso=bjt_now_iso(),
+        )
+        if not result.success:
+            raise_trade_action_error(result)
+        apply_close_trade_result(window, result, trade)
+        window._sample_cursor_bar_index = bar_index
+        closed += 1
+    if closed:
+        window.persist_session_state()
+        window._sync_equity_curve()
+        window._refresh_tables(include_heavy=False)
+        analysis = getattr(window, "analysis_refresh_controller", None)
+        if analysis is not None and hasattr(analysis, "schedule"):
+            analysis.schedule()
+        window._render_dirty = True
+        window._log(f"auto TP/SL closed {closed} trade(s)")
+    return closed
+
+
 def request_open_trade(window, side: str) -> None:
     if getattr(window, "_trade_transaction_active", False):
         window._log("trade transaction already in progress; ignored duplicate open request")
@@ -202,6 +298,7 @@ def request_open_trade(window, side: str) -> None:
     if bar is None or "bar_index" not in bar:
         window._log("开仓失败：当前K线无效。")
         return
+    was_following = bool(getattr(window, "follow_latest", False))
     pause_replay_for_manual_trade(window)
     tags, note = window.current_tags_and_note()
     event_id = window._new_id("evt")
@@ -230,6 +327,8 @@ def request_open_trade(window, side: str) -> None:
                     label_tags=tags,
                     note=note,
                     settings=window.execution_settings(),
+                    take_profit_pct=getattr(window, "take_profit_pct_value", lambda: None)(),
+                    stop_loss_pct=getattr(window, "stop_loss_pct_value", lambda: None)(),
                     now_iso=bjt_now_iso(),
                 )
                 if not result.success:
@@ -239,7 +338,9 @@ def request_open_trade(window, side: str) -> None:
             window.persist_session_state()
             window._refresh_tables(include_heavy=False)
             window.analysis_refresh_controller.schedule()
+            _restore_follow_latest(window, was_following)
             window._render(force=True)
+            _restore_follow_latest(window, was_following)
             window._log(f"开{('多' if side == 'LONG' else '空')}：交易ID={result.trade_id}")
         finally:
             window._trade_transaction_active = False
@@ -289,6 +390,7 @@ def request_close_trade(window, expected_side: str) -> None:
     bar = window.current_bar()
     if bar is None:
         return
+    was_following = bool(getattr(window, "follow_latest", False))
     pause_replay_for_manual_trade(window)
     tags, note = window.current_tags_and_note()
     event_id = window._new_id("evt")
@@ -327,7 +429,9 @@ def request_close_trade(window, expected_side: str) -> None:
             window._sync_equity_curve()
             window._refresh_tables(include_heavy=False)
             window.analysis_refresh_controller.schedule()
+            _restore_follow_latest(window, was_following)
             window._render(force=True)
+            _restore_follow_latest(window, was_following)
             window._log(f"平{('多' if trade['side'] == 'LONG' else '空')}：交易ID={trade['trade_id']}")
         finally:
             window._trade_transaction_active = False
@@ -356,16 +460,19 @@ def _auto_select_open_trade_if_needed(window, expected_side: str | None = None) 
         return trade
     if window.openTradesTable.rowCount() == 0:
         return None
-    # No row selected: pick the most recently opened OPEN trade that matches the
-    # requested side, so 平多/平空 (C/X) work even with several positions open.
-    candidate_id = None
-    for tid, candidate in reversed(list(window._trade_by_id.items())):
+    # No row selected: pick the earliest matching OPEN trade (FIFO).
+    candidates = []
+    for tid, candidate in window._trade_by_id.items():
         if candidate.get("status") != "OPEN":
             continue
         if expected_side is not None and candidate.get("side") != expected_side:
             continue
-        candidate_id = tid
-        break
+        try:
+            entry_index = int(candidate.get("entry_bar_index", 0))
+        except (TypeError, ValueError):
+            entry_index = 0
+        candidates.append((entry_index, str(candidate.get("created_at") or ""), str(tid), tid))
+    candidate_id = sorted(candidates)[0][3] if candidates else None
     if candidate_id is None and expected_side is None:
         candidate_id = _first_open_trade_id(window)
     if candidate_id:
@@ -460,6 +567,7 @@ __all__ = [
     "ActionCommand",
     "apply_close_trade_result",
     "apply_open_trade_result",
+    "apply_tp_sl_triggers",
     "current_bar",
     "current_tags_and_note",
     "display_interval",

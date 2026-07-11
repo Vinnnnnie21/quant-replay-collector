@@ -8,14 +8,16 @@ import time
 import numpy as np
 import pandas as pd
 import pyqtgraph as pg
-from PySide6 import QtCore
+from PySide6 import QtCore, QtWidgets
 
 try:
     from app_config import BJT, DEFAULT_INTERVAL, DEFAULT_SYMBOL
+    from analytics.metrics import max_drawdown, payoff_ratio, profit_factor, sharpe_ratio
     from market_data import clamp
     from presenters.formatters import fmt_num, safe_float, short_id
 except ImportError:  # pragma: no cover - package import path
     from ..app_config import BJT, DEFAULT_INTERVAL, DEFAULT_SYMBOL
+    from ..analytics.metrics import max_drawdown, payoff_ratio, profit_factor, sharpe_ratio
     from ..market_data import clamp
     from .formatters import fmt_num, safe_float, short_id
 
@@ -84,9 +86,114 @@ def _entry_price(trade: dict) -> float:
     return safe_float(value, default=float("nan"))
 
 
+def _spin_float(window, attr: str, default: float) -> float:
+    widget = getattr(window, attr, None)
+    if widget is None or not hasattr(widget, "value"):
+        return float(default)
+    try:
+        value = float(widget.value())
+    except (TypeError, ValueError):
+        return float(default)
+    return value if math.isfinite(value) else float(default)
+
+
+def _trade_notional(trade: dict, default_notional: float) -> float:
+    value = safe_float(trade.get("notional_quote"), default=default_notional)
+    return value if math.isfinite(value) and value > 0 else max(0.0, default_notional)
+
+
+def _trade_net_pnl(trade: dict, default_notional: float) -> float:
+    value = safe_float(trade.get("net_pnl_quote"), default=float("nan"))
+    if math.isfinite(value):
+        return value
+    ret = safe_float(trade.get("net_return_pct"), default=float("nan"))
+    if not math.isfinite(ret):
+        ret = safe_float(trade.get("final_return_pct"), default=0.0)
+    return ret / 100.0 * _trade_notional(trade, default_notional)
+
+
+def _floating_pnl(trade: dict, current_price: float, default_notional: float) -> float:
+    entry = _entry_price(trade)
+    notional = _trade_notional(trade, default_notional)
+    if not math.isfinite(entry) or entry <= 0 or notional <= 0 or not math.isfinite(current_price):
+        return 0.0
+    qty = notional / entry
+    direction = 1.0 if str(trade.get("side") or "").upper() == "LONG" else -1.0
+    return (current_price - entry) * qty * direction
+
+
+def _trade_return_pct(trade: dict, default_notional: float) -> float:
+    value = safe_float(trade.get("net_return_pct"), default=float("nan"))
+    if math.isfinite(value):
+        return value
+    notional = _trade_notional(trade, default_notional)
+    return _trade_net_pnl(trade, default_notional) / notional * 100.0 if notional > 0 else 0.0
+
+
+def _money(value: float) -> str:
+    return f"{value:.2f}" if math.isfinite(value) else "-"
+
+
+def _pct(value: float) -> str:
+    return f"{value:.2f}%" if math.isfinite(value) else "-"
+
+
+def _update_account_overview_panel(window, row) -> None:
+    labels = (
+        "accountEquityValue",
+        "accountReturnValue",
+        "accountPnlValue",
+        "accountWinRateValue",
+        "accountSharpeValue",
+        "accountProfitFactorValue",
+        "accountPayoffValue",
+        "accountMaxDrawdownValue",
+    )
+    if not all(hasattr(window, attr) for attr in labels):
+        return
+    initial = _spin_float(window, "initialEquitySpin", 10_000.0)
+    default_notional = _spin_float(window, "tradeNotionalSpin", 1_000.0)
+    current_price = safe_float(row.get("close"), default=float("nan")) if row is not None else float("nan")
+    trades = list(getattr(window, "trades", []) or [])
+    closed = [trade for trade in trades if str(trade.get("status") or "").upper() == "CLOSED"]
+    open_trades = [trade for trade in trades if str(trade.get("status") or "").upper() == "OPEN"]
+    realized = sum(_trade_net_pnl(trade, default_notional) for trade in closed)
+    unrealized = sum(_floating_pnl(trade, current_price, default_notional) for trade in open_trades)
+    equity = initial + realized + unrealized
+    pnl = equity - initial
+    total_return = pnl / initial * 100.0 if initial > 0 else float("nan")
+    returns = [_trade_return_pct(trade, default_notional) for trade in closed]
+    pnls = [_trade_net_pnl(trade, default_notional) for trade in closed]
+    wins = [value for value in pnls if value > 0]
+    win_rate = len(wins) / len(closed) * 100.0 if closed else float("nan")
+    equity_path = [initial]
+    running = initial
+    for trade in sorted(closed, key=lambda item: (item.get("exit_bar_index") is None, item.get("exit_bar_index") or 0, item.get("updated_at") or "")):
+        running += _trade_net_pnl(trade, default_notional)
+        equity_path.append(running)
+    if open_trades:
+        equity_path.append(equity)
+    dd = max_drawdown(equity_path).get("max_drawdown_pct")
+    sharpe = sharpe_ratio([ret / 100.0 for ret in returns])
+    pf = profit_factor(pnls)
+    payoff = payoff_ratio(pnls)
+    role = "valuePositive" if pnl > 0 else "valueNegative" if pnl < 0 else "statusValue"
+    _set_text_if_present(window, "accountEquityValue", _money(equity))
+    _set_text_if_present(window, "accountReturnValue", _pct(total_return))
+    _set_text_if_present(window, "accountPnlValue", _money(pnl))
+    _set_text_if_present(window, "accountWinRateValue", _pct(win_rate))
+    _set_text_if_present(window, "accountSharpeValue", fmt_num(sharpe) if sharpe is not None else "-")
+    _set_text_if_present(window, "accountProfitFactorValue", fmt_num(pf) if pf is not None else "-")
+    _set_text_if_present(window, "accountPayoffValue", fmt_num(payoff) if payoff is not None else "-")
+    _set_text_if_present(window, "accountMaxDrawdownValue", _pct(dd) if dd is not None else "-")
+    _set_label_role(getattr(window, "accountPnlValue", None), role)
+    _set_label_role(getattr(window, "accountReturnValue", None), role)
+
+
 def _update_position_panel(window, row) -> None:
     empty = getattr(window, "positionEmptyState", None)
     details = getattr(window, "positionDetails", None)
+    mini_table = getattr(window, "openPositionsMiniTable", None)
     labels = (
         "positionSideValue",
         "positionQtyValue",
@@ -102,6 +209,9 @@ def _update_position_panel(window, row) -> None:
             details.setVisible(False)
         for attr in labels:
             _set_text_if_present(window, attr, "-")
+        if mini_table is not None:
+            mini_table.setRowCount(0)
+            mini_table.setVisible(False)
         return
     current_price = safe_float(row.get("close"), default=float("nan"))
     open_trades = [trade for trade in getattr(window, "trades", []) if str(trade.get("status") or "").upper() == "OPEN"]
@@ -118,6 +228,9 @@ def _update_position_panel(window, row) -> None:
         _set_text_if_present(window, "positionPnlPctValue", "-")
         _set_label_role(getattr(window, "positionPnlValue", None), "statusValue")
         _set_label_role(getattr(window, "positionPnlPctValue", None), "statusValue")
+        if mini_table is not None:
+            mini_table.setRowCount(0)
+            mini_table.setVisible(False)
         return
 
     if empty is not None:
@@ -152,6 +265,24 @@ def _update_position_panel(window, row) -> None:
     _set_text_if_present(window, "positionPnlPctValue", f"{fmt_num(pnl_pct)}%" if math.isfinite(pnl_pct) else "-")
     _set_label_role(getattr(window, "positionPnlValue", None), pnl_role)
     _set_label_role(getattr(window, "positionPnlPctValue", None), pnl_role)
+    if mini_table is not None:
+        mini_table.setVisible(True)
+        mini_table.setRowCount(len(open_trades))
+        for row_index, trade in enumerate(sorted(open_trades, key=lambda item: (item.get("entry_bar_index") or 0, item.get("created_at") or ""))):
+            trade_pnl = _floating_pnl(trade, current_price, _trade_notional(trade, total_notional or 1_000.0))
+            values = (
+                short_id(trade.get("trade_id") or ""),
+                str(trade.get("side") or "-"),
+                fmt_num(_entry_price(trade)),
+                f"{trade_pnl:.2f}",
+                fmt_num(trade.get("take_profit_price")),
+                fmt_num(trade.get("stop_loss_price")),
+            )
+            for col, value in enumerate(values):
+                table_item = QtWidgets.QTableWidgetItem(value)
+                if col in {2, 3, 4, 5}:
+                    table_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                mini_table.setItem(row_index, col, table_item)
 
 
 def show_market_dirty_feedback(window) -> None:
@@ -258,6 +389,7 @@ def update_header(window) -> None:
         button.setChecked(interval_key == display_interval)
     _update_current_bar_panel(window, row, idx)
     _update_position_panel(window, row)
+    _update_account_overview_panel(window, row)
     window._update_load_play_button()
     window._update_trade_buttons_enabled()
 
@@ -291,29 +423,23 @@ def refresh_premium_plot(window) -> None:
 def update_current_price_line(window, vx0: float, vx1: float) -> None:
     if window.df.empty:
         window.currentPriceLine.hide()
-        window.currentPriceLabel.hide()
+        window.axis_current_price.set_current_price(None)
         return
     idx = int(clamp(window.cursor, 0, len(window.df) - 1))
     row = window.df.iloc[idx]
     price = float(row["close"])
     prev_close = float(window.df.iloc[max(0, idx - 1)]["close"]) if idx > 0 else price
-    up = price >= prev_close
-    line_color = window.theme_settings["current_price_up"] if up else window.theme_settings["current_price_down"]
+    if price > prev_close:
+        line_color = window.theme_settings["current_price_up"]
+    elif price < prev_close:
+        line_color = window.theme_settings["current_price_down"]
+    else:
+        line_color = window.theme_settings.get("current_price_neutral", window.theme_settings.get("crosshair", "#8C8983"))
     text_color = window.theme_settings["current_price_label_text"]
     window.currentPriceLine.setPen(pg.mkPen(line_color, style=QtCore.Qt.DashLine, width=1))
     window.currentPriceLine.setValue(price)
-    label_x = vx1 - max(0.05, (vx1 - vx0) * 0.006)
-    window.currentPriceLabel.setColor(text_color)
-    try:
-        window.currentPriceLabel.fill = pg.mkBrush(line_color)
-        window.currentPriceLabel.border = pg.mkPen(line_color)
-        window.currentPriceLabel.update()
-    except Exception:
-        pass
-    window.currentPriceLabel.setText(f"{price:.4f}")
-    window.currentPriceLabel.setPos(label_x, price)
+    window.axis_current_price.set_current_price(price, line_color, text_color)
     window.currentPriceLine.show()
-    window.currentPriceLabel.show()
 
 
 __all__ = [

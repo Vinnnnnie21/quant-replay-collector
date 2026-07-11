@@ -26,6 +26,8 @@ class SessionStateInput:
     fee_bps: float
     slippage_bps: float
     fill_mode: str
+    take_profit_pct: float | None
+    stop_loss_pct: float | None
 
 
 @dataclass(frozen=True)
@@ -46,6 +48,8 @@ class SessionSaveInput:
     fee_bps: float
     slippage_bps: float
     fill_mode: str
+    take_profit_pct: float | None
+    stop_loss_pct: float | None
 
 
 @dataclass(frozen=True)
@@ -68,6 +72,8 @@ class SessionRestorePlan:
     fee_bps: float
     slippage_bps: float
     fill_mode: str
+    take_profit_pct: float | None
+    stop_loss_pct: float | None
 
 
 @dataclass(frozen=True)
@@ -93,6 +99,20 @@ def _float_or_default(value: Any, default: float) -> float:
     return out
 
 
+def _optional_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out
+
+
+def _speed_slider_value(speed: Any) -> int:
+    stops = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)
+    value = _float_or_default(speed, 1.0)
+    return min(range(len(stops)), key=lambda index: abs(stops[index] - value))
+
+
 def build_session_restore_plan(
     row: dict[str, Any],
     *,
@@ -105,8 +125,7 @@ def build_session_restore_plan(
     session_id = _optional_text(row.get("session_id"))
     if not session_id:
         raise ValueError("session_id is required")
-    speed = _float_or_default(row.get("speed"), 1.0)
-    speed_slider_value = max(1, min(1000, int(speed * 10)))
+    speed_slider_value = _speed_slider_value(row.get("speed"))
     return SessionRestorePlan(
         session_id=session_id,
         symbol=_optional_text(row.get("symbol")),
@@ -120,6 +139,8 @@ def build_session_restore_plan(
         fee_bps=_float_or_default(row.get("fee_bps"), default_fee_bps),
         slippage_bps=_float_or_default(row.get("slippage_bps"), default_slippage_bps),
         fill_mode=_optional_text(row.get("fill_mode")) or str(default_fill_mode),
+        take_profit_pct=_optional_float(row.get("take_profit_pct")),
+        stop_loss_pct=_optional_float(row.get("stop_loss_pct")),
     )
 
 
@@ -154,6 +175,8 @@ def build_session_state(input: SessionStateInput) -> SessionStateResult:
         "fee_bps": input.fee_bps,
         "slippage_bps": input.slippage_bps,
         "fill_mode": input.fill_mode,
+        "take_profit_pct": input.take_profit_pct,
+        "stop_loss_pct": input.stop_loss_pct,
     }
     return SessionStateResult(row=row, sample_cursor_bar_index=sample_cursor)
 
@@ -179,6 +202,8 @@ def save_session_state(storage: Any, input: SessionSaveInput) -> SessionStateRes
             fee_bps=input.fee_bps,
             slippage_bps=input.slippage_bps,
             fill_mode=input.fill_mode,
+            take_profit_pct=input.take_profit_pct,
+            stop_loss_pct=input.stop_loss_pct,
         )
     )
     storage.upsert_session(result.row)

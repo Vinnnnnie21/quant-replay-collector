@@ -97,13 +97,18 @@ def connect_main_window_signals(window) -> None:
     window.startDate.dateChanged.connect(window.on_market_params_changed)
     window.endDate.dateChanged.connect(window.on_market_params_changed)
     window.speedSlider.valueChanged.connect(window.on_speed_changed)
-    for widget in (
-        window.fillModeBox,
-        window.feeBpsSpin,
-        window.slippageBpsSpin,
-        window.tradeNotionalSpin,
-        window.initialEquitySpin,
+    for name in (
+        "fillModeBox",
+        "feeBpsSpin",
+        "slippageBpsSpin",
+        "tradeNotionalSpin",
+        "initialEquitySpin",
+        "takeProfitPctSpin",
+        "stopLossPctSpin",
     ):
+        widget = getattr(window, name, None)
+        if widget is None:
+            continue
         try:
             widget.valueChanged.connect(window.on_execution_settings_changed)
         except AttributeError:
@@ -116,6 +121,10 @@ def connect_main_window_signals(window) -> None:
     window.premium_worker.finished.connect(window.on_premium_sample)
     window.vb_price.userInteracted.connect(window.on_user_interaction)
     window.vb_vol.userInteracted.connect(window.on_user_interaction)
+    window.vb_price.dragStarted.connect(window.on_chart_drag_started)
+    window.vb_price.dragFinished.connect(window.on_chart_drag_finished)
+    window.vb_vol.dragStarted.connect(window.on_chart_drag_started)
+    window.vb_vol.dragFinished.connect(window.on_chart_drag_finished)
     window.vb_price.sigXRangeChanged.connect(window.on_price_view_range_changed)
     window.openTradesTable.itemSelectionChanged.connect(window.on_open_trade_selected)
     window.closedTradesTable.itemSelectionChanged.connect(window.on_closed_trade_selected)

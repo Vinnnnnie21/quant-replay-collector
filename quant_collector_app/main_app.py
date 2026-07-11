@@ -59,9 +59,12 @@ from render.chart_render_adapter import (
     clamp_xrange,
     current_xrange,
     mark_rendered,
+    on_chart_drag_finished as apply_chart_drag_finished,
+    on_chart_drag_started as apply_chart_drag_started,
     on_price_view_range_changed as apply_price_view_range_change,
     rebuild_items,
     refresh_multi_timeframe_context,
+    render_active_drag_frame,
     render_chart,
     set_xrange,
     should_render_now,
@@ -87,6 +90,7 @@ from controllers.market_data_controller import (
     persist_loaded_market_data,
 )
 from controllers.replay_ui_controller import (
+    adjust_speed as replay_adjust_speed,
     current_speed as replay_current_speed,
     jump_to_end as replay_jump_to_end,
     on_speed_changed as apply_speed_change,
@@ -101,6 +105,7 @@ from controllers.trade_action_controller import (
     ActionCommand,
     apply_close_trade_result,
     apply_open_trade_result,
+    apply_tp_sl_triggers,
     current_bar as current_trade_bar,
     current_tags_and_note as current_trade_tags_and_note,
     display_interval,
@@ -121,6 +126,8 @@ from controllers.trade_action_controller import (
     undo_open_trade_result,
     warn_trade_interval_mismatch,
 )
+
+
 from controllers.trade_record_controller import (
     confirm_clear_trade_records as apply_clear_trade_records,
 )
@@ -161,6 +168,8 @@ from workers.loader_worker import LoaderWorker
 
 
 ROLE_ID = QtCore.Qt.UserRole
+UI_TICK_INTERVAL_MS = 8
+INTERACTION_RENDER_INTERVAL_MS = 8
 logger = get_logger(__name__)
 
 
@@ -206,6 +215,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._base_bars_per_sec = 1.0
         self.manual_xrange: tuple[float, float] | None = None
         self._programmatic_view_update = False
+        self._chart_drag_active = False
         self._loading_data = False
         self._loaded_market_key: tuple[str, str, str, str] | None = None
         self._pending_market_key: tuple[str, str, str, str] | None = None
@@ -228,6 +238,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._last_multi_timeframe_refresh_key = None
         self._last_render_msec = 0
         self._render_interval_ms = 50
+        self._interaction_render_interval_ms = INTERACTION_RENDER_INTERVAL_MS
         self._trade_transaction_active = False
         self._last_autosave_msec = 0
         self.theme_settings = load_theme_settings()
@@ -237,6 +248,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.session_id = None
         self.restoring_session_id = None
         self.restore_snapshot_pending = False
+        self._restoring_session_settings = False
 
         self.trades: list[dict[str, Any]] = []
         self.events: list[dict[str, Any]] = []
@@ -278,7 +290,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.timer = QtCore.QTimer(self)
         self.timer.setTimerType(QtCore.Qt.PreciseTimer)
         self.timer.timeout.connect(self.on_timer)
-        self.timer.start(16)
+        self.timer.start(UI_TICK_INTERVAL_MS)
 
         self.autosave_timer = QtCore.QTimer(self)
         self.autosave_timer.timeout.connect(self._on_autosave_timer)
@@ -480,6 +492,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_price_view_range_changed(self, _viewbox, view_range):
         apply_price_view_range_change(self, view_range)
 
+    def on_chart_drag_started(self):
+        apply_chart_drag_started(self)
+
+    def on_chart_drag_finished(self):
+        apply_chart_drag_finished(self)
+
     def _connect(self):
         connect_main_window_signals(self)
 
@@ -500,21 +518,27 @@ class MainWindow(QtWidgets.QMainWindow):
             )
             self.restoring_session_id = plan.session_id
             self.session_id = plan.session_id
-            if plan.symbol:
-                self._set_symbol_value(plan.symbol)
-            if plan.interval:
-                self.intervalBox.setCurrentText(plan.interval)
-            if plan.start_date_bjt:
-                self.startDate.setDate(QtCore.QDate.fromString(plan.start_date_bjt, "yyyy-MM-dd"))
-            if plan.end_date_bjt:
-                self.endDate.setDate(QtCore.QDate.fromString(plan.end_date_bjt, "yyyy-MM-dd"))
-            self.follow_latest = plan.follow_latest
-            self.speedSlider.setValue(plan.speed_slider_value)
-            self.initialEquitySpin.setValue(plan.initial_equity)
-            self.tradeNotionalSpin.setValue(plan.trade_notional)
-            self.feeBpsSpin.setValue(plan.fee_bps)
-            self.slippageBpsSpin.setValue(plan.slippage_bps)
-            self._set_fill_mode_value(plan.fill_mode)
+            self._restoring_session_settings = True
+            try:
+                if plan.symbol:
+                    self._set_symbol_value(plan.symbol)
+                if plan.interval:
+                    self.intervalBox.setCurrentText(plan.interval)
+                if plan.start_date_bjt:
+                    self.startDate.setDate(QtCore.QDate.fromString(plan.start_date_bjt, "yyyy-MM-dd"))
+                if plan.end_date_bjt:
+                    self.endDate.setDate(QtCore.QDate.fromString(plan.end_date_bjt, "yyyy-MM-dd"))
+                self.follow_latest = plan.follow_latest
+                self.speedSlider.setValue(plan.speed_slider_value)
+                self.initialEquitySpin.setValue(plan.initial_equity)
+                self.tradeNotionalSpin.setValue(plan.trade_notional)
+                self.feeBpsSpin.setValue(plan.fee_bps)
+                self.slippageBpsSpin.setValue(plan.slippage_bps)
+                self.takeProfitPctSpin.setValue(plan.take_profit_pct or 0.0)
+                self.stopLossPctSpin.setValue(plan.stop_loss_pct or 0.0)
+                self._set_fill_mode_value(plan.fill_mode)
+            finally:
+                self._restoring_session_settings = False
             self.restore_snapshot_pending = True
             self._log(f"发现历史会话，准备恢复 会话ID={self.session_id}")
             QtCore.QTimer.singleShot(100, lambda: self.load_data(restore=True))
@@ -549,6 +573,8 @@ class MainWindow(QtWidgets.QMainWindow):
                     fee_bps=float(self.feeBpsSpin.value()),
                     slippage_bps=float(self.slippageBpsSpin.value()),
                     fill_mode=self._fill_mode_value(),
+                    take_profit_pct=getattr(self, "take_profit_pct_value", lambda: None)(),
+                    stop_loss_pct=getattr(self, "stop_loss_pct_value", lambda: None)(),
                 )
             )
             self._sample_cursor_bar_index = result.sample_cursor_bar_index
@@ -699,6 +725,12 @@ class MainWindow(QtWidgets.QMainWindow):
     def current_speed(self):
         return replay_current_speed(self)
 
+    def speed_down(self):
+        replay_adjust_speed(self, -1)
+
+    def speed_up(self):
+        replay_adjust_speed(self, 1)
+
     def execution_settings(self) -> ExecutionSettings:
         return self.trade_controller.execution_settings(
             self._fill_mode_value(),
@@ -707,7 +739,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self.tradeNotionalSpin.value(),
         )
 
+    def take_profit_pct_value(self) -> float | None:
+        value = float(self.takeProfitPctSpin.value())
+        return value if value > 0 else None
+
+    def stop_loss_pct_value(self) -> float | None:
+        value = float(self.stopLossPctSpin.value())
+        return value if value > 0 else None
+
     def on_execution_settings_changed(self, *_):
+        if bool(getattr(self, "_restoring_session_settings", False)):
+            return
         try:
             self.persist_session_state()
             self._sync_equity_curve()
@@ -751,6 +793,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _rebuild_items(self, n=None, visible_range=None):
         rebuild_items(self, n=n, visible_range=visible_range)
+
+    def _render_active_drag_frame(self):
+        render_active_drag_frame(self)
 
     def _current_xrange(self):
         return current_xrange(self)
@@ -847,6 +892,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def request_close_trade(self, expected_side: str):
         apply_close_trade_request(self, expected_side)
+
+    def _apply_tp_sl_triggers(self, from_bar_index: int, to_bar_index: int) -> int:
+        return apply_tp_sl_triggers(self, from_bar_index, to_bar_index)
 
     def selected_open_trade(self, verify_db: bool = False):
         return find_selected_open_trade(self, verify_db)
@@ -962,9 +1010,9 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if hasattr(self, "recentEventsList"):
             populate_recent_event_list(self.recentEventsList, getattr(self, "recentEventsEmptyState", None), self.events)
-        equity_rows = self._current_equity_rows()
-        populate_equity_table(self.equityTable, equity_rows)
         if include_heavy:
+            equity_rows = self._current_equity_rows()
+            populate_equity_table(self.equityTable, equity_rows)
             self._populate_event_study_table()
             self._refresh_dataset_summary()
         if hasattr(self, "_update_empty_states"):
@@ -1010,8 +1058,17 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log(warning)
 
     def _current_equity_rows(self) -> list[dict[str, Any]]:
-        from accounting import build_equity_curve
+        from accounting import build_continuous_equity_curve, build_equity_curve
 
+        if not self.df.empty:
+            end = int(clamp(self.cursor, 0, len(self.df) - 1)) + 1
+            return build_continuous_equity_curve(
+                self.df.iloc[:end].to_dict("records"),
+                self.trades,
+                self.session_id or "",
+                float(self.initialEquitySpin.value()),
+                float(self.tradeNotionalSpin.value()),
+            )
         return build_equity_curve(
             self.trades,
             self.session_id or "",

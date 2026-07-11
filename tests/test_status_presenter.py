@@ -12,10 +12,41 @@ QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 
 from presenters.status_presenter import (
     refresh_premium_plot,
+    update_current_price_line,
     update_header,
     update_load_play_button,
     update_trade_buttons_enabled,
 )
+
+
+class _PriceLine:
+    def __init__(self) -> None:
+        self.visible = False
+        self.value = None
+
+    def setPen(self, _pen) -> None:
+        pass
+
+    def setValue(self, value: float) -> None:
+        self.value = value
+
+    def show(self) -> None:
+        self.visible = True
+
+    def hide(self) -> None:
+        self.visible = False
+
+
+class _PriceAxis:
+    def __init__(self) -> None:
+        self.value = None
+        self.color = None
+        self.text_color = None
+
+    def set_current_price(self, value, color=None, text_color=None) -> None:
+        self.value = value
+        self.color = color
+        self.text_color = text_color
 
 
 class _Button:
@@ -74,6 +105,30 @@ def test_status_presenter_prioritizes_dirty_market_and_trade_guard():
     assert load_button.enabled is False
     assert all(button.enabled is False for button in trade_buttons)
     assert all(button.tooltip == "样本周期不一致" for button in trade_buttons)
+
+
+def test_current_price_updates_right_axis_badge_instead_of_plot_label():
+    line = _PriceLine()
+    axis = _PriceAxis()
+    window = SimpleNamespace(
+        df=pd.DataFrame({"close": [100.0, 101.0]}),
+        cursor=1,
+        currentPriceLine=line,
+        axis_current_price=axis,
+        theme_settings={
+            "current_price_up": "#00aa00",
+            "current_price_down": "#aa0000",
+            "current_price_label_text": "#ffffff",
+        },
+    )
+
+    update_current_price_line(window, 0.0, 10.0)
+
+    assert line.visible is True
+    assert line.value == 101.0
+    assert axis.value == 101.0
+    assert axis.color == "#00aa00"
+    assert axis.text_color == "#ffffff"
 
 
 def test_load_play_button_only_controls_replay_states():

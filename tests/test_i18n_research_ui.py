@@ -30,7 +30,7 @@ def test_research_workspace_uses_language_for_visible_tabs():
     assert dialog.researchTabs.tabText(0) == "数据审计"
     assert dialog.btnRunResearch.text() == "运行研究分析"
     assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.timeSeriesTab)) == "时间序列诊断"
-    assert dialog.performanceTabs.tabText(dialog.performanceTabs.indexOf(dialog.equityTab)) == "权益曲线"
+    assert not hasattr(dialog, "performanceTabs")
     assert dialog.selectedLabelBox.currentText() == "fwd_ret_10_side_adj"
     assert dialog.researchEventTable.isSortingEnabled() is True
     visible_zh = "\n".join(
@@ -49,7 +49,7 @@ def test_research_workspace_uses_language_for_visible_tabs():
     assert dialog.researchTabs.tabText(0) == "Data Audit"
     assert dialog.btnRunResearch.text() == "Run Research Analysis"
     assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.timeSeriesTab)) == "Time-Series Diagnostics"
-    assert dialog.performanceTabs.tabText(dialog.performanceTabs.indexOf(dialog.equityTab)) == "Equity"
+    assert not hasattr(dialog, "performanceTabs")
     assert "No strategy consistency panel." in dialog.consistencyTab.toPlainText()
     dialog.close()
     app.processEvents()

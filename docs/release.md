@@ -1,5 +1,22 @@
 # Release Hygiene
 
+## v1.5.0 Release Notes
+
+`v1.5.0` expands the local replay workspace into a usable simulated trading and funds-management workflow while preserving the project's research boundary. It adds exchange-style free chart navigation, explicit follow-latest framing, `0.1x` to `10x` playback stops, keyboard speed control, an axis-based current-price badge and OpenGL acceleration with software fallback. The target Windows system passed the 120 Hz frame-time budget during physical display validation.
+
+Replay trading now supports session-level initial equity, per-trade notional, fees, slippage and optional TP/SL settings. Every open action creates an independent position. Manual close uses the selected position or FIFO fallback, automatic TP/SL scans bars only when replay moves forward, and manual trade actions preserve playback and follow-latest state.
+
+The performance workspace adds continuous account equity including unrealized PnL, signed equity and cumulative-PnL curves, account metrics, closed-trade details, red/green PnL presentation and a labeled realized-PnL distribution. Chart rendering now uses chunked candle and volume pictures, active dragging avoids full application rebuilds, and TP/SL no longer converts the complete market dataframe on every timer tick.
+
+SQLite schema version `6` remains current and existing sessions remain readable. This release does not connect to exchange order APIs, place live trades or provide investment advice.
+
+Clean release commands:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.0-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.0-Clean
+```
+
 ## v1.4.1 Hotfix Notes
 
 `v1.4.1` is a focused stability, engineering-hygiene, backtesting and entry-logic research hotfix for the v1.4 line. It reduces main-thread work during high-speed playback plus manual trade actions, limits premium chart reads to recent samples, adds a background UI freeze watchdog, and avoids redundant chart and multi-timeframe context refreshes.
@@ -35,8 +52,8 @@ This is a replay and research application. It does not connect to Binance order 
 Run from PowerShell at the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.4.1-Clean
-.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.0-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.0-Clean
 ```
 
 The output contains the source package, public documentation, tests, requirements and launch scripts. It includes `clean_release_report.json` and `clean_release_report.md`. The default public reports omit local absolute paths and individual skipped file names.
@@ -59,8 +76,8 @@ PowerShell verification commands. Use the project virtual environment so release
 .\.venv\Scripts\python.exe -m compileall -q quant_collector_app tests
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m quant_collector_app.self_check --core
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.4.1-Clean
-.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.4.1-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.0-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.0-Clean
 ```
 
 Inspect local-only files before staging:
@@ -75,11 +92,11 @@ The second command must produce no tracked runtime data, archives, caches, logs,
 Publish through a branch:
 
 ```powershell
-git switch -c release/v1.4.1
+git switch -c release/v1.5.0
 git add .gitignore .github README.md docs quant_collector_app requirements.txt run_app.py scripts start.bat tests
 git status --short
-git commit -m "Prepare v1.4.1 hotfix release"
-git push -u origin release/v1.4.1
+git commit -m "Prepare v1.5.0 release"
+git push -u origin release/v1.5.0
 ```
 
 Open a pull request to `main`. GitHub Actions will run compilation, tests, the core health check, build a downloadable clean artifact and reject contaminated output. Create a GitHub Release from the reviewed merge commit or a release tag, and upload the checked clean artifact rather than the development directory.
@@ -87,5 +104,5 @@ Open a pull request to `main`. GitHub Actions will run compilation, tests, the c
 For a manually uploaded archive, package only the checked output:
 
 ```powershell
-Compress-Archive -Path dist/QuantReplayCollector-v1.4.1-Clean/* -DestinationPath QuantReplayCollector-v1.4.1-Clean.zip -Force
+Compress-Archive -Path dist/QuantReplayCollector-v1.5.0-Clean/* -DestinationPath QuantReplayCollector-v1.5.0-Clean.zip -Force
 ```

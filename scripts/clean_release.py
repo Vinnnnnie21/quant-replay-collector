@@ -9,9 +9,9 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = REPO_ROOT / "dist" / "QuantReplayCollector-v1.4.1-Clean"
+DEFAULT_OUTPUT = REPO_ROOT / "dist" / "QuantReplayCollector-v1.5.0-Clean"
 PROJECT_NAME = "Quant Replay Collector"
-RELEASE_VERSION = "v1.4.1"
+RELEASE_VERSION = "v1.5.0"
 ROOT_CONTENT = (
     "README.md",
     "CHANGELOG.md",

@@ -31,6 +31,8 @@ def test_build_session_state_uses_current_market_when_no_trade_samples():
             fee_bps=4.0,
             slippage_bps=1.0,
             fill_mode="MID",
+            take_profit_pct=None,
+            stop_loss_pct=None,
         )
     )
 
@@ -62,6 +64,8 @@ def test_build_session_state_preserves_sample_interval_cursor_when_display_inter
             fee_bps=4.0,
             slippage_bps=1.0,
             fill_mode="MID",
+            take_profit_pct=2.0,
+            stop_loss_pct=1.0,
         )
     )
 
@@ -71,6 +75,8 @@ def test_build_session_state_preserves_sample_interval_cursor_when_display_inter
     assert result.row["cursor_bar_index"] == 37
     assert result.row["last_opened_at"] == "old-opened"
     assert result.row["follow_latest"] == 0
+    assert result.row["take_profit_pct"] == 2.0
+    assert result.row["stop_loss_pct"] == 1.0
 
 
 def test_save_session_state_reads_latest_session_and_writes_row():
@@ -104,6 +110,8 @@ def test_save_session_state_reads_latest_session_and_writes_row():
             fee_bps=4.0,
             slippage_bps=1.0,
             fill_mode="MID",
+            take_profit_pct=2.0,
+            stop_loss_pct=1.0,
         ),
     )
 
@@ -112,6 +120,8 @@ def test_save_session_state_reads_latest_session_and_writes_row():
     assert storage.written[0]["interval"] == "1m"
     assert storage.written[0]["cursor_bar_index"] == 37
     assert storage.written[0]["last_opened_at"] == "old-opened"
+    assert storage.written[0]["take_profit_pct"] == 2.0
+    assert storage.written[0]["stop_loss_pct"] == 1.0
 
 
 def test_load_session_snapshot_state_builds_memory_indexes_and_cursor_restore():
@@ -192,6 +202,8 @@ def test_build_session_restore_plan_maps_saved_values_and_slider_speed():
             "fee_bps": 5,
             "slippage_bps": 2,
             "fill_mode": "CLOSE",
+            "take_profit_pct": 3,
+            "stop_loss_pct": 1.5,
         },
         default_initial_equity=10_000,
         default_trade_notional=1_000,
@@ -206,12 +218,14 @@ def test_build_session_restore_plan_maps_saved_values_and_slider_speed():
     assert plan.start_date_bjt == "2024-04-01"
     assert plan.end_date_bjt == "2024-05-01"
     assert plan.follow_latest is True
-    assert plan.speed_slider_value == 63
+    assert plan.speed_slider_value == 5
     assert plan.initial_equity == 20_000.0
     assert plan.trade_notional == 2_000.0
     assert plan.fee_bps == 5.0
     assert plan.slippage_bps == 2.0
     assert plan.fill_mode == "CLOSE"
+    assert plan.take_profit_pct == 3.0
+    assert plan.stop_loss_pct == 1.5
 
 
 def test_build_session_restore_plan_uses_defaults_for_missing_or_invalid_values():
@@ -224,6 +238,8 @@ def test_build_session_restore_plan_uses_defaults_for_missing_or_invalid_values(
             "fee_bps": "bad",
             "slippage_bps": None,
             "fill_mode": "",
+            "take_profit_pct": "",
+            "stop_loss_pct": None,
         },
         default_initial_equity=10_000,
         default_trade_notional=1_000,
@@ -234,9 +250,11 @@ def test_build_session_restore_plan_uses_defaults_for_missing_or_invalid_values(
 
     assert plan.symbol is None
     assert plan.interval is None
-    assert plan.speed_slider_value == 10
+    assert plan.speed_slider_value == 3
     assert plan.initial_equity == 10_000.0
     assert plan.trade_notional == 1_000.0
     assert plan.fee_bps == 4.0
     assert plan.slippage_bps == 1.0
     assert plan.fill_mode == "MID"
+    assert plan.take_profit_pct is None
+    assert plan.stop_loss_pct is None

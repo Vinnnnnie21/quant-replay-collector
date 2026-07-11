@@ -45,12 +45,27 @@ def _render_state(window) -> RenderState:
 
 
 def should_render_now(window, force: bool = False) -> bool:
-    if force or not window.playing:
+    if force:
         return True
+    if bool(getattr(window, "_chart_drag_active", False)):
+        return False
+    has_explicit_dirty_state = hasattr(window, "_render_dirty") or hasattr(window, "render_state")
+    state = getattr(window, "render_state", None)
+    has_render_work = bool(getattr(window, "_render_dirty", False))
+    if state is not None and hasattr(state, "any_dirty"):
+        has_render_work = has_render_work or bool(state.any_dirty())
+    if has_explicit_dirty_state and not has_render_work:
+        return False
     now = QtCore.QDateTime.currentMSecsSinceEpoch()
-    return now - int(getattr(window, "_last_render_msec", 0)) >= int(
-        getattr(window, "_render_interval_ms", 50)
-    )
+    last_interaction = float(getattr(window, "last_user_interaction", 0.0) or 0.0)
+    interaction_recent = last_interaction > 0 and (now / 1000.0 - last_interaction) < 0.35
+    if interaction_recent:
+        interval = int(getattr(window, "_interaction_render_interval_ms", 33))
+    elif bool(getattr(window, "playing", False)):
+        interval = int(getattr(window, "_render_interval_ms", 50))
+    else:
+        return True
+    return now - int(getattr(window, "_last_render_msec", 0)) >= interval
 
 
 def mark_rendered(window) -> None:
@@ -67,8 +82,35 @@ def on_price_view_range_changed(window, view_range) -> None:
     if not (math.isfinite(x0) and math.isfinite(x1) and x1 > x0):
         return
     window.manual_xrange = (float(x0), float(x1))
+    if bool(getattr(window, "_chart_drag_active", False)):
+        return
     _render_state(window).mark_visible_range_changed()
     window._render_dirty = True
+
+
+def on_chart_drag_started(window) -> None:
+    window._chart_drag_active = True
+
+
+def on_chart_drag_finished(window) -> None:
+    if not bool(getattr(window, "_chart_drag_active", False)):
+        return
+    window._chart_drag_active = False
+    _render_state(window).mark_visible_range_changed()
+    window._render_dirty = True
+    window._render(force=False)
+
+
+def render_active_drag_frame(window) -> None:
+    """Append replay data without changing the pointer-controlled viewport."""
+
+    if window.df.empty:
+        return
+    visible_range = window._current_xrange()
+    if visible_range is None:
+        return
+    window._rebuild_items(visible_range=visible_range)
+    window._update_current_price_line(*visible_range)
 
 
 def refresh_multi_timeframe_context(window) -> None:
@@ -101,7 +143,8 @@ def rebuild_items(window, n=None, visible_range=None) -> None:
     try:
         n = int(clamp((window.cursor + 1) if n is None else n, 0, len(window.df)))
         xrange = visible_range if visible_range is not None else window._current_xrange()
-        plan = build_rebuild_plan(n, xrange)
+        cache_window = None if bool(getattr(window, "follow_latest", False)) else 1200
+        plan = build_rebuild_plan(n, xrange, cache_window=cache_window)
         start, end = plan.start, plan.end
         rebuild_key = plan.rebuild_key
         if getattr(window, "_last_rebuild_key", None) == rebuild_key:
@@ -114,8 +157,9 @@ def rebuild_items(window, n=None, visible_range=None) -> None:
         close = frame["close"].to_numpy(dtype=float)
         volume = frame["volume"].to_numpy(dtype=float)
         up = close >= opening
-        window.candleItem.set_data(x, opening, high, low, close)
-        window.volItem.set_data(x, volume, up)
+        data_version = id(window.df)
+        window.candleItem.set_data(x, opening, high, low, close, 0.7, data_version)
+        window.volItem.set_data(x, volume, up, 0.7, data_version)
         window._drawn_n = n
         window._last_rebuild_key = rebuild_key
     finally:
@@ -186,8 +230,9 @@ def autoscale_y(window, x0, x1) -> None:
     if abs(hmax - lmin) < 1e-9:
         hmax += 1.0
         lmin -= 1.0
+    price_padding = (hmax - lmin) * 0.03
     if not getattr(window.vb_price, "yManual", False):
-        window.pricePlot.setYRange(lmin, hmax, padding=0.0)
+        window.pricePlot.setYRange(lmin - price_padding, hmax + price_padding, padding=0.0)
     vmax = float(visible["volume"].max()) if len(visible) else 1.0
     window.volPlot.setYRange(0.0, max(vmax, 1.0), padding=0.0)
 
@@ -266,20 +311,22 @@ def render_chart(window, force: bool = False) -> None:
         window._update_current_price_line(vx0, vx1)
     if plan.refresh_multi_timeframe:
         window._refresh_multi_timeframe_context()
-    index = int(clamp(window.cursor, 0, len(window.df) - 1))
-    bar_time = pd.to_datetime(window.df.iloc[index]["open_time_bjt"]).tz_convert(BJT).strftime(
-        "%Y-%m-%d %H:%M"
-    )
-    bar = window.df.iloc[index]
-    window.status.setText(
-        f"{window.symbolBox.currentText().strip().upper()} {window.intervalBox.currentText().strip()} | "
-        f"{'播放' if window.playing else '暂停'} | {bar_time} | "
-        f"C {fmt_num(bar.get('close'))} | "
-        f"{'跟随最新' if window.follow_latest else '自由浏览'}"
-    )
-    if window._is_market_params_dirty():
-        window.status.setText(window.tr("market_params_changed"))
-    window._update_header()
+    if plan.refresh_status:
+        index = int(clamp(window.cursor, 0, len(window.df) - 1))
+        bar_time = pd.to_datetime(window.df.iloc[index]["open_time_bjt"]).tz_convert(BJT).strftime(
+            "%Y-%m-%d %H:%M"
+        )
+        bar = window.df.iloc[index]
+        window.status.setText(
+            f"{window.symbolBox.currentText().strip().upper()} {window.intervalBox.currentText().strip()} | "
+            f"{'播放' if window.playing else '暂停'} | {bar_time} | "
+            f"C {fmt_num(bar.get('close'))} | "
+            f"{'跟随最新' if window.follow_latest else '自由浏览'}"
+        )
+        if window._is_market_params_dirty():
+            window.status.setText(window.tr("market_params_changed"))
+    if plan.refresh_header:
+        window._update_header()
     window._render_dirty = False
     state.clear()
     _log_slow(window, "_render", started)
@@ -290,8 +337,11 @@ __all__ = [
     "clamp_xrange",
     "current_xrange",
     "mark_rendered",
+    "on_chart_drag_finished",
+    "on_chart_drag_started",
     "on_price_view_range_changed",
     "rebuild_items",
+    "render_active_drag_frame",
     "refresh_multi_timeframe_context",
     "render_chart",
     "set_xrange",

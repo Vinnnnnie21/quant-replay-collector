@@ -8,6 +8,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 QtGui = pytest.importorskip("PySide6.QtGui")
+QtCore = pytest.importorskip("PySide6.QtCore")
 pytest.importorskip("pyqtgraph")
 
 from ui_style import COLORS, build_app_qss, style_primary_button
@@ -41,6 +42,7 @@ class _LayoutHost(QtWidgets.QMainWindow):
         self._last_rebuild_key = object()
         self._last_marker_sync_key = object()
         self.render_forced = False
+        self.shortcut_bindings = []
 
     def _set_fill_mode_value(self, _value) -> None:
         pass
@@ -48,13 +50,19 @@ class _LayoutHost(QtWidgets.QMainWindow):
     def _setup_table(self, table) -> None:
         table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
 
-    def _add_shortcut(self, *_args) -> None:
-        pass
+    def _add_shortcut(self, sequence, handler) -> None:
+        self.shortcut_bindings.append((sequence, handler))
 
     def toggle_play(self) -> None:
         pass
 
     def step_once(self) -> None:
+        pass
+
+    def speed_down(self) -> None:
+        pass
+
+    def speed_up(self) -> None:
         pass
 
     def toggle_follow(self) -> None:
@@ -128,7 +136,7 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert host.eventStudyTable.columnCount() == 9
     assert host.multiTimeframePanel is not None
     assert getattr(host.headerSymbolValue.parentWidget(), "property")("role") != "metricBlock"
-    assert host.headerTitleLabel.text() == "Quant Replay Collector v1.4.1"
+    assert host.headerTitleLabel.text() == "Quant Replay Collector v1.5.0"
     assert "BTCUSDT" in host.headerMainLabel.text()
     assert "1m" in host.headerMainLabel.text()
     assert "O " in host.headerMainLabel.text()
@@ -144,6 +152,30 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert host.emptyEventStudy is not None
     assert host.btnToggleLog.isChecked()
     assert not host.log.isVisible()
+    assert host.speedSlider.minimum() == 0
+    assert host.speedSlider.maximum() == 6
+    assert host.speedSlider.value() == 3
+    assert host.speedLabel.text().endswith("1.0x")
+    shortcut_keys = {binding[0] for binding in host.shortcut_bindings}
+    assert QtCore.Qt.Key_Left in shortcut_keys
+    assert QtCore.Qt.Key_Right in shortcut_keys
+    assert "Shift+Right" in shortcut_keys
+    assert host.executionSettingsBox.isVisibleTo(host)
+    notional_label = next(
+        label
+        for label in host.executionSettingsBox.findChildren(QtWidgets.QLabel)
+        if label.text() == "每笔名义金额"
+    )
+    assert notional_label.minimumWidth() >= notional_label.fontMetrics().horizontalAdvance(
+        notional_label.text()
+    )
+    assert host.takeProfitPctSpin.minimum() == 0.0
+    assert host.stopLossPctSpin.minimum() == 0.0
+    assert host.takeProfitPctSpin.specialValueText() == "空"
+    assert host.accountOverviewCard is not None
+    assert host.accountEquityValue.text() == "-"
+    assert host.openPositionsMiniTable.columnCount() == 6
+    assert host.pricePlot.getAxis("right").isVisible()
     assert host.barDetailLabels["open"].text() == "开盘价"
     assert host.barDetailLabels["high"].text() == "最高价"
     assert host.barDetailLabels["low"].text() == "最低价"
@@ -155,6 +187,23 @@ def test_main_window_layout_builds_existing_primary_widgets():
     host.multiTimeframePanel.shutdown()
     host.close()
     app.processEvents()
+
+
+def test_current_price_uses_right_axis_badge_below_candles():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _LayoutHost()
+    build_main_window_ui(host)
+
+    try:
+        right_axis = host.pricePlot.getAxis("right")
+
+        assert callable(getattr(right_axis, "set_current_price", None))
+        assert not hasattr(host, "currentPriceLabel")
+        assert host.currentPriceLine.zValue() < host.candleItem.zValue()
+    finally:
+        host.multiTimeframePanel.shutdown()
+        host.close()
+        app.processEvents()
 
 
 @pytest.mark.parametrize(

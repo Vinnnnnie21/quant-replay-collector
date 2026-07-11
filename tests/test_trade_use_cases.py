@@ -14,8 +14,11 @@ class RecordingTradeController:
     def __init__(self, fail_commit: bool = False) -> None:
         self.fail_commit = fail_commit
         self.calls: list[tuple] = []
+        self.open_kwargs: list[dict] = []
+        self.close_kwargs: list[dict] = []
 
     def prepare_open(self, _df, _bar, **kwargs):
+        self.open_kwargs.append(dict(kwargs))
         self.calls.append(("prepare_open", kwargs["trade_id"], kwargs["event_id"]))
         return SimpleNamespace(
             trade_row={
@@ -46,6 +49,7 @@ class RecordingTradeController:
         self.calls.append(("undo_open", transaction.trade_row["trade_id"], transaction.event_row["event_id"]))
 
     def prepare_close(self, _df, _bar, **kwargs):
+        self.close_kwargs.append(dict(kwargs))
         trade = kwargs["trade"]
         self.calls.append(("prepare_close", trade["trade_id"], kwargs["event_id"]))
         return SimpleNamespace(
@@ -121,6 +125,8 @@ def test_trade_use_case_open_success_returns_payload():
         label_tags=["deep-v"],
         note="open",
         settings=object(),
+        take_profit_pct=2.0,
+        stop_loss_pct=1.0,
         now_iso=NOW,
     )
 
@@ -131,6 +137,8 @@ def test_trade_use_case_open_success_returns_payload():
     assert result.undo_payload.trade_id == "trd_1"
     assert result.redo_payload is result.undo_payload
     assert [call[0] for call in controller.calls] == ["prepare_open", "commit_open"]
+    assert controller.open_kwargs[0]["take_profit_pct"] == 2.0
+    assert controller.open_kwargs[0]["stop_loss_pct"] == 1.0
 
 
 def test_trade_use_case_close_success_returns_payload():
@@ -147,6 +155,8 @@ def test_trade_use_case_close_success_returns_payload():
         label_tags=["exit"],
         note="close",
         fallback_settings=object(),
+        exit_reason="TAKE_PROFIT",
+        override_exit_price=102.0,
         now_iso=NOW,
     )
 
@@ -156,6 +166,8 @@ def test_trade_use_case_close_success_returns_payload():
     assert result.trade_update["status"] == "CLOSED"
     assert result.undo_payload.original_trade["status"] == "OPEN"
     assert [call[0] for call in controller.calls] == ["prepare_close", "commit_close"]
+    assert controller.close_kwargs[0]["exit_reason"] == "TAKE_PROFIT"
+    assert controller.close_kwargs[0]["override_exit_price"] == 102.0
 
 
 def test_trade_use_case_missing_current_bar_fails_without_commit():

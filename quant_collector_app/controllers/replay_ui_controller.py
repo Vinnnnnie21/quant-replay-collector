@@ -16,6 +16,8 @@ except ImportError:  # pragma: no cover - package import path
 
 logger = get_logger(__name__)
 
+SPEED_STOPS = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)
+
 
 def _render_state(window) -> RenderState:
     getter = getattr(window, "_chart_render_state", None)
@@ -34,12 +36,30 @@ def _log_slow(window, name: str, started: float) -> None:
         callback(name, started)
 
 
+def _apply_tp_sl_if_forward(window, previous_cursor: int) -> None:
+    current = int(getattr(window, "cursor", previous_cursor))
+    if current <= int(previous_cursor):
+        return
+    callback = getattr(window, "_apply_tp_sl_triggers", None)
+    if callable(callback):
+        callback(int(previous_cursor), current)
+
+
 def on_speed_changed(window, _value: int) -> None:
     window.speedLabel.setText(f"速度: {window.current_speed():.1f}x")
 
 
 def current_speed(window) -> float:
-    return max(0.1, float(window.speedSlider.value()) / 10.0)
+    index = int(window.speedSlider.value())
+    index = max(0, min(index, len(SPEED_STOPS) - 1))
+    return SPEED_STOPS[index]
+
+
+def adjust_speed(window, direction: int) -> None:
+    slider = window.speedSlider
+    step = -1 if int(direction) < 0 else 1
+    value = max(int(slider.minimum()), min(int(slider.maximum()), int(slider.value()) + step))
+    slider.setValue(value)
 
 
 def on_timer(window) -> None:
@@ -55,6 +75,7 @@ def on_timer(window) -> None:
             window.follow_latest,
             window._accum,
         )
+        previous_cursor = int(window.cursor)
         changed = window.replay_controller.tick(
             elapsed,
             len(window.df),
@@ -64,12 +85,18 @@ def on_timer(window) -> None:
         window.cursor = window.replay_controller.cursor
         window.playing = window.replay_controller.playing
         window._accum = window.replay_controller.accumulated_bars
+        if changed:
+            _apply_tp_sl_if_forward(window, previous_cursor)
         if was_playing and not window.playing:
             window.analysis_refresh_controller.resume_if_idle()
         if changed or window.cursor != window._last_cursor_for_series:
             window._last_cursor_for_series = int(window.cursor)
             _render_state(window).mark_cursor_changed()
             window._render_dirty = True
+        if changed and bool(getattr(window, "_chart_drag_active", False)):
+            callback = getattr(window, "_render_active_drag_frame", None)
+            if callable(callback):
+                callback()
         if window._should_render_now(force=False):
             window._render(force=False)
             window._mark_rendered()
@@ -114,6 +141,7 @@ def toggle_play(window) -> None:
 def step_once(window) -> None:
     if len(window.df) == 0:
         return
+    previous_cursor = int(window.cursor)
     window.replay_controller.load_state(
         window.cursor,
         window.playing,
@@ -123,6 +151,7 @@ def step_once(window) -> None:
     window.cursor = window.replay_controller.step(len(window.df))
     window.playing = window.replay_controller.playing
     window._accum = window.replay_controller.accumulated_bars
+    _apply_tp_sl_if_forward(window, previous_cursor)
     window._last_cursor_for_series = int(window.cursor)
     window._update_load_play_button()
     _render_state(window).mark_cursor_changed()
@@ -132,6 +161,7 @@ def step_once(window) -> None:
 def jump_to_end(window) -> None:
     if len(window.df) == 0:
         return
+    previous_cursor = int(window.cursor)
     window.replay_controller.load_state(
         window.cursor,
         window.playing,
@@ -139,6 +169,7 @@ def jump_to_end(window) -> None:
         window._accum,
     )
     window.cursor = window.replay_controller.jump_end(len(window.df))
+    _apply_tp_sl_if_forward(window, previous_cursor)
     window._last_cursor_for_series = int(window.cursor)
     window.user_view_lock = False
     window.playing = window.replay_controller.playing
@@ -159,6 +190,9 @@ def toggle_follow(window) -> None:
     window._log(f"跟随最新：{'开启' if window.follow_latest else '关闭'}")
     if window.follow_latest:
         window.user_view_lock = False
+        reset_y = getattr(getattr(window, "vb_price", None), "reset_y_auto", None)
+        if callable(reset_y):
+            reset_y()
         current = window._current_xrange()
         if current is not None:
             window.manual_xrange = current
@@ -194,6 +228,8 @@ def reset_view(window) -> None:
 
 
 __all__ = [
+    "SPEED_STOPS",
+    "adjust_speed",
     "current_speed",
     "jump_to_end",
     "on_speed_changed",

@@ -14,7 +14,7 @@ except ImportError:  # pragma: no cover - package import path
     from .ui_style import EXCHANGE_DARK_THEME, OKX_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME, normalize_theme_settings
 
 APP_NAME = "Quant Replay Collector"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.5.0"
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_INTERVAL = "1m"
 DEFAULT_INITIAL_EQUITY = 10_000.0

@@ -87,6 +87,8 @@ class TradeUseCase:
         label_tags: list[str],
         note: str,
         settings: ExecutionSettings,
+        take_profit_pct: float | None = None,
+        stop_loss_pct: float | None = None,
         now_iso: str,
     ) -> TradeActionResult:
         if df is None or df.empty:
@@ -112,6 +114,8 @@ class TradeUseCase:
                 label_tags=label_tags,
                 note=note,
                 settings=settings,
+                take_profit_pct=take_profit_pct,
+                stop_loss_pct=stop_loss_pct,
                 now_iso=now_iso,
             )
             self.trade_controller.commit_open(transaction)
@@ -146,6 +150,8 @@ class TradeUseCase:
         label_tags: list[str],
         note: str,
         fallback_settings: ExecutionSettings,
+        exit_reason: str = "MANUAL",
+        override_exit_price: float | None = None,
         now_iso: str,
     ) -> TradeActionResult:
         if df is None or df.empty:
@@ -169,6 +175,8 @@ class TradeUseCase:
                 label_tags=label_tags,
                 note=note,
                 fallback_settings=fallback_settings,
+                exit_reason=exit_reason,
+                override_exit_price=override_exit_price,
                 now_iso=now_iso,
             )
             self.trade_controller.commit_close(transaction)

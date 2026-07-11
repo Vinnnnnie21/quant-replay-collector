@@ -24,8 +24,9 @@ try:
         SPACING,
     )
     from views.candlestick_item import CandlestickItem
-    from views.chart_axis import IndexTimeAxis
+    from views.chart_axis import CurrentPriceAxis, IndexTimeAxis
     from views.k_view_box import KViewBox
+    from views.high_refresh_viewport import configure_high_refresh_viewport, verify_high_refresh_viewport
     from views.volume_item import VolumeItem
 except ImportError:  # pragma: no cover - package import path
     from ..app_config import (
@@ -48,8 +49,9 @@ except ImportError:  # pragma: no cover - package import path
         SPACING,
     )
     from .candlestick_item import CandlestickItem
-    from .chart_axis import IndexTimeAxis
+    from .chart_axis import CurrentPriceAxis, IndexTimeAxis
     from .k_view_box import KViewBox
+    from .high_refresh_viewport import configure_high_refresh_viewport, verify_high_refresh_viewport
     from .volume_item import VolumeItem
 
 
@@ -317,9 +319,9 @@ def build_main_window_ui(self) -> None:
     self.speedLabel = QtWidgets.QLabel("速度: 1.0x")
     self.speedLabel.setProperty("role", "muted")
     self.speedSlider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-    self.speedSlider.setMinimum(1)
-    self.speedSlider.setMaximum(1000)
-    self.speedSlider.setValue(10)
+    self.speedSlider.setMinimum(0)
+    self.speedSlider.setMaximum(6)
+    self.speedSlider.setValue(3)
     replay_l.addWidget(self.speedLabel)
     replay_l.addWidget(self.speedSlider)
     sidebar_l.addWidget(replay_box)
@@ -373,9 +375,12 @@ def build_main_window_ui(self) -> None:
 
     exec_box, exec_l = _card("交易成本设置")
     exec_box.setObjectName("executionSection")
+    exec_box.setMinimumWidth(0)
+    exec_box.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
     exec_form = QtWidgets.QFormLayout()
     exec_form.setContentsMargins(0, 0, 0, 0)
     exec_form.setSpacing(SPACING["sm"])
+    exec_form.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
     self.fillModeBox = QtWidgets.QComboBox()
     for mode in FILL_MODES:
         self.fillModeBox.addItem(fill_mode_label(mode), mode)
@@ -396,14 +401,31 @@ def build_main_window_ui(self) -> None:
     self.initialEquitySpin.setRange(1.0, 1_000_000_000.0)
     self.initialEquitySpin.setDecimals(2)
     self.initialEquitySpin.setValue(DEFAULT_INITIAL_EQUITY)
+    self.takeProfitPctSpin = QtWidgets.QDoubleSpinBox()
+    self.takeProfitPctSpin.setRange(0.0, 100.0)
+    self.takeProfitPctSpin.setDecimals(2)
+    self.takeProfitPctSpin.setSingleStep(0.1)
+    self.takeProfitPctSpin.setSpecialValueText("空")
+    self.stopLossPctSpin = QtWidgets.QDoubleSpinBox()
+    self.stopLossPctSpin.setRange(0.0, 100.0)
+    self.stopLossPctSpin.setDecimals(2)
+    self.stopLossPctSpin.setSingleStep(0.1)
+    self.stopLossPctSpin.setSpecialValueText("空")
     exec_form.addRow("成交模式", self.fillModeBox)
     exec_form.addRow("手续费 bps", self.feeBpsSpin)
     exec_form.addRow("滑点 bps", self.slippageBpsSpin)
-    exec_form.addRow("每笔名义金额", self.tradeNotionalSpin)
+    self.tradeNotionalLabel = QtWidgets.QLabel("每笔名义金额")
+    self.tradeNotionalLabel.setMinimumWidth(
+        self.tradeNotionalLabel.fontMetrics().horizontalAdvance(self.tradeNotionalLabel.text())
+    )
+    self.tradeNotionalLabel.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
+    exec_form.addRow(self.tradeNotionalLabel, self.tradeNotionalSpin)
     exec_form.addRow("初始权益", self.initialEquitySpin)
+    exec_form.addRow("止盈 %", self.takeProfitPctSpin)
+    exec_form.addRow("止损 %", self.stopLossPctSpin)
     exec_l.addLayout(exec_form)
     self.executionSettingsBox = exec_box
-    self.executionSettingsBox.setVisible(False)
+    self.executionSettingsBox.setVisible(True)
 
     tag_box, tag_l = _card("快捷标注")
     tag_box.setObjectName("tagSection")
@@ -497,17 +519,32 @@ def build_main_window_ui(self) -> None:
     chart_l.addWidget(chart_toolbar)
 
     self.glw = pg.GraphicsLayoutWidget()
+    self._chart_uses_opengl = configure_high_refresh_viewport(self.glw)
+    if self._chart_uses_opengl:
+        def verify_chart_viewport():
+            self._chart_uses_opengl = verify_high_refresh_viewport(self.glw)
+
+        QtCore.QTimer.singleShot(250, verify_chart_viewport)
     self.glw.setMinimumHeight(360)
     chart_l.addWidget(self.glw, stretch=1)
 
     self.axis_price = IndexTimeAxis("bottom")
     self.axis_vol = IndexTimeAxis("bottom")
+    self.axis_current_price = CurrentPriceAxis("right")
     self.vb_price = KViewBox()
     self.vb_vol = KViewBox()
-    self.pricePlot = self.glw.addPlot(row=0, col=0, viewBox=self.vb_price, axisItems={"bottom": self.axis_price})
+    self.pricePlot = self.glw.addPlot(
+        row=0,
+        col=0,
+        viewBox=self.vb_price,
+        axisItems={"bottom": self.axis_price, "right": self.axis_current_price},
+    )
     self.volPlot = self.glw.addPlot(row=1, col=0, viewBox=self.vb_vol, axisItems={"bottom": self.axis_vol})
     self.volPlot.setXLink(self.pricePlot)
     self.volPlot.setMaximumHeight(170)
+    self.pricePlot.showAxis("right")
+    self.pricePlot.getAxis("right").linkToView(self.vb_price)
+    self.pricePlot.getAxis("right").setStyle(showValues=True)
     self.pricePlot.showGrid(x=True, y=True, alpha=0.14)
     self.volPlot.showGrid(x=True, y=True, alpha=0.14)
     self.pricePlot.hideButtons()
@@ -529,18 +566,12 @@ def build_main_window_ui(self) -> None:
         movable=False,
         pen=pg.mkPen(COLORS["chart_crosshair"], style=QtCore.Qt.DashLine, width=1),
     )
-    self.currentPriceLabel = pg.TextItem(
-        "",
-        anchor=(1, 0.5),
-        color="#07100D",
-        fill=pg.mkBrush(COLORS["chart_up"]),
-        border=pg.mkPen(COLORS["chart_up"]),
-    )
     self.pricePlot.addItem(self.currentPriceLine, ignoreBounds=True)
-    self.pricePlot.addItem(self.currentPriceLabel, ignoreBounds=True)
 
     self.candleItem = CandlestickItem()
     self.volItem = VolumeItem()
+    self.currentPriceLine.setZValue(-10)
+    self.candleItem.setZValue(0)
     self.pricePlot.addItem(self.candleItem)
     self.volPlot.addItem(self.volItem)
 
@@ -602,7 +633,7 @@ def build_main_window_ui(self) -> None:
     self.equityTable = QtWidgets.QTableWidget()
     self.equityTable.setColumnCount(8)
     self.equityTable.setHorizontalHeaderLabels([
-        "序号", "交易ID", "权益前", "净盈亏", "手续费", "权益后", "收益%", "回撤%",
+        "序号", "K线/交易", "已实现", "浮盈亏", "持仓/费用", "权益", "收益%", "回撤%",
     ])
     self._setup_table(self.equityTable)
 
@@ -664,8 +695,8 @@ def build_main_window_ui(self) -> None:
     right.setObjectName("rightPanel")
     right.setProperty("role", "rightPanel")
     self.rightPanel = right
-    right.setMinimumWidth(280)
-    right.setMaximumWidth(420)
+    right.setMinimumWidth(240)
+    right.setMaximumWidth(340)
     right_l = QtWidgets.QVBoxLayout(right)
     right_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     right_l.setSpacing(SPACING["sm"])
@@ -676,6 +707,8 @@ def build_main_window_ui(self) -> None:
     overview = QtWidgets.QWidget()
     overview.setObjectName("rightOverviewPage")
     overview.setProperty("role", "tabPage")
+    overview.setMinimumWidth(0)
+    overview.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
     overview_l = QtWidgets.QVBoxLayout(overview)
     overview_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     overview_l.setSpacing(SPACING["md"])
@@ -713,7 +746,54 @@ def build_main_window_ui(self) -> None:
         position_details_l.addWidget(_value_row(label, value))
     self.positionDetails.setVisible(False)
     position_l.addWidget(self.positionDetails)
+    self.openPositionsMiniTable = QtWidgets.QTableWidget()
+    self.openPositionsMiniTable.setColumnCount(6)
+    self.openPositionsMiniTable.setHorizontalHeaderLabels(["ID", "方向", "入场", "浮盈亏", "TP", "SL"])
+    self.openPositionsMiniTable.verticalHeader().setVisible(False)
+    self.openPositionsMiniTable.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+    self.openPositionsMiniTable.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+    self.openPositionsMiniTable.setAlternatingRowColors(True)
+    self.openPositionsMiniTable.setMinimumWidth(0)
+    self.openPositionsMiniTable.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
+    self.openPositionsMiniTable.setMaximumHeight(132)
+    self.openPositionsMiniTable.horizontalHeader().setMinimumSectionSize(28)
+    self.openPositionsMiniTable.horizontalHeader().setDefaultSectionSize(46)
+    self.openPositionsMiniTable.horizontalHeader().setStretchLastSection(True)
+    self.openPositionsMiniTable.setVisible(False)
+    position_l.addWidget(self.openPositionsMiniTable)
     overview_l.addWidget(position_card)
+
+    account_card = QtWidgets.QFrame()
+    account_card.setObjectName("accountOverviewCard")
+    account_card.setProperty("role", "statusBlock")
+    self.accountOverviewCard = account_card
+    account_l = QtWidgets.QVBoxLayout(account_card)
+    account_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
+    account_l.setSpacing(SPACING["sm"])
+    account_title = QtWidgets.QLabel("账户总览")
+    account_title.setProperty("role", "sectionTitle")
+    account_l.addWidget(account_title)
+    self.accountEquityValue = _metric_label()
+    self.accountReturnValue = _metric_label()
+    self.accountPnlValue = _metric_label()
+    self.accountWinRateValue = _metric_label()
+    self.accountSharpeValue = _metric_label()
+    self.accountProfitFactorValue = _metric_label()
+    self.accountPayoffValue = _metric_label()
+    self.accountMaxDrawdownValue = _metric_label()
+    for label, value in (
+        ("当前权益", self.accountEquityValue),
+        ("总收益率", self.accountReturnValue),
+        ("总盈亏", self.accountPnlValue),
+        ("总胜率", self.accountWinRateValue),
+        ("夏普比率", self.accountSharpeValue),
+        ("利润因子", self.accountProfitFactorValue),
+        ("盈亏比", self.accountPayoffValue),
+        ("最大回撤", self.accountMaxDrawdownValue),
+    ):
+        account_l.addWidget(_value_row(label, value))
+    overview_l.addWidget(account_card)
+    overview_l.addWidget(exec_box)
 
     recent_card = QtWidgets.QFrame()
     recent_card.setObjectName("recentEventsCard")
@@ -767,7 +847,14 @@ def build_main_window_ui(self) -> None:
     overview_l.addWidget(candle_card)
     overview_l.addStretch(1)
 
-    tabs.addTab(overview, "当前状态")
+    overview_scroll = QtWidgets.QScrollArea()
+    overview_scroll.setObjectName("rightOverviewScroll")
+    overview_scroll.setWidgetResizable(True)
+    overview_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+    overview_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+    overview_scroll.setWidget(overview)
+    self.rightOverviewScroll = overview_scroll
+    tabs.addTab(overview_scroll, "当前状态")
     self.multiTimeframePanel = MultiTimeframePanel(language=self.current_language, parent=self)
     tabs.addTab(self.multiTimeframePanel, self.tr("multi_timeframe_context"))
     self.backtestPanel = None
@@ -854,7 +941,9 @@ def build_main_window_ui(self) -> None:
     root.addWidget(self.logDrawer)
 
     self._add_shortcut("Space", self.toggle_play)
-    self._add_shortcut(QtCore.Qt.Key_Right, self.step_once)
+    self._add_shortcut(QtCore.Qt.Key_Left, self.speed_down)
+    self._add_shortcut(QtCore.Qt.Key_Right, self.speed_up)
+    self._add_shortcut("Shift+Right", self.step_once)
     self._add_shortcut("F", self.toggle_follow)
     self._add_shortcut("B", lambda: self.request_open_trade("LONG"))
     self._add_shortcut("S", lambda: self.request_open_trade("SHORT"))

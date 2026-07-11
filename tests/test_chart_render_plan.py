@@ -23,11 +23,33 @@ def test_follow_latest_plan_targets_cursor_time_window_and_refreshes_cursor_depe
     )
 
     assert plan is not None
-    assert plan.visible_range == (4892.0, 5012.0)
+    assert plan.visible_range == (4898.0, 5018.0)
     assert plan.rebuild_series is True
     assert plan.set_xrange is True
     assert plan.refresh_markers is True
     assert plan.refresh_multi_timeframe is True
+
+
+def test_follow_latest_positions_cursor_at_eighty_five_percent_of_view():
+    state = RenderState()
+    state.clear()
+    state.mark_visible_range_changed()
+
+    plan = build_chart_render_plan(
+        state=state,
+        force=True,
+        render_dirty=True,
+        row_count=8928,
+        cursor=5000,
+        pad_right=12,
+        window_bars=120,
+        follow_latest=True,
+        current_xrange=(4800.0, 4900.0),
+        manual_xrange=None,
+    )
+
+    assert plan is not None
+    assert plan.visible_range == (4915.0, 5015.0)
 
 
 def test_free_view_header_only_plan_keeps_visible_window_without_rebuilding_series():

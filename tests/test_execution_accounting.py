@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from accounting import build_equity_curve
+from accounting import build_continuous_equity_curve, build_equity_curve
 from execution import ExecutionSettings, fill_price, trade_outcome
 
 
@@ -50,3 +50,49 @@ def test_equity_curve_uses_net_pnl_and_drawdown():
     assert rows[0]["equity_after"] == pytest.approx(1100.0)
     assert rows[1]["equity_after"] == pytest.approx(1050.0)
     assert rows[1]["drawdown_pct"] == pytest.approx(-4.54545454545)
+
+
+def test_continuous_equity_curve_marks_multiple_open_positions_to_market():
+    bars = [
+        {"bar_index": 0, "open_time_bjt": "2026-01-01T00:00:00+08:00", "close": 100.0},
+        {"bar_index": 1, "open_time_bjt": "2026-01-01T00:01:00+08:00", "close": 105.0},
+        {"bar_index": 2, "open_time_bjt": "2026-01-01T00:02:00+08:00", "close": 95.0},
+    ]
+    trades = [
+        {
+            "trade_id": "closed_1",
+            "status": "CLOSED",
+            "side": "LONG",
+            "entry_bar_index": 0,
+            "exit_bar_index": 1,
+            "entry_fill_price": 100.0,
+            "net_pnl_quote": 20.0,
+        },
+        {
+            "trade_id": "long_1",
+            "status": "OPEN",
+            "side": "LONG",
+            "entry_bar_index": 0,
+            "entry_fill_price": 100.0,
+            "notional_quote": 1000.0,
+        },
+        {
+            "trade_id": "short_1",
+            "status": "OPEN",
+            "side": "SHORT",
+            "entry_bar_index": 1,
+            "entry_fill_price": 105.0,
+            "notional_quote": 500.0,
+        },
+    ]
+
+    rows = build_continuous_equity_curve(bars, trades, "sess_1", initial_equity=1000.0, default_notional=1000.0)
+
+    assert len(rows) == 3
+    assert rows[0]["current_equity"] == pytest.approx(1000.0)
+    assert rows[1]["realized_net_pnl"] == pytest.approx(20.0)
+    assert rows[1]["unrealized_pnl"] == pytest.approx(50.0)
+    assert rows[1]["current_equity"] == pytest.approx(1070.0)
+    assert rows[2]["realized_net_pnl"] == pytest.approx(20.0)
+    assert rows[2]["unrealized_pnl"] == pytest.approx(-2.38095238)
+    assert rows[2]["current_equity"] == pytest.approx(1017.61904762)
