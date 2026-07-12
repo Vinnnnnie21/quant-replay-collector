@@ -10,6 +10,8 @@ import app_config
 from ui_style import (
     COLORS,
     EXCHANGE_DARK_THEME,
+    FONT_SIZES,
+    UI_FONT_FAMILY,
     THEME_SCHEMA_VERSION,
     build_app_qss,
     normalize_theme_settings,
@@ -71,12 +73,13 @@ def test_reference_theme_tokens_are_present_and_separated():
     for key, expected in REFERENCE_COLORS.items():
         assert COLORS[key] == expected
 
-    assert THEME_SCHEMA_VERSION == 3
+    assert THEME_SCHEMA_VERSION == 4
     assert COLORS["accent"] != COLORS["warning"]
     assert COLORS["accent"] != COLORS["selection"]
     assert COLORS["chart_crosshair"] != COLORS["accent"]
     assert COLORS["warning"] != COLORS["accent"]
     assert COLORS["info"] == "#3B82F6"
+    assert FONT_SIZES == {"small": 12, "normal": 13, "medium": 14, "large": 18}
 
 
 def test_qss_uses_neutral_selection_and_limited_accent_usage():
@@ -86,8 +89,8 @@ def test_qss_uses_neutral_selection_and_limited_accent_usage():
         assert old_value not in qss
 
     button = _qss_block(qss, "QPushButton {")
-    assert f"background-color: {COLORS['bg_card']}" in button
-    assert f"border: 1px solid {COLORS['border_default']}" in button
+    assert f"background-color: {COLORS['btn_bg']}" in button
+    assert f"border: 1px solid {COLORS['btn_border']}" in button
     assert COLORS["accent"] not in button
 
     table_selected = _qss_block(qss, "QTableWidget::item:selected")
@@ -105,6 +108,36 @@ def test_qss_uses_neutral_selection_and_limited_accent_usage():
     assert COLORS["divider"] in slider_addpage
     assert COLORS["text_secondary"] in slider_handle
     assert COLORS["accent"] not in slider_subpage
+    primary = _qss_block(qss, 'QPushButton[role="primaryButton"]')
+    secondary = _qss_block(qss, 'QPushButton[role="secondaryButton"]')
+    assert "font-size: 13px" in primary
+    assert "min-height: 24px" in primary
+    assert "font-size: 13px" in secondary
+
+
+def test_light_analysis_metric_cards_use_the_standard_card_treatment():
+    from ui_style import LIGHT_THEME
+
+    qss = build_app_qss(LIGHT_THEME)
+    metric_block = _qss_block(qss, 'QFrame[role="metricBlock"]')
+
+    assert f"background-color: {LIGHT_THEME['bg_card']}" in metric_block
+    assert f"border: 1px solid {LIGHT_THEME['border_default']}" in metric_block
+    assert "border-radius: 6px" in metric_block
+
+
+def test_qss_uses_compact_okx_style_font_stack_for_chinese_text():
+    qss = build_app_qss(EXCHANGE_DARK_THEME)
+
+    assert f"font-family: {UI_FONT_FAMILY};" in qss
+    assert "font-size: 13px" in qss
+
+
+def test_qss_marks_paused_replay_red_and_live_replay_green():
+    qss = build_app_qss(EXCHANGE_DARK_THEME)
+
+    assert f'QLabel[role="headerStatePaused"] {{ color: {COLORS["danger"]}; }}' in qss
+    assert f'QLabel[role="headerStateLive"] {{ color: {COLORS["success"]}; }}' in qss
 
 
 def test_qss_uses_root_background_and_explicit_container_roles():
@@ -130,6 +163,7 @@ def test_qss_uses_root_background_and_explicit_container_roles():
     assert "background-color" not in widget
     assert "QMainWindow," in qss
     assert "QWidget#appRoot" in qss
+    assert 'QFrame[role="positionItem"]' in qss
 
     assert "#203040" in _qss_block(qss, 'QFrame[role="header"]')
     assert "#203040" in _qss_block(qss, 'QFrame[role="sidebar"]')
@@ -308,7 +342,7 @@ def _assert_color_close(actual, expected, context: str = "", tolerance: int = 8)
     assert abs(actual.blue() - expected_color.blue()) <= tolerance, message
 
 
-def test_main_window_effective_background_layers_and_no_local_button_styles(monkeypatch, tmp_path):
+def test_main_window_effective_background_layers_and_role_button_styles(monkeypatch, tmp_path):
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
     QtWidgets = pytest.importorskip("PySide6.QtWidgets")
     pytest.importorskip("pyqtgraph")
@@ -324,6 +358,7 @@ def test_main_window_effective_background_layers_and_no_local_button_styles(monk
         monkeypatch.setattr(presentation, "save_theme_settings", lambda _theme: None)
         presentation.apply_main_window_theme(host, EXCHANGE_DARK_THEME)
         host.resize(1366, 768)
+        host.rightTabs.setCurrentWidget(host.rightOverviewScroll)
         # Under the Windows offscreen platform, hidden widgets can grab as
         # transparent even after styles are applied. Showing the offscreen host
         # gives Qt a real layout/render pass while the test fixture avoids
@@ -334,8 +369,8 @@ def test_main_window_effective_background_layers_and_no_local_button_styles(monk
         expected_roles = {
             "appRoot": (COLORS["bg_primary"], (host.width() - 6, host.height() - 46)),
             "headerBar": (COLORS["bg_secondary"], (host.headerTitleLabel.x() + 4, host.headerBar.height() - 8)),
-            "leftSidebar": (COLORS["bg_secondary"], (3, host.leftSidebar.height() // 2)),
-            "marketSection": (COLORS["bg_tertiary"], (12, host.dataBox.height() - 10)),
+            "marketToolbar": (COLORS["bg_secondary"], (12, 3)),
+            "replayToolbar": (COLORS["bg_secondary"], (12, 3)),
             "chartCard": (COLORS["bg_primary"], (host.chartCard.width() - 8, host.chartCard.height() - 8)),
             "rightPanel": (COLORS["bg_secondary"], (host.rightPanel.width() - 6, host.rightPanel.height() - 6)),
             "currentStatusCard": (COLORS["bg_card"], (host.currentStatusCard.width() - 8, 8)),
@@ -365,9 +400,9 @@ def test_main_window_effective_background_layers_and_no_local_button_styles(monk
             host.btnRedo: "secondaryButton",
             host.btnClearTradeRecords: "dangerGhostButton",
             host.btnApplyEventMeta: "secondaryButton",
-            host.btnExport: "primaryButton",
-            host.btnAnalysis: "secondaryButton",
-            host.btnSettings: "secondaryButton",
+            host.btnExport: "headerAction",
+            host.btnAnalysis: "workspaceNavButton",
+            host.btnSettings: "headerAction",
             host.btnToggleDetail: "secondaryButton",
         }
         from ui_style import LOCAL_STYLE_BUTTON_ROLES
@@ -385,8 +420,8 @@ def test_main_window_effective_background_layers_and_no_local_button_styles(monk
         dump = presentation.dump_widget_theme(host, dump_path)
         assert dump_path.read_text(encoding="utf-8") == dump
         assert "objectName=appRoot" in dump
-        assert "objectName=marketSection" in dump
-        assert "role=sideSection" in dump
+        assert "objectName=marketToolbar" in dump
+        assert "role=workspaceToolbar" in dump
         assert "localStyleSheet=False" in dump
     finally:
         if hasattr(host, "multiTimeframePanel"):

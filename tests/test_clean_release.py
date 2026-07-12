@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.clean_release import build_release, excluded_reason
+from scripts.clean_release import ROOT_CONTENT, build_release, excluded_reason
+
+
+def test_clean_release_includes_the_windowed_root_launcher():
+    assert "run_app.pyw" in ROOT_CONTENT
 
 
 def test_excluded_runtime_paths():

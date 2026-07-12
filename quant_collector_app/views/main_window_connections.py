@@ -67,6 +67,8 @@ def connect_main_window_signals(window) -> None:
     window.btnResetView.clicked.connect(window.reset_view)
     window.btnExport.clicked.connect(window.export_session)
     window.btnAnalysis.clicked.connect(window.open_analysis_workspace)
+    if hasattr(window, "btnReplayWorkspace"):
+        window.btnReplayWorkspace.clicked.connect(window.open_replay_workspace)
     window.btnSettings.clicked.connect(window.open_settings_dialog)
     window.btnOpenLong.clicked.connect(lambda: window.request_open_trade("LONG"))
     window.btnOpenShort.clicked.connect(lambda: window.request_open_trade("SHORT"))
@@ -137,6 +139,12 @@ def connect_main_window_signals(window) -> None:
     window.eventTable.itemDoubleClicked.connect(lambda item: window.jump_to_event_row(item))
     window.btnToggleDetail.toggled.connect(window.toggle_detail_panel)
     window.btnToggleLog.toggled.connect(window.toggle_log_drawer)
+    if hasattr(window, "_save_layout_preferences"):
+        window.bodySplitter.splitterMoved.connect(lambda *_args: window._save_layout_preferences())
+        window.centerSplitter.splitterMoved.connect(lambda *_args: window._save_layout_preferences())
+        window.rightTabs.currentChanged.connect(lambda *_args: window._save_layout_preferences())
+        window.btnToggleRightPanel.toggled.connect(lambda *_args: window._save_layout_preferences())
+        window.btnToggleBottomPanel.toggled.connect(lambda *_args: window._save_layout_preferences())
 
 
 __all__ = [

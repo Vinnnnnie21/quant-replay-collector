@@ -92,10 +92,13 @@ def retranslate_main_window_ui(window) -> None:
     window.btnExport.setText(f"{window.tr('export_session')} (E)")
     window.btnAnalysis.setText(window.tr("data_analysis"))
     window.btnSettings.setText(window.tr("settings"))
+    if hasattr(window, "btnReplayWorkspace"):
+        window.btnReplayWorkspace.setText(window.tr("trading_replay"))
 
     if hasattr(window, "rightTabs"):
-        _set_tab_text(window.rightTabs, getattr(window, "multiTimeframePanel", None), window.tr("multi_timeframe_context"))
-        _set_tab_text(window.rightTabs, getattr(window, "detailBox", None), window.tr("details"))
+        _set_tab_text(window.rightTabs, getattr(window, "rightTradePage", None), "交易" if window.current_language == "zh_CN" else "Trade")
+        _set_tab_text(window.rightTabs, getattr(window, "rightOverviewScroll", None), "状态" if window.current_language == "zh_CN" else "Status")
+        _set_tab_text(window.rightTabs, getattr(window, "rightAnnotationPage", None), "标注" if window.current_language == "zh_CN" else "Annotate")
     if hasattr(window, "candleTitleLabel"):
         window.candleTitleLabel.setText(window.tr("current_bar_details"))
     if hasattr(window, "barDetailLabels"):
@@ -194,7 +197,7 @@ def apply_main_window_theme(window, theme: dict) -> None:
     tokens = normalize_theme_settings(theme or DEFAULT_THEME)
     window.theme_settings = tokens
     if window.theme_settings.get("name") not in THEME_PRESETS:
-        window.theme_settings["name"] = DEFAULT_THEME.get("name", "交易暗色")
+        window.theme_settings["name"] = DEFAULT_THEME.get("name", "浅色")
     app = QtWidgets.QApplication.instance()
     pal = QtGui.QPalette()
     pal.setColor(QtGui.QPalette.Window, QtGui.QColor(tokens["bg_primary"]))
@@ -242,6 +245,9 @@ def apply_main_window_theme(window, theme: dict) -> None:
     except Exception:
         pass
     window.premiumPlot.showGrid(x=True, y=True, alpha=grid_alpha)
+    analysis_workspace = getattr(window, "_analysis_workspace", None)
+    if analysis_workspace is not None and hasattr(analysis_workspace, "_apply_plot_theme"):
+        analysis_workspace._apply_plot_theme()
     premium_item = window.premiumPlot.getPlotItem() if hasattr(window.premiumPlot, "getPlotItem") else None
     if premium_item is not None:
         for side in ("left", "bottom", "right", "top"):
@@ -290,6 +296,10 @@ def dump_widget_theme(window: QtWidgets.QWidget, output_path: str | Path | None 
     names = (
         "appRoot",
         "headerBar",
+        "workspaceStack",
+        "replayWorkspace",
+        "marketToolbar",
+        "replayToolbar",
         "leftSidebar",
         "sidebarScroll",
         "sidebarScrollViewport",
@@ -297,6 +307,8 @@ def dump_widget_theme(window: QtWidgets.QWidget, output_path: str | Path | None 
         "marketSection",
         "chartCard",
         "rightPanel",
+        "rightTradeScroll",
+        "rightAnnotationScroll",
         "currentStatusCard",
         "bottomTabs",
         "logDrawer",

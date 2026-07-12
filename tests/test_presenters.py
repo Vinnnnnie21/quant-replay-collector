@@ -24,7 +24,7 @@ from presenters.table_presenter import (
     populate_recent_event_list,
     populate_trade_tables,
 )
-from presenters.status_presenter import update_header
+from presenters.status_presenter import _update_position_panel, update_header
 
 
 def _app():
@@ -341,6 +341,69 @@ def test_status_account_overview_includes_unrealized_pnl():
     assert mini_table.rowCount() == 1
     assert mini_table.item(0, 1).text() == "LONG"
     assert mini_table.item(0, 3).text() == "10.00"
+
+
+def test_trade_position_cards_keep_each_open_trade_direction_and_pnl_separate():
+    _app()
+    cards = QtWidgets.QWidget()
+    cards_layout = QtWidgets.QVBoxLayout(cards)
+    cards_layout.setContentsMargins(0, 0, 0, 0)
+    scroll = QtWidgets.QScrollArea()
+    window = SimpleNamespace(
+        tradePositionCardsLayout=cards_layout,
+        tradePositionScroll=scroll,
+        tradePositionEmptyState=QtWidgets.QLabel(),
+        df=pd.DataFrame(),
+        trades=[
+            {"trade_id": "long", "status": "OPEN", "side": "LONG", "entry_fill_price": 100.0, "notional_quote": 500.0, "entry_bar_index": 1},
+            {"trade_id": "short", "status": "OPEN", "side": "SHORT", "entry_fill_price": 100.0, "notional_quote": 500.0, "entry_bar_index": 2},
+        ],
+    )
+
+    _update_position_panel(window, pd.Series({"close": 110.0}))
+
+    position_cards = [
+        cards_layout.itemAt(index).widget()
+        for index in range(cards_layout.count())
+        if cards_layout.itemAt(index).widget() is not None
+    ]
+    assert [card.property("side") for card in position_cards] == ["LONG", "SHORT"]
+    assert scroll.isVisible()
+
+    long_values = {label.property("field"): label for label in position_cards[0].findChildren(QtWidgets.QLabel) if label.property("field")}
+    short_values = {label.property("field"): label for label in position_cards[1].findChildren(QtWidgets.QLabel) if label.property("field")}
+    assert long_values["side"].text() == "做多"
+    assert long_values["side"].property("role") == "valuePositive"
+    assert long_values["notional"].text() == "500.00"
+    assert long_values["pnl_pct"].property("role") == "valuePositive"
+    assert short_values["side"].text() == "做空"
+    assert short_values["side"].property("role") == "valueNegative"
+    assert short_values["pnl"].property("role") == "valueNegative"
+
+
+def test_trade_position_cards_are_reused_when_only_the_price_changes():
+    _app()
+    cards = QtWidgets.QWidget()
+    cards_layout = QtWidgets.QVBoxLayout(cards)
+    cards_layout.setContentsMargins(0, 0, 0, 0)
+    window = SimpleNamespace(
+        tradePositionCardsLayout=cards_layout,
+        trades=[
+            {"trade_id": "long", "status": "OPEN", "side": "LONG", "entry_fill_price": 100.0, "notional_quote": 500.0, "entry_bar_index": 1},
+            {"trade_id": "short", "status": "OPEN", "side": "SHORT", "entry_fill_price": 100.0, "notional_quote": 500.0, "entry_bar_index": 2},
+        ],
+    )
+
+    _update_position_panel(window, pd.Series({"close": 110.0}))
+    first_cards = [cards_layout.itemAt(index).widget() for index in range(cards_layout.count() - 1)]
+
+    _update_position_panel(window, pd.Series({"close": 120.0}))
+    second_cards = [cards_layout.itemAt(index).widget() for index in range(cards_layout.count() - 1)]
+
+    assert [card.property("tradeId") for card in second_cards] == ["long", "short"]
+    assert second_cards == first_cards
+    long_values = {label.property("field"): label for label in second_cards[0].findChildren(QtWidgets.QLabel) if label.property("field")}
+    assert long_values["current"].text() == "120.00"
 
 
 def test_main_window_table_refresh_uses_presenters_without_full_window():

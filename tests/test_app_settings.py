@@ -35,6 +35,7 @@ def test_app_settings_missing_file_uses_defaults(tmp_path):
     loaded = load_app_settings(tmp_path / "missing.json")
     assert loaded["language"] == "zh_CN"
     assert loaded["llm_provider"] == "mock"
+    assert loaded["render_backend"] == "hardware"
 
 
 def test_build_app_settings_update_preserves_existing_safe_values_and_drops_secrets():
@@ -53,6 +54,7 @@ def test_build_app_settings_update_preserves_existing_safe_values_and_drops_secr
         slippage_bps=2.0,
         trade_notional=2_000.0,
         initial_equity=20_000.0,
+        render_backend="software",
     )
 
     assert settings["language"] == "en_US"
@@ -61,6 +63,7 @@ def test_build_app_settings_update_preserves_existing_safe_values_and_drops_secr
     assert settings["fill_mode"] == "CLOSE"
     assert settings["fee_bps"] == 5.0
     assert settings["trade_notional"] == 2_000.0
+    assert settings["render_backend"] == "software"
     assert "api_key" not in settings
 
 

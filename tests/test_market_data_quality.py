@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 
@@ -14,6 +15,7 @@ from market_data import (
     _normalize_kline_df,
     assess_data_quality,
 )
+from controllers.market_data_controller import persist_loaded_market_data
 
 
 def _row(open_ms: int, open_price=100.0, high=102.0, low=99.0, close=101.0):
@@ -149,3 +151,84 @@ def test_loader_returns_online_data_when_cache_write_fails(tmp_path, monkeypatch
 
     assert len(df) == 3
     assert "cache write failed" in message
+
+
+def test_loader_reuses_superset_cache_for_subrange_without_network(tmp_path):
+    start = dt.datetime(2025, 4, 1, 8, tzinfo=BJT)
+    full = LoadRequest("BTCUSDT", "1d", start, start + dt.timedelta(days=2), True)
+    start_ms = int(start.astimezone(dt.UTC).timestamp() * 1000)
+
+    class FullClient:
+        def download(self, *_args, **_kwargs):
+            return [_row(start_ms + day * 86_400_000) for day in range(3)]
+
+    KlineLoader(tmp_path, FullClient()).load(full)
+
+    class OfflineClient:
+        def download(self, *_args, **_kwargs):
+            raise AssertionError("covered subrange must not access network")
+
+    sub = LoadRequest("BTCUSDT", "1d", start + dt.timedelta(days=1), start + dt.timedelta(days=2), True)
+    frame, message = KlineLoader(tmp_path, OfflineClient()).load(sub)
+    assert len(frame) == 2
+    assert "covered cache" in message
+
+
+def test_loader_downloads_only_missing_cache_suffix(tmp_path):
+    start = dt.datetime(2025, 4, 1, 8, tzinfo=BJT)
+    first = LoadRequest("BTCUSDT", "1d", start, start + dt.timedelta(days=1), True)
+    start_ms = int(start.astimezone(dt.UTC).timestamp() * 1000)
+
+    class FirstClient:
+        def download(self, *_args, **_kwargs):
+            return [_row(start_ms), _row(start_ms + 86_400_000)]
+
+    KlineLoader(tmp_path, FirstClient()).load(first)
+
+    class GapClient:
+        def __init__(self):
+            self.ranges = []
+
+        def download(self, _symbol, _interval, range_start, range_end, *_args):
+            self.ranges.append((range_start, range_end))
+            return [_row(start_ms + 2 * 86_400_000)]
+
+    client = GapClient()
+    extended = LoadRequest("BTCUSDT", "1d", start, start + dt.timedelta(days=2), True)
+    frame, message = KlineLoader(tmp_path, client).load(extended)
+    assert len(frame) == 3
+    assert len(client.ranges) == 1
+    assert client.ranges[0][0].date() == (start + dt.timedelta(days=2)).date()
+    assert "Filled cache gaps" in message
+
+
+def test_loaded_market_persistence_records_quality_without_rewriting_the_cache_in_sqlite():
+    class Storage:
+        def __init__(self):
+            self.quality_reports = []
+            self.kline_upserts = 0
+
+        def save_data_quality_report(self, report):
+            self.quality_reports.append(report)
+
+        def upsert_klines(self, _rows):
+            self.kline_upserts += 1
+
+    frame = pd.DataFrame(
+        [{"open_time_ms": 1, "open_time_bjt": "2026-01-01T00:00:00+08:00", "close_time_ms": 2, "open": 1, "high": 2, "low": 0.5, "close": 1.5, "volume": 3}]
+    )
+    frame.attrs["data_source"] = "cache"
+    frame.attrs["data_quality_report"] = {"report_id": "quality_1", "created_at": "2026-01-01T00:00:00+08:00", "data_quality_status": "PASS"}
+    storage = Storage()
+    window = SimpleNamespace(
+        df=frame,
+        storage=storage,
+        _loaded_market_key=("BTCUSDT", "1m", "2026-01-01", "2026-01-01"),
+        _current_market_key=lambda: ("BTCUSDT", "1m", "2026-01-01", "2026-01-01"),
+        _log=lambda _message: None,
+    )
+
+    persist_loaded_market_data(window)
+
+    assert storage.quality_reports[0]["report_json"]
+    assert storage.kline_upserts == 0

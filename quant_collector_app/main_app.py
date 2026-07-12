@@ -282,6 +282,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.premium_thread.start()
 
         self._build_ui()
+        self._restore_layout_preferences()
         self.export_task_controller.progress.connect(self.status.setText)
         self._connect()
         self._install_theme()
@@ -414,7 +415,20 @@ class MainWindow(QtWidgets.QMainWindow):
 
             self.strategyConsistencyPanel = StrategyConsistencyPanel(self)
         if not hasattr(self, "_analysis_workspace") or self._analysis_workspace is None:
-            self._analysis_workspace = AnalysisWorkspace(self)
+            self._analysis_workspace = AnalysisWorkspace(
+                self,
+                parent=self.workspaceStack,
+                embedded=True,
+            )
+            self._analysis_workspace.setObjectName("analysisWorkspace")
+            self.workspaceStack.addWidget(self._analysis_workspace)
+            saved_subtab = int((self.app_settings or {}).get("analysis_subtab", 0) or 0)
+            self._analysis_workspace.tabs.setCurrentIndex(
+                max(0, min(self._analysis_workspace.tabs.count() - 1, saved_subtab))
+            )
+            self._analysis_workspace.tabs.currentChanged.connect(
+                lambda *_args: self._save_layout_preferences()
+            )
         try:
             from views.main_window_presentation import apply_role_button_styles, apply_themed_input_styles
             from views.widget_effects import apply_role_button_shadows
@@ -429,9 +443,64 @@ class MainWindow(QtWidgets.QMainWindow):
             self._analysis_workspace.refresh()
         except Exception as exc:
             self._log(f"数据分析页刷新失败：{type(exc).__name__}: {exc}")
-        self._analysis_workspace.show()
-        self._analysis_workspace.raise_()
-        self._analysis_workspace.activateWindow()
+        self.workspaceStack.setCurrentWidget(self._analysis_workspace)
+        self.btnAnalysisWorkspace.setChecked(True)
+
+    def open_replay_workspace(self):
+        self.workspaceStack.setCurrentWidget(self.replayWorkspace)
+        self.btnReplayWorkspace.setChecked(True)
+
+    def _restore_layout_preferences(self):
+        settings = self.app_settings or {}
+        right_visible = bool(settings.get("right_panel_visible", True))
+        self.btnToggleRightPanel.setChecked(right_visible)
+        right_width = max(300, min(460, int(settings.get("right_panel_width", 360) or 360)))
+        self._expanded_right_panel_width = right_width
+        self.bodySplitter.setSizes([1180, right_width])
+        right_tab = max(0, min(self.rightTabs.count() - 1, int(settings.get("right_panel_tab", 0) or 0)))
+        self.rightTabs.setCurrentIndex(right_tab)
+
+        bottom_visible = bool(settings.get("bottom_panel_visible", True))
+        self.btnToggleBottomPanel.setChecked(not bottom_visible)
+        self.bottomTabs.setVisible(bottom_visible)
+        sizes = settings.get("bottom_splitter_sizes", [720, 220])
+        if isinstance(sizes, list) and len(sizes) == 2 and all(int(value) > 0 for value in sizes):
+            self.centerSplitter.setSizes([int(sizes[0]), int(sizes[1])])
+
+    def _save_layout_preferences(self):
+        settings = load_app_settings()
+        body_sizes = self.bodySplitter.sizes()
+        center_sizes = self.centerSplitter.sizes()
+        settings.update(
+            {
+                "right_panel_visible": self.rightTabs.isVisible(),
+                "right_panel_width": self._expanded_right_panel_width if not self.rightTabs.isVisible() else (body_sizes[-1] if len(body_sizes) == 2 and body_sizes[-1] >= 300 else 360),
+                "right_panel_tab": self.rightTabs.currentIndex(),
+                "bottom_panel_visible": self.bottomTabs.isVisible(),
+                "bottom_splitter_sizes": center_sizes if len(center_sizes) == 2 and all(center_sizes) else [720, 220],
+                "analysis_subtab": self._analysis_workspace.tabs.currentIndex() if self._analysis_workspace is not None else int(settings.get("analysis_subtab", 0) or 0),
+            }
+        )
+        self.app_settings = settings
+        save_app_settings(settings)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not hasattr(self, "rightPanel"):
+            return
+        if self.width() < 1500 and self.rightTabs.isVisible():
+            self._right_panel_auto_collapsed = True
+            blocked = self.btnToggleRightPanel.blockSignals(True)
+            self.btnToggleRightPanel.setChecked(False)
+            self.btnToggleRightPanel.blockSignals(blocked)
+            self._set_right_panel_expanded(False)
+        elif self.width() >= 1600 and getattr(self, "_right_panel_auto_collapsed", False):
+            self._right_panel_auto_collapsed = False
+            if bool((self.app_settings or {}).get("right_panel_visible", True)):
+                blocked = self.btnToggleRightPanel.blockSignals(True)
+                self.btnToggleRightPanel.setChecked(True)
+                self.btnToggleRightPanel.blockSignals(blocked)
+                self._set_right_panel_expanded(True)
 
     def toggle_detail_panel(self, hidden: bool):
         self.detailText.setVisible(not hidden)

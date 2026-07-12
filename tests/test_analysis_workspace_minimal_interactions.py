@@ -7,7 +7,7 @@ import pandas as pd
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 QtCore = pytest.importorskip("PySide6.QtCore")
 from analysis_workspace import AnalysisWorkspace
-from ui_style import COLORS
+from ui_style import COLORS, LIGHT_THEME
 
 
 class Host(QtWidgets.QWidget):
@@ -55,6 +55,28 @@ class PerformanceHost(QtWidgets.QWidget):
         ]
 
 
+def test_analysis_workspace_can_be_embedded_without_dialog_chrome():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = Host()
+    host.theme_settings = LIGHT_THEME
+    stack = QtWidgets.QStackedWidget()
+    workspace = AnalysisWorkspace(host, parent=stack, embedded=True)
+    stack.addWidget(workspace)
+
+    try:
+        assert workspace.embedded is True
+        assert workspace.parentWidget() is stack
+        assert workspace.windowType() == QtCore.Qt.Widget
+        assert not workspace.isWindow()
+        assert workspace.tabs.count() == 8
+        assert workspace.equityCurvePlot.backgroundBrush().color().name().upper() == "#FFFFFF"
+    finally:
+        workspace.close()
+        stack.close()
+        host.close()
+        app.processEvents()
+
+
 def test_performance_workspace_shows_account_summary_curve_and_trade_pnl():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     host = PerformanceHost()
@@ -64,6 +86,8 @@ def test_performance_workspace_shows_account_summary_curve_and_trade_pnl():
 
     assert dialog.performanceMetricLabels["total_return"].text() == "4.00%"
     assert dialog.performanceMetricLabels["total_pnl"].text() == "40.00"
+    assert dialog.performanceMetricLabels["total_pnl"].styleSheet() == f"color: {COLORS['success']};"
+    assert dialog.performanceMetricLabels["total_pnl"].parentWidget().property("role") == "metricBlock"
     assert dialog.performanceTradeFilter.currentData() == "closed"
     assert dialog.tradePnlTable.rowCount() == 1
     assert dialog.tradePnlTable.item(0, 0).data(QtCore.Qt.UserRole) == "trd_win"
@@ -101,9 +125,11 @@ def test_performance_workspace_exposes_funds_management_controls():
         assert dialog.performanceTradeFilter.count() >= 6
         assert dialog.performanceSideFilter.count() >= 3
         assert dialog.performanceDistributionLabels
+        assert set(dialog.performanceMetricCards) == set(dialog.performanceMetricLabels)
+        assert set(dialog.performanceDistributionCards) == set(dialog.performanceDistributionLabels)
         assert dialog.performanceHistogram is not None
-        assert "已实现盈亏金额" in dialog.performanceHistogramDefinition.text()
-        assert "交易笔数" in dialog.performanceHistogramDefinition.text()
+        assert "交易编号" in dialog.performanceHistogramDefinition.text()
+        assert "每笔已实现盈亏" in dialog.performanceHistogramDefinition.text()
         assert not hasattr(dialog, "performanceTabs")
     finally:
         dialog.close()
@@ -139,6 +165,10 @@ def test_performance_trade_pnl_and_return_cells_use_signed_colors():
         for column in (7, 8):
             assert dialog.tradePnlTable.item(win_row, column).foreground().color().name() == COLORS["success"].lower()
             assert dialog.tradePnlTable.item(loss_row, column).foreground().color().name() == COLORS["danger"].lower()
+        assert list(dialog.performanceHistogram.opts["x"]) == [1.0, 2.0]
+        assert list(dialog.performanceHistogram.opts["height"]) == [20.0, -7.5]
+        assert dialog.performanceDistributionLabels["average_win"].styleSheet() == f"color: {COLORS['success']};"
+        assert dialog.performanceDistributionLabels["average_loss"].styleSheet() == f"color: {COLORS['danger']};"
     finally:
         dialog.close()
         host.close()

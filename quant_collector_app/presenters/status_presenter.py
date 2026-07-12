@@ -13,11 +13,13 @@ from PySide6 import QtCore, QtWidgets
 try:
     from app_config import BJT, DEFAULT_INTERVAL, DEFAULT_SYMBOL
     from analytics.metrics import max_drawdown, payoff_ratio, profit_factor, sharpe_ratio
+    from display_names import session_display_name, trade_display_name
     from market_data import clamp
     from presenters.formatters import fmt_num, safe_float, short_id
 except ImportError:  # pragma: no cover - package import path
     from ..app_config import BJT, DEFAULT_INTERVAL, DEFAULT_SYMBOL
     from ..analytics.metrics import max_drawdown, payoff_ratio, profit_factor, sharpe_ratio
+    from ..display_names import session_display_name, trade_display_name
     from ..market_data import clamp
     from .formatters import fmt_num, safe_float, short_id
 
@@ -180,6 +182,8 @@ def _update_account_overview_panel(window, row) -> None:
     role = "valuePositive" if pnl > 0 else "valueNegative" if pnl < 0 else "statusValue"
     _set_text_if_present(window, "accountEquityValue", _money(equity))
     _set_text_if_present(window, "accountReturnValue", _pct(total_return))
+    _set_text_if_present(window, "headerEquityValue", f"权益 {_money(equity)}")
+    _set_text_if_present(window, "headerReturnValue", f"收益 {_pct(total_return)}")
     _set_text_if_present(window, "accountPnlValue", _money(pnl))
     _set_text_if_present(window, "accountWinRateValue", _pct(win_rate))
     _set_text_if_present(window, "accountSharpeValue", fmt_num(sharpe) if sharpe is not None else "-")
@@ -188,6 +192,8 @@ def _update_account_overview_panel(window, row) -> None:
     _set_text_if_present(window, "accountMaxDrawdownValue", _pct(dd) if dd is not None else "-")
     _set_label_role(getattr(window, "accountPnlValue", None), role)
     _set_label_role(getattr(window, "accountReturnValue", None), role)
+    header_return_role = "marketMetricPositive" if pnl > 0 else "marketMetricNegative" if pnl < 0 else "marketMetric"
+    _set_label_role(getattr(window, "headerReturnValue", None), header_return_role)
 
 
 def _update_position_panel(window, row) -> None:
@@ -202,13 +208,33 @@ def _update_position_panel(window, row) -> None:
         "positionPnlValue",
         "positionPnlPctValue",
     )
-    if row is None:
+    trade_empty = getattr(window, "tradePositionEmptyState", None)
+    trade_empty_host = getattr(window, "tradePositionEmptyHost", None)
+    trade_details = getattr(window, "tradePositionDetails", None)
+    trade_scroll = getattr(window, "tradePositionScroll", None)
+
+    def set_both(name: str, value: str) -> None:
+        _set_text_if_present(window, name, value)
+        _set_text_if_present(window, f"trade{name[0].upper()}{name[1:]}", value)
+
+    def show_position(has_position: bool) -> None:
         if empty is not None:
-            empty.setVisible(True)
+            empty.setVisible(not has_position)
         if details is not None:
-            details.setVisible(False)
+            details.setVisible(has_position)
+        if trade_empty is not None:
+            trade_empty.setVisible(not has_position)
+        if trade_empty_host is not None:
+            trade_empty_host.setVisible(not has_position)
+        if trade_details is not None:
+            trade_details.setVisible(has_position)
+        if trade_scroll is not None:
+            trade_scroll.setVisible(has_position)
+    if row is None:
+        show_position(False)
+        _render_trade_position_cards(window, [], float("nan"))
         for attr in labels:
-            _set_text_if_present(window, attr, "-")
+            set_both(attr, "-")
         if mini_table is not None:
             mini_table.setRowCount(0)
             mini_table.setVisible(False)
@@ -216,16 +242,14 @@ def _update_position_panel(window, row) -> None:
     current_price = safe_float(row.get("close"), default=float("nan"))
     open_trades = [trade for trade in getattr(window, "trades", []) if str(trade.get("status") or "").upper() == "OPEN"]
     if not open_trades or not math.isfinite(current_price) or current_price <= 0:
-        if empty is not None:
-            empty.setVisible(True)
-        if details is not None:
-            details.setVisible(False)
-        _set_text_if_present(window, "positionSideValue", "无持仓")
-        _set_text_if_present(window, "positionQtyValue", "-")
-        _set_text_if_present(window, "positionEntryValue", "-")
-        _set_text_if_present(window, "positionCurrentValue", fmt_num(current_price) if math.isfinite(current_price) else "-")
-        _set_text_if_present(window, "positionPnlValue", "-")
-        _set_text_if_present(window, "positionPnlPctValue", "-")
+        show_position(False)
+        _render_trade_position_cards(window, [], current_price)
+        set_both("positionSideValue", "无持仓")
+        set_both("positionQtyValue", "-")
+        set_both("positionEntryValue", "-")
+        set_both("positionCurrentValue", fmt_num(current_price) if math.isfinite(current_price) else "-")
+        set_both("positionPnlValue", "-")
+        set_both("positionPnlPctValue", "-")
         _set_label_role(getattr(window, "positionPnlValue", None), "statusValue")
         _set_label_role(getattr(window, "positionPnlPctValue", None), "statusValue")
         if mini_table is not None:
@@ -233,10 +257,8 @@ def _update_position_panel(window, row) -> None:
             mini_table.setVisible(False)
         return
 
-    if empty is not None:
-        empty.setVisible(False)
-    if details is not None:
-        details.setVisible(True)
+    show_position(True)
+    _render_trade_position_cards(window, open_trades, current_price)
     sides = {str(trade.get("side") or "").upper() for trade in open_trades}
     side_text = next(iter(sides)) if len(sides) == 1 else f"混合 {len(open_trades)}"
     total_qty = 0.0
@@ -257,12 +279,12 @@ def _update_position_panel(window, row) -> None:
     entry_avg = weighted_entry / total_qty if total_qty > 0 else float("nan")
     pnl_pct = pnl / total_notional * 100.0 if total_notional > 0 else float("nan")
     pnl_role = "valuePositive" if pnl > 0 else "valueNegative" if pnl < 0 else "statusValue"
-    _set_text_if_present(window, "positionSideValue", side_text)
-    _set_text_if_present(window, "positionQtyValue", fmt_num(total_qty) if total_qty > 0 else "-")
-    _set_text_if_present(window, "positionEntryValue", fmt_num(entry_avg) if math.isfinite(entry_avg) else "-")
-    _set_text_if_present(window, "positionCurrentValue", fmt_num(current_price))
-    _set_text_if_present(window, "positionPnlValue", fmt_num(pnl))
-    _set_text_if_present(window, "positionPnlPctValue", f"{fmt_num(pnl_pct)}%" if math.isfinite(pnl_pct) else "-")
+    set_both("positionSideValue", side_text)
+    set_both("positionQtyValue", fmt_num(total_qty) if total_qty > 0 else "-")
+    set_both("positionEntryValue", fmt_num(entry_avg) if math.isfinite(entry_avg) else "-")
+    set_both("positionCurrentValue", fmt_num(current_price))
+    set_both("positionPnlValue", fmt_num(pnl))
+    set_both("positionPnlPctValue", f"{fmt_num(pnl_pct)}%" if math.isfinite(pnl_pct) else "-")
     _set_label_role(getattr(window, "positionPnlValue", None), pnl_role)
     _set_label_role(getattr(window, "positionPnlPctValue", None), pnl_role)
     if mini_table is not None:
@@ -271,7 +293,7 @@ def _update_position_panel(window, row) -> None:
         for row_index, trade in enumerate(sorted(open_trades, key=lambda item: (item.get("entry_bar_index") or 0, item.get("created_at") or ""))):
             trade_pnl = _floating_pnl(trade, current_price, _trade_notional(trade, total_notional or 1_000.0))
             values = (
-                short_id(trade.get("trade_id") or ""),
+                trade_display_name(trade, row_index + 1),
                 str(trade.get("side") or "-"),
                 fmt_num(_entry_price(trade)),
                 f"{trade_pnl:.2f}",
@@ -283,6 +305,100 @@ def _update_position_panel(window, row) -> None:
                 if col in {2, 3, 4, 5}:
                     table_item.setTextAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
                 mini_table.setItem(row_index, col, table_item)
+
+
+def _render_trade_position_cards(window, open_trades: list[dict], current_price: float) -> None:
+    """Render each open trade as a separate, directionally unambiguous card."""
+    layout = getattr(window, "tradePositionCardsLayout", None)
+    if layout is None:
+        return
+
+    def card_number(value: float) -> str:
+        return f"{value:.2f}" if math.isfinite(value) else "-"
+
+    cards_by_trade_id = getattr(window, "_trade_position_cards", None)
+    if not isinstance(cards_by_trade_id, dict):
+        cards_by_trade_id = {}
+        window._trade_position_cards = cards_by_trade_id
+
+    ordered_trades = sorted(
+        open_trades,
+        key=lambda item: (item.get("entry_bar_index") or 0, item.get("created_at") or ""),
+    )
+    active_trade_ids = {str(trade.get("trade_id") or f"position_{index}") for index, trade in enumerate(ordered_trades)}
+    for trade_id, card in list(cards_by_trade_id.items()):
+        if trade_id not in active_trade_ids:
+            layout.removeWidget(card)
+            card.deleteLater()
+            del cards_by_trade_id[trade_id]
+
+    # Reorder existing cards without destroying and recreating widgets on every
+    # replay tick.  deleteLater() here used to queue thousands of card trees
+    # during playback, which eventually froze the main event loop.
+    while layout.count():
+        layout.takeAt(0)
+
+    for index, trade in enumerate(ordered_trades, start=1):
+        trade_id = str(trade.get("trade_id") or f"position_{index - 1}")
+        side = str(trade.get("side") or "").upper()
+        is_long = side == "LONG"
+        notional = _trade_notional(trade, 0.0)
+        entry = _entry_price(trade)
+        pnl = _floating_pnl(trade, current_price, notional)
+        pnl_pct = pnl / notional * 100.0 if notional > 0 else float("nan")
+        direction_role = "valuePositive" if is_long else "valueNegative"
+        pnl_role = "valuePositive" if pnl > 0 else "valueNegative" if pnl < 0 else "statusValue"
+
+        card = cards_by_trade_id.get(trade_id)
+        if card is None:
+            card = QtWidgets.QFrame()
+            card.setProperty("role", "positionItem")
+            card.setProperty("tradeId", trade_id)
+            card_l = QtWidgets.QVBoxLayout(card)
+            card_l.setContentsMargins(8, 7, 8, 7)
+            card_l.setSpacing(3)
+            values = {}
+            for field, label_text in (
+                ("side", "方向"),
+                ("notional", "名义价值"),
+                ("pnl_pct", "盈亏率"),
+                ("pnl", "浮动盈亏"),
+                ("entry", "开仓均价"),
+                ("current", "当前价"),
+            ):
+                row = QtWidgets.QWidget()
+                row_l = QtWidgets.QHBoxLayout(row)
+                row_l.setContentsMargins(0, 0, 0, 0)
+                row_l.setSpacing(6)
+                label = QtWidgets.QLabel(label_text)
+                label.setProperty("role", "muted")
+                value = QtWidgets.QLabel()
+                value.setProperty("field", field)
+                value.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+                row_l.addWidget(label)
+                row_l.addStretch(1)
+                row_l.addWidget(value)
+                card_l.addWidget(row)
+                values[field] = value
+            card._qrc_position_values = values
+            cards_by_trade_id[trade_id] = card
+
+        card.setProperty("side", side)
+        card.setProperty("positionIndex", index)
+        values = card._qrc_position_values
+        for field, value_text, role in (
+            ("side", "做多" if is_long else "做空", direction_role),
+            ("notional", card_number(notional) if notional > 0 else "-", "statusValue"),
+            ("pnl_pct", f"{card_number(pnl_pct)}%", pnl_role),
+            ("pnl", card_number(pnl), pnl_role),
+            ("entry", card_number(entry), "statusValue"),
+            ("current", card_number(current_price), "statusValue"),
+        ):
+            value = values[field]
+            value.setText(value_text)
+            _set_label_role(value, role)
+        layout.addWidget(card)
+    layout.addStretch(1)
 
 
 def show_market_dirty_feedback(window) -> None:
@@ -350,13 +466,10 @@ def update_header(window) -> None:
             change_pct = (close_price / open_price - 1.0) * 100.0
             change_text = f"{change_pct:+.2f}%"
             change_role = "valuePositive" if change_pct > 0 else "valueNegative" if change_pct < 0 else "statusValue"
-    main_text = (
-        f"{symbol or '-'} · {display_interval or '-'} · sample {sample_interval or '-'} · "
-        f"{time_text} · {ohlc_text} · {change_text}"
-    )
+    main_text = f"{symbol or '-'} · {display_interval or '-'} · sample {sample_interval or '-'}"
     if hasattr(window, "headerMainLabel"):
         window.headerMainLabel.setText(main_text)
-        _set_label_role(window.headerMainLabel, "headerMain")
+        _set_label_role(window.headerMainLabel, "marketSummary")
         for attr, text in (
             ("headerSymbolValue", symbol or "-"),
             ("headerIntervalValue", display_interval or "-"),
@@ -379,12 +492,13 @@ def update_header(window) -> None:
         if hasattr(window, "headerDeltaValue"):
             window.headerDeltaValue.setText(change_text)
             _set_label_role(window.headerDeltaValue, change_role)
-    window.headerPlayBadge.setText(window.tr("playing") if window.playing else window.tr("paused"))
-    window._set_widget_role(window.headerPlayBadge, "pillLive" if window.playing else "pillMuted")
-    window.headerViewBadge.setText(window.tr("follow_latest") if window.follow_latest else window.tr("free_view"))
-    window._set_widget_role(window.headerViewBadge, "pillLive" if window.follow_latest else "pill")
-    short_session = short_id(window.session_id) if window.session_id else "-"
-    window.headerSessionBadge.setText(f"{window.tr('session')} {short_session}")
+    window.headerPlayBadge.setText(f"● {window.tr('playing') if window.playing else window.tr('paused')}")
+    window._set_widget_role(window.headerPlayBadge, "headerStateLive" if window.playing else "headerStatePaused")
+    window.headerViewBadge.setText(f"● {window.tr('follow_latest') if window.follow_latest else window.tr('free_view')}")
+    window._set_widget_role(window.headerViewBadge, "headerStateLive" if window.follow_latest else "headerState")
+    start = window.startDate.date().toString("yyyy-MM-dd") if hasattr(window, "startDate") else "-"
+    end = window.endDate.date().toString("yyyy-MM-dd") if hasattr(window, "endDate") else "-"
+    window.headerSessionBadge.setText(session_display_name(symbol=symbol, interval=interval, start=start, end=end))
     for interval_key, button in getattr(window, "chartIntervalButtons", {}).items():
         button.setChecked(interval_key == display_interval)
     _update_current_bar_panel(window, row, idx)

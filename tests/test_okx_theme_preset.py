@@ -11,7 +11,9 @@ final derived-key sync, so switching presets did nothing).
 import app_config
 from ui_style import (
     COLORS,
+    DARK_THEME,
     EXCHANGE_DARK_THEME,
+    LIGHT_THEME,
     OKX_DARK_THEME,
     THEME_SCHEMA_VERSION,
     build_app_qss,
@@ -26,11 +28,11 @@ def _qss_block(qss: str, selector: str) -> str:
 
 
 def test_okx_preset_is_registered_and_named():
-    assert OKX_DARK_THEME["name"] == "黑色配色"
-    assert OKX_DARK_THEME["name"] in app_config.THEME_PRESETS
-    # Claude dark must remain available alongside OKX.
-    assert EXCHANGE_DARK_THEME["name"] == "灰色配色"
-    assert EXCHANGE_DARK_THEME["name"] in app_config.THEME_PRESETS
+    assert LIGHT_THEME["name"] == "浅色"
+    assert DARK_THEME["name"] == "暗色"
+    assert list(app_config.THEME_PRESETS) == ["浅色", "暗色"]
+    assert app_config.DEFAULT_THEME["name"] == "浅色"
+    assert OKX_DARK_THEME["name"] == "暗色"
 
 
 def test_okx_preset_uses_green_up_red_down_near_black_background():
@@ -44,10 +46,20 @@ def test_okx_preset_uses_green_up_red_down_near_black_background():
     assert okx["danger"] == "#F0577E"
 
 
+def test_legacy_theme_names_migrate_to_dark_without_brand_names():
+    for legacy_name in ("黑色配色", "灰色配色", "研究配色", "高对比配色", "OKX 暗色"):
+        migrated = normalize_theme_settings(
+            {"name": legacy_name, "theme_schema_version": 3, "bg_primary": "#010101"}
+        )
+        assert migrated["name"] == "暗色"
+        assert migrated["theme_schema_version"] == THEME_SCHEMA_VERSION
+        assert migrated["bg_primary"] == "#010101"
+
+
 def test_selecting_preset_actually_changes_resolved_palette():
     """Regression: presets must change token keys, not only derived aliases."""
-    claude = normalize_theme_settings(EXCHANGE_DARK_THEME)
-    okx = normalize_theme_settings(OKX_DARK_THEME)
+    claude = normalize_theme_settings(LIGHT_THEME)
+    okx = normalize_theme_settings(DARK_THEME)
 
     assert claude["bg_primary"] != okx["bg_primary"]
     assert claude["accent"] != okx["accent"]
@@ -104,11 +116,11 @@ def test_build_app_qss_okx_buttons_white_rounded_and_trades_solid():
     primary = _qss_block(qss, 'QPushButton[role="primaryButton"] {')
     assert okx["btn_bg"] in primary           # white fill
     assert okx["btn_text"] in primary         # dark text
-    assert "border-radius: 14px" in primary   # rounded pill
+    assert "border-radius: 6px" in primary
 
     secondary = _qss_block(qss, 'QPushButton[role="secondaryButton"] {')
     assert okx["btn_bg"] in secondary
-    assert "border-radius: 14px" in secondary
+    assert "border-radius: 6px" in secondary
 
     danger_ghost = _qss_block(qss, 'QPushButton[role="dangerGhostButton"] {')
     assert okx["btn_bg"] in danger_ghost
@@ -117,10 +129,10 @@ def test_build_app_qss_okx_buttons_white_rounded_and_trades_solid():
     # Trade buttons stay coloured (solid green / pink) and rounded.
     success = _qss_block(qss, 'QPushButton[role="successButton"] {')
     assert okx["success_soft"] in success
-    assert "border-radius: 14px" in success
+    assert "border-radius: 6px" in success
     danger = _qss_block(qss, 'QPushButton[role="dangerButton"] {')
     assert okx["danger_soft"] in danger
-    assert "border-radius: 14px" in danger
+    assert "border-radius: 6px" in danger
 
     success_disabled = _qss_block(qss, 'QPushButton[role="successButton"]:disabled {')
     assert okx["success_soft"] in success_disabled
@@ -166,7 +178,7 @@ def test_role_button_local_qss_paints_the_fill():
     assert "background-color: #2EBD85" in role_button_local_qss("successButton", OKX_DARK_THEME)
     assert "background-color: #F0577E" in role_button_local_qss("dangerButton", OKX_DARK_THEME)
     # Claude neutral buttons stay grey.
-    assert "background-color: #2C2C2A" in role_button_local_qss("primaryButton", EXCHANGE_DARK_THEME)
+    assert "background-color: #F2F2F2" in role_button_local_qss("primaryButton", LIGHT_THEME)
     # Checkbox tag role is left alone.
     assert role_button_local_qss("tagChip", OKX_DARK_THEME) == ""
 
@@ -179,7 +191,7 @@ def test_themed_input_qss_matches_dark_pill():
     combo = themed_input_qss("combo", OKX_DARK_THEME)
     assert "QComboBox {" in combo
     assert f"background-color: {okx['btn_bg']}" in combo
-    assert "border-radius: 12px" in combo
+    assert "border-radius: 5px" in combo
 
     date = themed_input_qss("date", OKX_DARK_THEME)
     assert "QDateEdit {" in date

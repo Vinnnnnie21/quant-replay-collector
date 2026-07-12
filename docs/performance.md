@@ -23,7 +23,12 @@ The startup probe uses a temporary database and disables premium sampling during
 
 ## Runtime Controls
 
-- The replay timer uses a 16 ms interval.
+- The replay timer uses an 8 ms interval; chart work remains dirty-flagged and
+  is separately throttled to 8 ms during direct interaction or 50 ms during
+  playback.
+- GPU chart rendering is the default. The Storage settings tab exposes a
+  software-rendering compatibility mode for driver diagnosis; OpenGL startup
+  failures fall back automatically.
 - Chart refresh uses a dirty flag.
 - Histories over 2,000 bars prepare only the visible range plus a margin.
 - Export and research-pack generation initiated from the UI run in `ExportWorker`.

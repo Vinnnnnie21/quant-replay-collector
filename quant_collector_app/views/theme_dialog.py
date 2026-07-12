@@ -21,9 +21,9 @@ class ThemeDialog(QtWidgets.QDialog):
         preset_row.addWidget(QtWidgets.QLabel("预设主题"))
         self.presetBox = QtWidgets.QComboBox()
         self.presetBox.addItems(list(THEME_PRESETS.keys()))
-        preset_name = self.theme.get("name", DEFAULT_THEME.get("name", "交易暗色"))
+        preset_name = self.theme.get("name", DEFAULT_THEME.get("name", "浅色"))
         if preset_name not in THEME_PRESETS:
-            preset_name = DEFAULT_THEME.get("name", "交易暗色")
+            preset_name = DEFAULT_THEME.get("name", "浅色")
         self.presetBox.setCurrentText(preset_name)
         self.btnApplyPreset = QtWidgets.QPushButton("应用预设")
         self.btnApplyPreset.clicked.connect(self.apply_preset)
@@ -46,7 +46,7 @@ class ThemeDialog(QtWidgets.QDialog):
         self.theme = normalize_theme_settings(THEME_PRESETS.get(self.presetBox.currentText(), DEFAULT_THEME))
 
     def restore_defaults(self):
-        self.presetBox.setCurrentText(DEFAULT_THEME.get("name", "交易暗色"))
+        self.presetBox.setCurrentText(DEFAULT_THEME.get("name", "浅色"))
         self.apply_preset()
 
     def get_theme(self) -> dict:

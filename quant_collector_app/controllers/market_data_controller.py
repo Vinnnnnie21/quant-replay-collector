@@ -404,34 +404,19 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
 
 
 def persist_loaded_market_data(window) -> None:
+    """Persist the small audit record; the range-aware disk cache owns OHLCV.
+
+    Rewriting every cached candle into SQLite after each load duplicates the
+    durable cache and, for long histories, blocks the Qt event loop for many
+    seconds.  No runtime path reads ``klines`` from SQLite, while the cache
+    manifest already records the exact source and quality result used here.
+    """
     report = window.df.attrs.get("data_quality_report")
-    source = str(window.df.attrs.get("data_source") or "unknown")
     if not isinstance(report, dict):
         return
     try:
-        loaded_key = window._loaded_market_key or window._current_market_key()
         window.storage.save_data_quality_report(
             {**report, "report_json": json.dumps(report, ensure_ascii=False)}
-        )
-        downloaded_at = report.get("created_at")
-        quality_status = report.get("data_quality_status")
-        window.storage.upsert_klines(
-            {
-                "symbol": loaded_key[0],
-                "interval": loaded_key[1],
-                "open_time_utc_ms": int(row["open_time_ms"]),
-                "open_time_bjt": pd.to_datetime(row["open_time_bjt"]).isoformat(),
-                "close_time_utc_ms": int(row["close_time_ms"]),
-                "open": float(row["open"]),
-                "high": float(row["high"]),
-                "low": float(row["low"]),
-                "close": float(row["close"]),
-                "volume": float(row["volume"]),
-                "source": source,
-                "downloaded_at": downloaded_at,
-                "data_quality_status": quality_status,
-            }
-            for _, row in window.df.iterrows()
         )
     except Exception as exc:
         logger.exception("Kline quality persistence failed.")

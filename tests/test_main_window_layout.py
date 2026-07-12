@@ -14,6 +14,7 @@ pytest.importorskip("pyqtgraph")
 from ui_style import COLORS, build_app_qss, style_primary_button
 from app_i18n import tr as i18n_tr
 from views.main_window_layout import build_main_window_ui
+from views.date_picker import DatePicker
 from views.main_window_presentation import (
     apply_main_window_theme,
     retranslate_main_window_ui,
@@ -122,12 +123,14 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert host.btnLoadData is host.btnApplyMarket
     assert host.btnApplyMarket.text() in {"应用行情", "Apply Market"}
     assert not hasattr(host, "btnReloadData")
-    market_buttons = [
-        button
-        for button in host.dataBox.findChildren(QtWidgets.QPushButton)
-        if not button.isHidden()
-    ]
-    assert market_buttons == [host.btnApplyMarket]
+    assert host.dataBox.parentWidget() is not host.replayWorkspace
+    assert host.btnApplyMarket.parentWidget().objectName() == "marketToolbar"
+    assert host.headerEquityValue.parentWidget().objectName() == "marketToolbar"
+    assert host.headerReturnValue.parentWidget().objectName() == "marketToolbar"
+    market_layout = host.btnApplyMarket.parentWidget().layout()
+    assert market_layout.indexOf(host.btnApplyMarket) < market_layout.indexOf(host.headerMainLabel)
+    assert market_layout.indexOf(host.headerMainLabel) < market_layout.indexOf(host.headerEquityValue)
+    assert market_layout.indexOf(host.headerEquityValue) < market_layout.indexOf(host.headerReturnValue)
     assert host.marketDirtyHint is not None
     assert host.marketDirtyHint.isHidden()
     assert host.openTradesTable.columnCount() == 10
@@ -141,6 +144,9 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert "1m" in host.headerMainLabel.text()
     assert "O " in host.headerMainLabel.text()
     assert host.headerMainLabel.text().count("|") < 2
+    assert host.headerMainLabel.parentWidget().objectName() == "marketToolbar"
+    assert host.btnReplayWorkspace.property("role") == "workspaceNavButton"
+    assert host.btnAnalysisWorkspace.property("role") == "workspaceNavButton"
     assert not hasattr(host, "btnDepthView")
     assert not hasattr(host, "btnChartSettings")
     assert not hasattr(host, "btnChartFullscreen")
@@ -175,6 +181,26 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert host.accountOverviewCard is not None
     assert host.accountEquityValue.text() == "-"
     assert host.openPositionsMiniTable.columnCount() == 6
+    assert isinstance(host.tradePositionScroll, QtWidgets.QScrollArea)
+    assert host.tradePositionScroll.widget() is host.tradePositionCards
+    assert host.tradePositionEmptyHost.layout().indexOf(host.tradePositionEmptyState) == 1
+    assert [host.closedTradesTable.horizontalHeaderItem(index).text() for index in range(2, 6)] == [
+        "开仓时间", "平仓时间", "开仓成交", "平仓成交"
+    ]
+    assert isinstance(host.startDate, DatePicker)
+    assert isinstance(host.endDate, DatePicker)
+    trade_page_layout = host.rightTradePage.widget().layout()
+    assert trade_page_layout.indexOf(host.tradeCurrentPositionCard) < trade_page_layout.indexOf(host.tradeBox)
+    original_start_date = host.startDate.date()
+    from PySide6 import QtGui
+    wheel_event = QtGui.QWheelEvent(
+        QtCore.QPointF(2, 2), QtCore.QPointF(2, 2), QtCore.QPoint(), QtCore.QPoint(0, 120),
+        QtCore.Qt.NoButton, QtCore.Qt.NoModifier, QtCore.Qt.ScrollUpdate, False,
+    )
+    app.sendEvent(host.startDate, wheel_event)
+    assert host.startDate.date() == original_start_date
+    host.startDate.setDate(host.endDate.date().addDays(3))
+    assert host.endDate.date() == host.startDate.date()
     assert host.pricePlot.getAxis("right").isVisible()
     assert host.barDetailLabels["open"].text() == "开盘价"
     assert host.barDetailLabels["high"].text() == "最高价"
@@ -184,6 +210,24 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert host.barDetailLabels["index"].text() == "K线序号"
     assert "Volume" not in {label.text() for label in host.barDetailLabels.values()}
     assert "bar index" not in {label.text() for label in host.barDetailLabels.values()}
+    assert host.workspaceStack.currentWidget() is host.replayWorkspace
+    assert host.btnReplayWorkspace.isChecked()
+    assert host.btnAnalysisWorkspace.text() == "数据分析"
+    assert host.rightTabs.tabText(0) == "交易"
+    assert host.rightTabs.tabText(1) == "状态"
+    assert host.rightTabs.tabText(2) == "标注"
+    assert host.rightTabs.currentWidget() is host.rightTradePage
+    assert not host.leftSidebar.isVisibleTo(host)
+    assert len(host.rightRailButtons) == 3
+    assert host.rightPanelRail.isHidden()
+    host.btnToggleRightPanel.setChecked(False)
+    assert host.rightTabs.isHidden()
+    assert not host.rightPanelRail.isHidden()
+    assert host.rightPanel.maximumWidth() == 48
+    host.btnToggleRightPanel.setChecked(True)
+    assert not host.rightTabs.isHidden()
+    assert host.rightPanelRail.isHidden()
+    assert host.rightPanel.maximumWidth() == 460
     host.multiTimeframePanel.shutdown()
     host.close()
     app.processEvents()
@@ -231,7 +275,7 @@ def test_main_window_layout_remains_usable_at_common_window_sizes(width, height)
         for widget in (
             host.glw,
             host.btnLoadPlay,
-            host.dataBox,
+            host.btnApplyMarket,
             host.btnOpenLong,
             host.btnOpenShort,
             host.rightTabs,
@@ -243,11 +287,14 @@ def test_main_window_layout_remains_usable_at_common_window_sizes(width, height)
 
         body_sizes = host.bodySplitter.sizes()
         center_sizes = host.centerSplitter.sizes()
-        assert len(body_sizes) == 3
+        assert len(body_sizes) == 2
         assert all(size > 0 for size in body_sizes)
         assert len(center_sizes) == 2
         assert all(size > 0 for size in center_sizes)
         assert host.bottomTabs.count() >= 5
+        empty_host_rect = host.tradePositionEmptyHost.contentsRect()
+        empty_rect = host.tradePositionEmptyState.geometry()
+        assert abs(empty_rect.center().y() - empty_host_rect.center().y()) <= 2
     finally:
         host.multiTimeframePanel.shutdown()
         host.close()

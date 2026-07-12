@@ -25,6 +25,7 @@ try:
     )
     from views.candlestick_item import CandlestickItem
     from views.chart_axis import CurrentPriceAxis, IndexTimeAxis
+    from views.date_picker import DatePicker, bind_date_range
     from views.k_view_box import KViewBox
     from views.high_refresh_viewport import configure_high_refresh_viewport, verify_high_refresh_viewport
     from views.volume_item import VolumeItem
@@ -50,6 +51,7 @@ except ImportError:  # pragma: no cover - package import path
     )
     from .candlestick_item import CandlestickItem
     from .chart_axis import CurrentPriceAxis, IndexTimeAxis
+    from .date_picker import DatePicker, bind_date_range
     from .k_view_box import KViewBox
     from .high_refresh_viewport import configure_high_refresh_viewport, verify_high_refresh_viewport
     from .volume_item import VolumeItem
@@ -158,17 +160,38 @@ def build_main_window_ui(self) -> None:
     header_l.addWidget(app_mark)
     self.headerTitleLabel = QtWidgets.QLabel(f"Quant Replay Collector v{APP_VERSION}")
     self.headerTitleLabel.setProperty("role", "appTitle")
-    self.headerTitleLabel.setMinimumWidth(228)
+    self.headerTitleLabel.setMinimumWidth(190)
     self.headerTitleLabel.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
     header_l.addWidget(self.headerTitleLabel)
 
     self.headerMetricLabels = {}
-    self.headerMainLabel = QtWidgets.QLabel(f"{DEFAULT_SYMBOL} · {DEFAULT_INTERVAL} · sample {DEFAULT_INTERVAL} · - · O - H - L - C - · -")
-    self.headerMainLabel.setProperty("role", "headerMain")
-    self.headerMainLabel.setMinimumWidth(360)
-    self.headerMainLabel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
+    self.btnReplayWorkspace = QtWidgets.QPushButton("行情回放")
+    self.btnReplayWorkspace.setProperty("role", "workspaceNavButton")
+    self.btnReplayWorkspace.setCheckable(True)
+    self.btnReplayWorkspace.setChecked(True)
+    self.btnAnalysisWorkspace = QtWidgets.QPushButton("数据分析")
+    self.btnAnalysisWorkspace.setProperty("role", "workspaceNavButton")
+    self.btnAnalysisWorkspace.setCheckable(True)
+    self.workspaceNavGroup = QtWidgets.QButtonGroup(header)
+    self.workspaceNavGroup.setExclusive(True)
+    self.workspaceNavGroup.addButton(self.btnReplayWorkspace, 0)
+    self.workspaceNavGroup.addButton(self.btnAnalysisWorkspace, 1)
+    header_l.addWidget(self.btnReplayWorkspace)
+    header_l.addWidget(self.btnAnalysisWorkspace)
+
+    self.headerMainLabel = QtWidgets.QLabel(f"{DEFAULT_SYMBOL} · {DEFAULT_INTERVAL} · - · O - H - L - C -")
+    self.headerMainLabel.setProperty("role", "marketSummary")
+    # This is intentionally compact: detailed candle data stays in the replay
+    # toolbar, so the market identity remains visible beside the account metrics.
+    self.headerMainLabel.setMinimumWidth(180)
+    self.headerMainLabel.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
     self.headerMainLabel.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
-    header_l.addWidget(self.headerMainLabel, stretch=1)
+    header_l.addStretch(1)
+
+    self.headerEquityValue = QtWidgets.QLabel("权益 -")
+    self.headerEquityValue.setProperty("role", "marketMetric")
+    self.headerReturnValue = QtWidgets.QLabel("收益 -")
+    self.headerReturnValue.setProperty("role", "marketMetric")
 
     self.headerSymbolValue = _hidden_header_label(header, DEFAULT_SYMBOL)
     self.headerIntervalValue = _hidden_header_label(header, DEFAULT_INTERVAL)
@@ -179,18 +202,18 @@ def build_main_window_ui(self) -> None:
     self.headerCloseValue = self.headerOhlcValue
     self.headerDeltaValue = _hidden_header_label(header)
 
-    self.headerPlayBadge = QtWidgets.QLabel("暂停")
-    self.headerPlayBadge.setProperty("role", "pillMuted")
+    self.headerPlayBadge = QtWidgets.QLabel("● 暂停")
+    self.headerPlayBadge.setProperty("role", "headerState")
     self.headerPlayBadge.setMinimumWidth(54)
     self.headerPlayBadge.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
     self.headerPlayBadge.setAlignment(QtCore.Qt.AlignCenter)
     self.headerViewBadge = QtWidgets.QLabel("自由浏览")
-    self.headerViewBadge.setProperty("role", "pill")
+    self.headerViewBadge.setProperty("role", "headerState")
     self.headerViewBadge.setMinimumWidth(68)
     self.headerViewBadge.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
     self.headerViewBadge.setAlignment(QtCore.Qt.AlignCenter)
     self.headerSessionBadge = QtWidgets.QLabel("session -")
-    self.headerSessionBadge.setProperty("role", "pill")
+    self.headerSessionBadge.setProperty("role", "headerSession")
     self.headerSessionBadge.setMinimumWidth(88)
     self.headerSessionBadge.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
     self.headerSessionBadge.setAlignment(QtCore.Qt.AlignCenter)
@@ -199,12 +222,22 @@ def build_main_window_ui(self) -> None:
     header_l.addWidget(self.headerSessionBadge)
     root.addWidget(header)
 
+    self.workspaceStack = QtWidgets.QStackedWidget()
+    self.workspaceStack.setObjectName("workspaceStack")
+    self.replayWorkspace = QtWidgets.QWidget()
+    self.replayWorkspace.setObjectName("replayWorkspace")
+    replay_workspace_l = QtWidgets.QVBoxLayout(self.replayWorkspace)
+    replay_workspace_l.setContentsMargins(0, 0, 0, 0)
+    replay_workspace_l.setSpacing(SPACING["sm"])
+    self.workspaceStack.addWidget(self.replayWorkspace)
+    root.addWidget(self.workspaceStack, stretch=1)
+
     # ---------- Main body ----------
     body = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-    body.setChildrenCollapsible(False)
+    body.setChildrenCollapsible(True)
     body.setHandleWidth(4)
     self.bodySplitter = body
-    root.addWidget(body, stretch=1)
+    replay_workspace_l.addWidget(body, stretch=1)
 
     # ---------- Left sidebar ----------
     left = QtWidgets.QFrame()
@@ -246,23 +279,18 @@ def build_main_window_ui(self) -> None:
     self.symbolBox.addItems(BINANCE_TOP_MARKET_CAP_SYMBOLS)
     self.symbolBox.setCurrentText(DEFAULT_SYMBOL)
     self.symbolBox.installEventFilter(self)
-    # Selection happens via the dedicated search panel only; suppress the native
-    # combo dropdown so two pickers don't appear at once.
-    self.symbolBox.showPopup = lambda: None
-
     self.intervalBox = QtWidgets.QComboBox()
     self.intervalBox.addItems(["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"])
     self.intervalBox.setCurrentText(DEFAULT_INTERVAL)
 
-    self.startDate = QtWidgets.QDateEdit()
+    self.startDate = DatePicker()
     self.startDate.setObjectName("startDate")
-    self.startDate.setCalendarPopup(True)
     self.startDate.setDate(QtCore.QDate.currentDate().addDays(-2))
 
-    self.endDate = QtWidgets.QDateEdit()
+    self.endDate = DatePicker()
     self.endDate.setObjectName("endDate")
-    self.endDate.setCalendarPopup(True)
     self.endDate.setDate(QtCore.QDate.currentDate())
+    bind_date_range(self.startDate, self.endDate)
 
     form.addRow("品种", self.symbolBox)
     form.addRow("周期", self.intervalBox)
@@ -458,19 +486,29 @@ def build_main_window_ui(self) -> None:
     export_box.setObjectName("toolsSection")
     self.toolsBox = export_box
     self.btnExport = QtWidgets.QPushButton("导出会话 (E)")
-    self.btnAnalysis = QtWidgets.QPushButton("数据分析")
+    self.btnAnalysis = self.btnAnalysisWorkspace
     self.btnSettings = QtWidgets.QPushButton("设置")
     self.btnTheme = self.btnSettings
     self.btnExport.setProperty("role", "primaryButton")
-    self.btnAnalysis.setProperty("role", "secondaryButton")
     self.btnSettings.setProperty("role", "secondaryButton")
     export_l.addWidget(self.btnExport)
-    export_l.addWidget(self.btnAnalysis)
     export_l.addWidget(self.btnSettings)
     sidebar_l.addWidget(export_box)
     sidebar_l.addStretch(1)
     sidebar_scroll.setWidget(sidebar_content)
     left_l.addWidget(sidebar_scroll)
+
+    self.btnExport.setText("导出")
+    self.btnExport.setProperty("role", "headerAction")
+    self.btnSettings.setProperty("role", "headerAction")
+    self.btnToggleRightPanel = QtWidgets.QToolButton()
+    self.btnToggleRightPanel.setText("面板")
+    self.btnToggleRightPanel.setCheckable(True)
+    self.btnToggleRightPanel.setChecked(True)
+    self.btnToggleRightPanel.setProperty("role", "headerActionAccent")
+    header_l.addWidget(self.btnExport)
+    header_l.addWidget(self.btnSettings)
+    header_l.addWidget(self.btnToggleRightPanel)
 
     # ---------- Central workspace ----------
     center = QtWidgets.QWidget()
@@ -491,6 +529,48 @@ def build_main_window_ui(self) -> None:
     chart_l = QtWidgets.QVBoxLayout(chart_panel)
     chart_l.setContentsMargins(SPACING["md"], SPACING["sm"], SPACING["md"], SPACING["md"])
     chart_l.setSpacing(SPACING["sm"])
+
+    market_toolbar = QtWidgets.QFrame()
+    market_toolbar.setObjectName("marketToolbar")
+    market_toolbar.setProperty("role", "workspaceToolbar")
+    market_toolbar_l = QtWidgets.QHBoxLayout(market_toolbar)
+    market_toolbar_l.setContentsMargins(SPACING["sm"], SPACING["xs"], SPACING["sm"], SPACING["xs"])
+    market_toolbar_l.setSpacing(SPACING["sm"])
+    for label_text, control in (("品种", self.symbolBox),):
+        label = QtWidgets.QLabel(label_text)
+        label.setProperty("role", "muted")
+        market_toolbar_l.addWidget(label)
+        market_toolbar_l.addWidget(control)
+    for label_text, control in (("开始", self.startDate), ("结束", self.endDate)):
+        label = QtWidgets.QLabel(label_text)
+        label.setProperty("role", "muted")
+        market_toolbar_l.addWidget(label)
+        market_toolbar_l.addWidget(control)
+    market_toolbar_l.addWidget(self.btnApplyMarket)
+    market_toolbar_l.addWidget(self.headerMainLabel, 1)
+    market_toolbar_l.addWidget(self.headerEquityValue)
+    market_toolbar_l.addWidget(self.headerReturnValue)
+    market_toolbar_l.addWidget(self.marketDirtyHint)
+    market_toolbar_l.addStretch(1)
+    chart_l.addWidget(market_toolbar)
+    chart_l.addWidget(self.symbolPanel)
+
+    replay_toolbar = QtWidgets.QFrame()
+    replay_toolbar.setObjectName("replayToolbar")
+    replay_toolbar.setProperty("role", "workspaceToolbar")
+    replay_toolbar_l = QtWidgets.QHBoxLayout(replay_toolbar)
+    replay_toolbar_l.setContentsMargins(SPACING["sm"], SPACING["xs"], SPACING["sm"], SPACING["xs"])
+    replay_toolbar_l.setSpacing(SPACING["sm"])
+    replay_toolbar_l.addWidget(self.btnLoadPlay)
+    replay_toolbar_l.addWidget(self.btnStep)
+    replay_toolbar_l.addWidget(self.btnToEnd)
+    replay_toolbar_l.addWidget(self.btnFollow)
+    replay_toolbar_l.addWidget(self.btnResetView)
+    replay_toolbar_l.addStretch(1)
+    replay_toolbar_l.addWidget(self.speedLabel)
+    self.speedSlider.setFixedWidth(128)
+    replay_toolbar_l.addWidget(self.speedSlider)
+    chart_l.addWidget(replay_toolbar)
     chart_toolbar = QtWidgets.QFrame()
     chart_toolbar.setObjectName("chartToolbar")
     chart_toolbar.setProperty("role", "chartToolbar")
@@ -505,6 +585,11 @@ def build_main_window_ui(self) -> None:
     self.status.setMinimumWidth(0)
     self.status.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
     toolbar_l.addWidget(self.status, stretch=1)
+    self.btnToggleBottomPanel = QtWidgets.QToolButton()
+    self.btnToggleBottomPanel.setText("收起结果")
+    self.btnToggleBottomPanel.setCheckable(True)
+    self.btnToggleBottomPanel.setProperty("role", "compactButton")
+    toolbar_l.addWidget(self.btnToggleBottomPanel)
     self.chartIntervalButtons = {}
     for index in range(self.intervalBox.count()):
         text = self.intervalBox.itemText(index)
@@ -519,13 +604,14 @@ def build_main_window_ui(self) -> None:
     chart_l.addWidget(chart_toolbar)
 
     self.glw = pg.GraphicsLayoutWidget()
-    self._chart_uses_opengl = configure_high_refresh_viewport(self.glw)
+    render_backend = str(getattr(self, "app_settings", {}).get("render_backend") or "hardware")
+    self._chart_uses_opengl = configure_high_refresh_viewport(self.glw, backend=render_backend)
     if self._chart_uses_opengl:
         def verify_chart_viewport():
             self._chart_uses_opengl = verify_high_refresh_viewport(self.glw)
 
         QtCore.QTimer.singleShot(250, verify_chart_viewport)
-    self.glw.setMinimumHeight(360)
+    self.glw.setMinimumHeight(320)
     chart_l.addWidget(self.glw, stretch=1)
 
     self.axis_price = IndexTimeAxis("bottom")
@@ -598,6 +684,10 @@ def build_main_window_ui(self) -> None:
         "毛收益%", "净收益%", "手续费", "净盈亏", "持仓K线", "状态", "成交模式",
     ])
     self._setup_table(self.closedTradesTable)
+    self.closedTradesTable.setHorizontalHeaderLabels([
+        "\u4ea4\u6613ID", "\u65b9\u5411", "\u5f00\u4ed3\u65f6\u95f4", "\u5e73\u4ed3\u65f6\u95f4", "\u5f00\u4ed3\u6210\u4ea4", "\u5e73\u4ed3\u6210\u4ea4",
+        "\u6bdb\u6536\u76ca%", "\u51c0\u6536\u76ca%", "\u624b\u7eed\u8d39", "\u51c0\u76c8\u4e8f", "\u6301\u4ed3K\u7ebf", "\u72b6\u6001", "\u6210\u4ea4\u6a21\u5f0f",
+    ])
 
     self.eventTable = QtWidgets.QTableWidget()
     self.eventTable.setColumnCount(8)
@@ -695,14 +785,86 @@ def build_main_window_ui(self) -> None:
     right.setObjectName("rightPanel")
     right.setProperty("role", "rightPanel")
     self.rightPanel = right
-    right.setMinimumWidth(240)
-    right.setMaximumWidth(340)
+    right.setMinimumWidth(300)
+    right.setMaximumWidth(460)
     right_l = QtWidgets.QVBoxLayout(right)
     right_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     right_l.setSpacing(SPACING["sm"])
 
     tabs = QtWidgets.QTabWidget()
     self.rightTabs = tabs
+
+    right_rail = QtWidgets.QFrame()
+    right_rail.setObjectName("rightPanelRail")
+    right_rail.setProperty("role", "rightRail")
+    right_rail_l = QtWidgets.QVBoxLayout(right_rail)
+    right_rail_l.setContentsMargins(4, 8, 4, 8)
+    right_rail_l.setSpacing(SPACING["sm"])
+    self.rightRailButtons = []
+    for text, tooltip in (("交", "交易"), ("态", "状态"), ("标", "标注")):
+        button = QtWidgets.QToolButton()
+        button.setText(text)
+        button.setToolTip(tooltip)
+        button.setProperty("role", "compactButton")
+        button.setFixedSize(34, 34)
+        right_rail_l.addWidget(button)
+        self.rightRailButtons.append(button)
+    right_rail_l.addStretch(1)
+    right_rail.hide()
+    self.rightPanelRail = right_rail
+    right_l.addWidget(right_rail, stretch=1)
+
+    trade_page = QtWidgets.QWidget()
+    trade_page.setObjectName("rightTradePage")
+    trade_page.setProperty("role", "tabPage")
+    trade_page_l = QtWidgets.QVBoxLayout(trade_page)
+    trade_page_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
+    trade_page_l.setSpacing(SPACING["md"])
+
+    trade_position_card = QtWidgets.QFrame()
+    trade_position_card.setObjectName("tradeCurrentPositionCard")
+    trade_position_card.setProperty("role", "statusBlock")
+    trade_position_l = QtWidgets.QVBoxLayout(trade_position_card)
+    trade_position_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
+    trade_position_l.setSpacing(SPACING["sm"])
+    trade_position_title = QtWidgets.QLabel("当前持仓")
+    trade_position_title.setProperty("role", "sectionTitle")
+    trade_position_l.addWidget(trade_position_title)
+    self.tradePositionEmptyState = _empty_state("无持仓", "开仓后在此显示当前持仓", compact=True)
+    self.tradePositionEmptyHost = QtWidgets.QWidget()
+    trade_empty_l = QtWidgets.QVBoxLayout(self.tradePositionEmptyHost)
+    trade_empty_l.setContentsMargins(0, 0, 0, 0)
+    trade_empty_l.addStretch(1)
+    trade_empty_l.addWidget(self.tradePositionEmptyState)
+    trade_empty_l.addStretch(1)
+    trade_position_l.addWidget(self.tradePositionEmptyHost, 1)
+    self.tradePositionScroll = QtWidgets.QScrollArea()
+    self.tradePositionScroll.setObjectName("tradePositionScroll")
+    self.tradePositionScroll.setWidgetResizable(True)
+    self.tradePositionScroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+    self.tradePositionScroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+    self.tradePositionScroll.setSizeAdjustPolicy(QtWidgets.QAbstractScrollArea.AdjustIgnored)
+    self.tradePositionCards = QtWidgets.QWidget()
+    self.tradePositionCards.setObjectName("tradePositionCards")
+    self.tradePositionCardsLayout = QtWidgets.QVBoxLayout(self.tradePositionCards)
+    self.tradePositionCardsLayout.setContentsMargins(0, 0, 0, 0)
+    self.tradePositionCardsLayout.setSpacing(SPACING["sm"])
+    self.tradePositionScroll.setWidget(self.tradePositionCards)
+    self.tradePositionScroll.hide()
+    trade_position_l.addWidget(self.tradePositionScroll, 1)
+    trade_position_card.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
+    self.tradeCurrentPositionCard = trade_position_card
+    trade_page_l.addWidget(trade_position_card, 1)
+    for section in (trade_box, exec_box, danger_box):
+        section.setProperty("role", "embeddedSection")
+        trade_page_l.addWidget(section)
+    trade_scroll = QtWidgets.QScrollArea()
+    trade_scroll.setObjectName("rightTradeScroll")
+    trade_scroll.setWidgetResizable(True)
+    trade_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+    trade_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+    trade_scroll.setWidget(trade_page)
+    self.rightTradePage = trade_scroll
 
     overview = QtWidgets.QWidget()
     overview.setObjectName("rightOverviewPage")
@@ -748,7 +910,7 @@ def build_main_window_ui(self) -> None:
     position_l.addWidget(self.positionDetails)
     self.openPositionsMiniTable = QtWidgets.QTableWidget()
     self.openPositionsMiniTable.setColumnCount(6)
-    self.openPositionsMiniTable.setHorizontalHeaderLabels(["ID", "方向", "入场", "浮盈亏", "TP", "SL"])
+    self.openPositionsMiniTable.setHorizontalHeaderLabels(["交易", "方向", "入场", "浮盈亏", "TP", "SL"])
     self.openPositionsMiniTable.verticalHeader().setVisible(False)
     self.openPositionsMiniTable.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
     self.openPositionsMiniTable.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -758,6 +920,7 @@ def build_main_window_ui(self) -> None:
     self.openPositionsMiniTable.setMaximumHeight(132)
     self.openPositionsMiniTable.horizontalHeader().setMinimumSectionSize(28)
     self.openPositionsMiniTable.horizontalHeader().setDefaultSectionSize(46)
+    self.openPositionsMiniTable.setColumnWidth(0, 132)
     self.openPositionsMiniTable.horizontalHeader().setStretchLastSection(True)
     self.openPositionsMiniTable.setVisible(False)
     position_l.addWidget(self.openPositionsMiniTable)
@@ -793,7 +956,6 @@ def build_main_window_ui(self) -> None:
     ):
         account_l.addWidget(_value_row(label, value))
     overview_l.addWidget(account_card)
-    overview_l.addWidget(exec_box)
 
     recent_card = QtWidgets.QFrame()
     recent_card.setObjectName("recentEventsCard")
@@ -845,7 +1007,6 @@ def build_main_window_ui(self) -> None:
         self.barDetailLabels[key] = row.nameLabel
         candle_l.addWidget(row)
     overview_l.addWidget(candle_card)
-    overview_l.addStretch(1)
 
     overview_scroll = QtWidgets.QScrollArea()
     overview_scroll.setObjectName("rightOverviewScroll")
@@ -854,9 +1015,7 @@ def build_main_window_ui(self) -> None:
     overview_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     overview_scroll.setWidget(overview)
     self.rightOverviewScroll = overview_scroll
-    tabs.addTab(overview_scroll, "当前状态")
     self.multiTimeframePanel = MultiTimeframePanel(language=self.current_language, parent=self)
-    tabs.addTab(self.multiTimeframePanel, self.tr("multi_timeframe_context"))
     self.backtestPanel = None
     self.strategyConsistencyPanel = None
 
@@ -876,8 +1035,37 @@ def build_main_window_ui(self) -> None:
     self.detailText.setMinimumHeight(220)
     detail_l.addWidget(self.btnToggleDetail)
     detail_l.addWidget(self.detailText)
-    tabs.addTab(detail_box, "详情")
+    overview_l.addWidget(self.multiTimeframePanel)
+    overview_l.addWidget(detail_box)
+    overview_l.addStretch(1)
+
+    annotation_page = QtWidgets.QWidget()
+    annotation_page.setObjectName("rightAnnotationPage")
+    annotation_page.setProperty("role", "tabPage")
+    annotation_page_l = QtWidgets.QVBoxLayout(annotation_page)
+    annotation_page_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
+    annotation_page_l.setSpacing(SPACING["md"])
+    tag_box.setProperty("role", "embeddedSection")
+    annotation_page_l.addWidget(tag_box)
+    annotation_page_l.addStretch(1)
+    annotation_scroll = QtWidgets.QScrollArea()
+    annotation_scroll.setObjectName("rightAnnotationScroll")
+    annotation_scroll.setWidgetResizable(True)
+    annotation_scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+    annotation_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+    annotation_scroll.setWidget(annotation_page)
+    self.rightAnnotationPage = annotation_scroll
+
+    tabs.addTab(trade_scroll, "交易")
+    tabs.addTab(overview_scroll, "状态")
+    tabs.addTab(annotation_scroll, "标注")
+    tabs.setCurrentWidget(trade_scroll)
     right_l.addWidget(tabs, stretch=1)
+    for index, button in enumerate(self.rightRailButtons):
+        button.clicked.connect(lambda _checked=False, tab_index=index: (
+            tabs.setCurrentIndex(tab_index),
+            self.btnToggleRightPanel.setChecked(True),
+        ))
 
     self.premiumBox = QtWidgets.QWidget()
     premium_l = QtWidgets.QVBoxLayout(self.premiumBox)
@@ -899,13 +1087,43 @@ def build_main_window_ui(self) -> None:
     premium_l.addWidget(self.premiumStats)
     premium_l.addWidget(self.premiumPlot, stretch=1)
 
-    body.addWidget(left)
     body.addWidget(center)
     body.addWidget(right)
-    body.setStretchFactor(0, 0)
-    body.setStretchFactor(1, 1)
-    body.setStretchFactor(2, 0)
-    body.setSizes([260, 700, 280])
+    body.setStretchFactor(0, 1)
+    body.setStretchFactor(1, 0)
+    body.setSizes([1180, 360])
+    left.hide()
+
+    self._expanded_right_panel_width = 360
+
+    def set_right_panel_visible(visible: bool) -> None:
+        visible = bool(visible)
+        if visible:
+            right.setMinimumWidth(300)
+            right.setMaximumWidth(460)
+            right_rail.hide()
+            tabs.show()
+            body.setSizes([max(1, body.width() - self._expanded_right_panel_width), self._expanded_right_panel_width])
+        else:
+            sizes = body.sizes()
+            if len(sizes) == 2 and sizes[1] >= 300:
+                self._expanded_right_panel_width = max(300, min(460, sizes[1]))
+            tabs.hide()
+            right_rail.show()
+            right.setMinimumWidth(48)
+            right.setMaximumWidth(48)
+            body.setSizes([max(1, body.width() - 48), 48])
+        self.btnToggleRightPanel.setText("收起面板" if visible else "展开面板")
+
+    self._set_right_panel_expanded = set_right_panel_visible
+
+    self.btnToggleRightPanel.toggled.connect(set_right_panel_visible)
+
+    def set_bottom_panel_collapsed(collapsed: bool) -> None:
+        bottom_tabs.setVisible(not collapsed)
+        self.btnToggleBottomPanel.setText("展开结果" if collapsed else "收起结果")
+
+    self.btnToggleBottomPanel.toggled.connect(set_bottom_panel_collapsed)
 
     # ---------- Collapsible log drawer ----------
     self.logDrawer = QtWidgets.QFrame()
@@ -938,7 +1156,7 @@ def build_main_window_ui(self) -> None:
     self.log.setVisible(False)
     log_l.addLayout(log_header)
     log_l.addWidget(self.log)
-    root.addWidget(self.logDrawer)
+    replay_workspace_l.addWidget(self.logDrawer)
 
     self._add_shortcut("Space", self.toggle_play)
     self._add_shortcut(QtCore.Qt.Key_Left, self.speed_down)

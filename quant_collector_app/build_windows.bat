@@ -45,7 +45,6 @@ echo Building Windows executable...
     --onefile ^
     --windowed ^
     --name QuantReplayCollector ^
-    --add-data "README.txt;." ^
     main_app.py >> "%LOG_FILE%" 2>&1
 
 if errorlevel 1 (

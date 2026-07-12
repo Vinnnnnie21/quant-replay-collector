@@ -9,9 +9,9 @@ from datetime import datetime
 from pathlib import Path
 
 try:
-    from ui_style import EXCHANGE_DARK_THEME, OKX_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME, normalize_theme_settings
+    from ui_style import DARK_THEME, LIGHT_THEME, normalize_theme_settings
 except ImportError:  # pragma: no cover - package import path
-    from .ui_style import EXCHANGE_DARK_THEME, OKX_DARK_THEME, RESEARCH_SLATE_THEME, CONTRAST_DARK_THEME, normalize_theme_settings
+    from .ui_style import DARK_THEME, LIGHT_THEME, normalize_theme_settings
 
 APP_NAME = "Quant Replay Collector"
 APP_VERSION = "1.5.0"
@@ -80,13 +80,11 @@ THEME_CONFIG_PATH = DATA_DIR / "theme_settings.json"
 
 BINANCE_FAPI = "https://fapi.binance.com/fapi/v1/klines"
 
-DEFAULT_THEME = normalize_theme_settings(EXCHANGE_DARK_THEME)
+DEFAULT_THEME = normalize_theme_settings(LIGHT_THEME)
 
 THEME_PRESETS = {
-    OKX_DARK_THEME["name"]: normalize_theme_settings(OKX_DARK_THEME),
-    EXCHANGE_DARK_THEME["name"]: normalize_theme_settings(EXCHANGE_DARK_THEME),
-    RESEARCH_SLATE_THEME["name"]: normalize_theme_settings(RESEARCH_SLATE_THEME),
-    CONTRAST_DARK_THEME["name"]: normalize_theme_settings(CONTRAST_DARK_THEME),
+    LIGHT_THEME["name"]: normalize_theme_settings(LIGHT_THEME),
+    DARK_THEME["name"]: normalize_theme_settings(DARK_THEME),
 }
 
 def load_theme_settings() -> dict:

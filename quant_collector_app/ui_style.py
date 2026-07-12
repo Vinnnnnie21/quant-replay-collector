@@ -3,8 +3,8 @@ from __future__ import annotations
 from textwrap import dedent
 
 
-THEME_SCHEMA_VERSION = 3
-THEME_NAME = "灰色配色"
+THEME_SCHEMA_VERSION = 4
+THEME_NAME = "暗色"
 
 def _rgb_hex(red: int, green: int, blue: int) -> str:
     return f"#{red:02x}{green:02x}{blue:02x}"
@@ -163,11 +163,18 @@ SPACING = {
     "xl": 16,
 }
 
+# 交易终端采用紧凑的无衬线字阶。Inter 在可用时提供一致的数字宽度和
+# 英文观感；Windows 则优先使用系统 UI 字体，最后回退到常见中文字体。
+UI_FONT_FAMILY = (
+    '"Inter", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", '
+    '"Microsoft YaHei", "Noto Sans SC", sans-serif'
+)
+
 FONT_SIZES = {
-    "small": 11,
-    "normal": 12,
-    "medium": 13,
-    "large": 16,
+    "small": 12,
+    "normal": 13,
+    "medium": 14,
+    "large": 18,
 }
 
 EXCHANGE_DARK_THEME = {
@@ -234,7 +241,7 @@ CONTRAST_DARK_THEME = {
 
 
 OKX_DARK_THEME = {
-    "name": "黑色配色",
+    "name": "暗色",
     "theme_schema_version": THEME_SCHEMA_VERSION,
     # Near-black trading chrome (OKX dark).
     "bg_primary": "#000000",
@@ -309,6 +316,87 @@ OKX_DARK_THEME = {
     "base_bg": "#000000",
 }
 
+DARK_THEME = OKX_DARK_THEME
+
+LIGHT_THEME = {
+    **OKX_DARK_THEME,
+    "name": "浅色",
+    "theme_schema_version": THEME_SCHEMA_VERSION,
+    "bg_primary": "#FFFFFF",
+    "bg_secondary": "#FFFFFF",
+    "bg_tertiary": "#F5F5F5",
+    "bg_card": "#FFFFFF",
+    "bg_input": "#F3F3F3",
+    "bg_hover": "#F7F7F7",
+    "bg_pressed": "#ECECEC",
+    "border_default": "#E5E5E5",
+    "border_strong": "#CFCFCF",
+    "divider": "#ECECEC",
+    "text_primary": "#161616",
+    "text_secondary": "#40444A",
+    "text_tertiary": "#686D75",
+    "text_disabled": "#B7BBC2",
+    "accent": "#111111",
+    "accent_hover": "#2A2A2A",
+    "accent_soft": "#F0F0F0",
+    "accent_text": "#111111",
+    "focus": "#777777",
+    "success": "#2EBD85",
+    "success_soft": "#E7F7F0",
+    "success_text": "#187A58",
+    "success_hover": "#D8F2E7",
+    "success_pressed": "#C8EBDD",
+    "danger": "#F0577E",
+    "danger_soft": "#FDEAF0",
+    "danger_text": "#B92F55",
+    "danger_hover": "#FBDCE6",
+    "danger_pressed": "#F7CCD9",
+    "danger_ghost_border": "#F2B8C8",
+    "danger_ghost_text": "#B92F55",
+    "danger_ghost_hover_bg": "#FDEAF0",
+    "danger_ghost_hover_border": "#E994AC",
+    "danger_ghost_hover_text": "#A42348",
+    "warning": "#D88A00",
+    "warning_soft": "#FFF5DE",
+    "info": "#3D7EFF",
+    "selection": "#E8F5EE",
+    "btn_bg": "#F2F2F2",
+    "btn_text": "#161616",
+    "btn_hover": "#E9E9E9",
+    "btn_pressed": "#DEDEDE",
+    "btn_border": "#DEDEDE",
+    "chart_bg": "#FFFFFF",
+    "chart_up": "#2EBD85",
+    "chart_down": "#EC5B5B",
+    "chart_volume_up": "#8ED9BB",
+    "chart_volume_down": "#F1A4AE",
+    "chart_grid": "#ECECEC",
+    "chart_axis": "#70757D",
+    "chart_crosshair": "#6F737A",
+    "chart_wick": "#555A61",
+    "marker_close_long": "#187A58",
+    "marker_close_short": "#B92F55",
+    "grid_alpha": 16,
+    "crosshair_alpha": 95,
+    "current_price_label_text": "#FFFFFF",
+    "current_price_up": "#2EBD85",
+    "current_price_down": "#EC5B5B",
+    "premium_buy": "#2EBD85",
+    "premium_sell": "#EC5B5B",
+    "premium_avg": "#70757D",
+    "base_bg": "#FFFFFF",
+}
+
+_LEGACY_THEME_NAMES = {
+    "黑色配色",
+    "灰色配色",
+    "研究配色",
+    "高对比配色",
+    "交易暗色",
+    "OKX",
+    "OKX 暗色",
+}
+
 
 _THEME_COLOR_KEYS = set(THEME_TOKEN_KEYS) | set(_LEGACY_TO_TOKEN_KEYS) | {
     "current_price_up",
@@ -372,7 +460,7 @@ def normalize_theme_settings(theme: dict | None) -> dict:
     normalized = _base_theme_tokens()
 
     schema = incoming.get("theme_schema_version")
-    if schema == THEME_SCHEMA_VERSION:
+    if schema in {3, THEME_SCHEMA_VERSION}:
         for key, value in incoming.items():
             if key in _THEME_COLOR_KEYS:
                 if _is_hex_color(value):
@@ -406,6 +494,8 @@ def normalize_theme_settings(theme: dict | None) -> dict:
         normalized["name"] = str(incoming["name"])
 
     normalized["theme_schema_version"] = THEME_SCHEMA_VERSION
+    if normalized.get("name") not in {"浅色", "暗色"}:
+        normalized["name"] = "暗色"
     normalized["grid_alpha"] = _clamp_int(normalized.get("grid_alpha"), 14, 12, 20)
     normalized["crosshair_alpha"] = _clamp_int(
         normalized.get("crosshair_alpha"), 95, 80, 110
@@ -423,25 +513,25 @@ def theme_value(theme: dict | None, key: str) -> str:
 
 def build_app_qss(theme: dict | None = None) -> str:
     t = normalize_theme_settings(theme)
-    okx_neutral_buttons = str(t.get("name")) == str(OKX_DARK_THEME["name"])
-    default_button_bg = t["btn_bg"] if okx_neutral_buttons else t["bg_card"]
-    default_button_text = t["btn_text"] if okx_neutral_buttons else t["text"]
-    default_button_border = t["btn_border"] if okx_neutral_buttons else t["border_default"]
-    default_button_hover = t["btn_hover"] if okx_neutral_buttons else t["bg_hover"]
-    default_button_hover_border = t["btn_border"] if okx_neutral_buttons else t["border_strong"]
-    default_button_pressed = t["btn_pressed"] if okx_neutral_buttons else t["bg_pressed"]
-    default_button_checked_bg = t["btn_bg"] if okx_neutral_buttons else t["selection"]
-    default_button_checked_border = t["btn_border"] if okx_neutral_buttons else t["focus"]
-    default_button_checked_text = t["btn_text"] if okx_neutral_buttons else t["text"]
-    default_button_disabled_bg = t["btn_bg"] if okx_neutral_buttons else t["bg_tertiary"]
-    default_button_disabled_text = t["btn_text"] if okx_neutral_buttons else t["text_disabled"]
-    default_button_disabled_border = t["btn_border"] if okx_neutral_buttons else t["divider"]
-    danger_ghost_bg = t["btn_bg"] if okx_neutral_buttons else "transparent"
-    danger_ghost_text = t["btn_text"] if okx_neutral_buttons else t["danger_ghost_text"]
-    danger_ghost_border = t["btn_border"] if okx_neutral_buttons else t["danger_ghost_border"]
-    danger_ghost_hover_bg = t["btn_hover"] if okx_neutral_buttons else t["danger_ghost_hover_bg"]
-    danger_ghost_hover_text = t["btn_text"] if okx_neutral_buttons else t["danger_ghost_hover_text"]
-    danger_ghost_hover_border = t["btn_border"] if okx_neutral_buttons else t["danger_ghost_hover_border"]
+    preset_neutral_buttons = str(t.get("name")) in {"浅色", "暗色"}
+    default_button_bg = t["btn_bg"] if preset_neutral_buttons else t["bg_card"]
+    default_button_text = t["btn_text"] if preset_neutral_buttons else t["text"]
+    default_button_border = t["btn_border"] if preset_neutral_buttons else t["border_default"]
+    default_button_hover = t["btn_hover"] if preset_neutral_buttons else t["bg_hover"]
+    default_button_hover_border = t["btn_border"] if preset_neutral_buttons else t["border_strong"]
+    default_button_pressed = t["btn_pressed"] if preset_neutral_buttons else t["bg_pressed"]
+    default_button_checked_bg = t["btn_bg"] if preset_neutral_buttons else t["selection"]
+    default_button_checked_border = t["btn_border"] if preset_neutral_buttons else t["focus"]
+    default_button_checked_text = t["btn_text"] if preset_neutral_buttons else t["text"]
+    default_button_disabled_bg = t["btn_bg"] if preset_neutral_buttons else t["bg_tertiary"]
+    default_button_disabled_text = t["btn_text"] if preset_neutral_buttons else t["text_disabled"]
+    default_button_disabled_border = t["btn_border"] if preset_neutral_buttons else t["divider"]
+    danger_ghost_bg = t["btn_bg"] if preset_neutral_buttons else "transparent"
+    danger_ghost_text = t["btn_text"] if preset_neutral_buttons else t["danger_ghost_text"]
+    danger_ghost_border = t["btn_border"] if preset_neutral_buttons else t["danger_ghost_border"]
+    danger_ghost_hover_bg = t["btn_hover"] if preset_neutral_buttons else t["danger_ghost_hover_bg"]
+    danger_ghost_hover_text = t["btn_text"] if preset_neutral_buttons else t["danger_ghost_hover_text"]
+    danger_ghost_hover_border = t["btn_border"] if preset_neutral_buttons else t["danger_ghost_hover_border"]
     return dedent(
         f"""
         QMainWindow,
@@ -451,7 +541,7 @@ def build_app_qss(theme: dict | None = None) -> str:
 
         QWidget {{
             color: {t['text_primary']};
-            font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+            font-family: {UI_FONT_FAMILY};
             font-size: {FONT_SIZES['normal']}px;
         }}
 
@@ -468,8 +558,16 @@ def build_app_qss(theme: dict | None = None) -> str:
 
         QFrame[role="header"] {{
             background-color: {t['bg_secondary']};
-            border: 1px solid {t['divider']};
-            border-radius: 4px;
+            border: none;
+            border-bottom: 1px solid {t['divider']};
+            border-radius: 0px;
+        }}
+
+        QFrame[role="workspaceToolbar"] {{
+            background-color: {t['bg_secondary']};
+            border: none;
+            border-bottom: 1px solid {t['divider']};
+            border-radius: 0px;
         }}
 
         QFrame[role="sidebar"] {{
@@ -480,8 +578,14 @@ def build_app_qss(theme: dict | None = None) -> str:
 
         QFrame[role="rightPanel"] {{
             background-color: {t['bg_secondary']};
-            border: 1px solid {t['border_default']};
-            border-radius: 6px;
+            border: none;
+            border-left: 1px solid {t['divider']};
+            border-radius: 0px;
+        }}
+
+        QFrame[role="rightRail"] {{
+            background-color: {t['bg_secondary']};
+            border: none;
         }}
 
         QFrame[role="logDrawer"] {{
@@ -511,8 +615,8 @@ def build_app_qss(theme: dict | None = None) -> str:
 
         QFrame[role="chartCard"] {{
             background-color: {t['bg_primary']};
-            border: 1px solid {t['divider']};
-            border-radius: 6px;
+            border: none;
+            border-radius: 0px;
         }}
 
         QFrame[role="metricBlock"] {{
@@ -527,10 +631,17 @@ def build_app_qss(theme: dict | None = None) -> str:
             border-radius: 6px;
         }}
 
+        QFrame[role="positionItem"] {{
+            background-color: {t['bg_tertiary']};
+            border: 1px solid {t['divider']};
+            border-radius: 8px;
+        }}
+
         QFrame[role="chartToolbar"] {{
             background-color: {t['bg_secondary']};
-            border: 1px solid {t['divider']};
-            border-radius: 5px;
+            border: none;
+            border-bottom: 1px solid {t['divider']};
+            border-radius: 0px;
         }}
 
         QFrame[role="recentEventItem"] {{
@@ -710,6 +821,59 @@ def build_app_qss(theme: dict | None = None) -> str:
             font-size: {FONT_SIZES['small']}px;
         }}
 
+        QLabel[role="marketSummary"],
+        QLabel[role="marketMetric"],
+        QLabel[role="marketMetricPositive"],
+        QLabel[role="marketMetricNegative"] {{
+            color: {t['text_secondary']};
+            font-size: {FONT_SIZES['small']}px;
+            font-weight: 600;
+            padding: 0 8px;
+        }}
+
+        QLabel[role="marketMetricPositive"] {{ color: {t['green']}; }}
+        QLabel[role="marketMetricNegative"] {{ color: {t['red']}; }}
+
+        QLabel[role="headerState"],
+        QLabel[role="headerStatePaused"],
+        QLabel[role="headerStateLive"] {{
+            color: {t['text_tertiary']};
+            font-size: {FONT_SIZES['small']}px;
+            padding: 0 3px;
+            border: none;
+            background: transparent;
+        }}
+
+        QLabel[role="headerStatePaused"] {{ color: {t['danger']}; }}
+
+        QLabel[role="headerStateLive"] {{ color: {t['success']}; }}
+
+        QLabel[role="headerSession"] {{
+            color: {t['text_muted']};
+            font-size: {FONT_SIZES['small']}px;
+            padding: 0 4px;
+            border: none;
+            background: transparent;
+        }}
+
+        QGroupBox[role="embeddedSection"] {{
+            background-color: transparent;
+            border: none;
+            border-bottom: 1px solid {t['divider']};
+            border-radius: 0px;
+            margin-top: 18px;
+            padding: 8px 0px 12px 0px;
+        }}
+
+        QGroupBox[role="embeddedSection"]::title {{
+            subcontrol-origin: margin;
+            subcontrol-position: top left;
+            left: 0px;
+            padding: 0px;
+            color: {t['text_primary']};
+            font-weight: 700;
+        }}
+
         QPushButton {{
             background-color: {default_button_bg};
             color: {default_button_text};
@@ -745,8 +909,11 @@ def build_app_qss(theme: dict | None = None) -> str:
             background-color: {t['btn_bg']};
             color: {t['btn_text']};
             border: 1px solid {t['btn_border']};
-            border-radius: 14px;
-            padding: 5px 14px;
+            border-radius: 6px;
+            padding: 7px 15px;
+            min-height: 24px;
+            font-size: {FONT_SIZES['normal']}px;
+            font-weight: 700;
         }}
 
         QPushButton[role="primaryButton"]:hover {{
@@ -762,8 +929,11 @@ def build_app_qss(theme: dict | None = None) -> str:
             background-color: {t['btn_bg']};
             color: {t['btn_text']};
             border: 1px solid {t['btn_border']};
-            border-radius: 14px;
-            padding: 5px 14px;
+            border-radius: 6px;
+            padding: 7px 15px;
+            min-height: 24px;
+            font-size: {FONT_SIZES['normal']}px;
+            font-weight: 700;
         }}
 
         QPushButton[role="secondaryButton"]:hover {{
@@ -780,7 +950,7 @@ def build_app_qss(theme: dict | None = None) -> str:
             background-color: {t['success_soft']};
             color: {t['success_text']};
             border: 1px solid {t['success']};
-            border-radius: 14px;
+            border-radius: 6px;
             padding: 5px 14px;
         }}
 
@@ -796,7 +966,7 @@ def build_app_qss(theme: dict | None = None) -> str:
             background-color: {t['danger_soft']};
             color: {t['danger_text']};
             border: 1px solid {t['danger']};
-            border-radius: 14px;
+            border-radius: 6px;
             padding: 5px 14px;
         }}
 
@@ -845,6 +1015,51 @@ def build_app_qss(theme: dict | None = None) -> str:
             border-radius: 4px;
             font-size: {FONT_SIZES['small']}px;
             background-color: transparent;
+        }}
+
+        QPushButton[role="workspaceNavButton"] {{
+            background-color: {t['btn_bg']};
+            color: {t['text_secondary']};
+            border: 1px solid {t['border_default']};
+            border-radius: 6px;
+            padding: 6px 14px;
+            min-height: 20px;
+            font-weight: 600;
+        }}
+
+        QPushButton[role="workspaceNavButton"]:hover {{
+            color: {t['text_primary']};
+            background-color: {t['bg_hover']};
+            border-color: {t['border_strong']};
+        }}
+
+        QPushButton[role="workspaceNavButton"]:checked {{
+            color: {t['bg_primary']};
+            background-color: {t['accent']};
+            border-color: {t['accent']};
+        }}
+
+        QPushButton[role="headerAction"],
+        QToolButton[role="headerActionAccent"] {{
+            padding: 4px 10px;
+            min-height: 20px;
+            border-radius: 5px;
+            font-size: {FONT_SIZES['small']}px;
+            background-color: transparent;
+            color: {t['text_secondary']};
+            border: 1px solid {t['border_default']};
+        }}
+
+        QPushButton[role="headerAction"]:hover {{
+            color: {t['text']};
+            border-color: {t['border_strong']};
+            background-color: {t['bg_hover']};
+        }}
+
+        QToolButton[role="headerActionAccent"]:checked {{
+            color: {t['accent_text']};
+            border-color: {t['accent']};
+            background-color: {t['accent_soft']};
         }}
 
         QPushButton[role="toolTab"]:checked {{
@@ -920,6 +1135,119 @@ def build_app_qss(theme: dict | None = None) -> str:
             min-height: 22px;
         }}
 
+        QWidget[role="datePicker"] {{
+            background: transparent;
+            min-height: 42px;
+        }}
+
+        QWidget[role="datePicker"] QLineEdit#datePickerText {{
+            background-color: {t['input_bg']};
+            color: {t['text']};
+            border: 1px solid {t['border_default']};
+            border-right: none;
+            border-top-left-radius: 6px;
+            border-bottom-left-radius: 6px;
+            padding: 5px 10px;
+            min-width: 96px;
+            min-height: 30px;
+            max-height: 30px;
+        }}
+
+        QWidget[role="datePicker"] QToolButton#datePickerButton {{
+            background-color: {t['input_bg']};
+            color: {t['text_secondary']};
+            border: 1px solid {t['border_default']};
+            border-left: none;
+            border-top-right-radius: 6px;
+            border-bottom-right-radius: 6px;
+            min-width: 28px;
+            min-height: 40px;
+            max-height: 40px;
+        }}
+
+        QWidget[role="datePicker"] QToolButton#datePickerButton:hover {{
+            color: {t['text']};
+            background-color: {t['bg_hover']};
+        }}
+
+        QFrame#datePickerPopup {{
+            background-color: {t['bg_card']};
+            border: 1px solid {t['border_strong']};
+            border-radius: 12px;
+        }}
+
+        QFrame#datePickerPopup QLabel[role="calendarTitle"] {{
+            color: {t['text']};
+            font-size: {FONT_SIZES['medium']}px;
+            font-weight: 700;
+        }}
+
+        QFrame#datePickerPopup QToolButton[role="calendarNav"] {{
+            background-color: transparent;
+            color: {t['text_secondary']};
+            border: 1px solid transparent;
+            border-radius: 6px;
+            min-width: 30px;
+            min-height: 28px;
+            font-size: {FONT_SIZES['large']}px;
+        }}
+
+        QFrame#datePickerPopup QToolButton[role="calendarNav"]:hover {{
+            background-color: {t['bg_hover']};
+            color: {t['text']};
+            border-color: {t['border_default']};
+        }}
+
+        QCalendarWidget#datePickerCalendar {{
+            background-color: {t['bg_card']};
+            color: {t['text_secondary']};
+            border: none;
+            font-family: {UI_FONT_FAMILY};
+            font-size: {FONT_SIZES['normal']}px;
+        }}
+
+        QCalendarWidget#datePickerCalendar QWidget {{
+            background-color: {t['bg_card']};
+            color: {t['text_secondary']};
+            border: none;
+        }}
+
+        QCalendarWidget#datePickerCalendar QTableView,
+        QCalendarWidget#datePickerCalendar QAbstractItemView {{
+            background-color: {t['bg_card']};
+            color: {t['text_secondary']};
+            border: none;
+            outline: none;
+            gridline-color: transparent;
+            selection-background-color: {t['accent']};
+            selection-color: {t['bg_primary']};
+            font-family: {UI_FONT_FAMILY};
+            font-size: {FONT_SIZES['normal']}px;
+        }}
+
+        QCalendarWidget#datePickerCalendar QHeaderView::section {{
+            background-color: {t['bg_card']};
+            color: {t['text_secondary']};
+            border: none;
+            padding: 2px 0;
+            font-family: {UI_FONT_FAMILY};
+            font-size: {FONT_SIZES['small']}px;
+        }}
+
+        QFrame#datePickerPopup QPushButton[role="calendarToday"] {{
+            background-color: transparent;
+            color: {t['accent']};
+            border: 1px solid {t['border_default']};
+            border-radius: 6px;
+            padding: 4px 12px;
+            min-height: 20px;
+        }}
+
+        QFrame#datePickerPopup QPushButton[role="calendarToday"]:hover {{
+            background-color: {t['accent_soft']};
+            border-color: {t['accent']};
+        }}
+
         QLineEdit:focus,
         QComboBox:focus,
         QDateEdit:focus,
@@ -989,7 +1317,7 @@ def build_app_qss(theme: dict | None = None) -> str:
             background-color: {t['bg_tertiary']};
             color: {t['text_secondary']};
             border: 1px solid {t['border_default']};
-            border-radius: 10px;
+            border-radius: 5px;
             padding: 4px 8px;
             spacing: 0;
         }}
@@ -1303,11 +1631,14 @@ LOCAL_STYLE_BUTTON_ROLES = (
     "compactButton",
     "dangerGhostButton",
     "timeframeChip",
+    "headerAction",
+    "headerActionAccent",
+    "workspaceNavButton",
 )
 
 # Non-trade roles that share the neutral "raised dark pill" look.
 _NEUTRAL_PILL_ROLES = ("primaryButton", "secondaryButton", "dangerGhostButton")
-_NEUTRAL_CHIP_ROLES = ("intervalChip", "compactButton", "timeframeChip")
+_NEUTRAL_CHIP_ROLES = ("intervalChip", "compactButton", "timeframeChip", "headerAction")
 
 
 def role_button_local_qss(role: str, theme: dict | None = None, *, widget: str = "QPushButton") -> str:
@@ -1318,9 +1649,22 @@ def role_button_local_qss(role: str, theme: dict | None = None, *, widget: str =
     """
     t = normalize_theme_settings(theme)
 
+    if role == "workspaceNavButton":
+        return dedent(
+            f"""
+            {widget} {{
+                background-color: {t['btn_bg']}; color: {t['text_secondary']};
+                border: 1px solid {t['border_default']}; border-radius: 6px;
+                padding: 6px 14px; min-height: 20px; font-weight: 600;
+            }}
+            {widget}:hover {{ background-color: {t['bg_hover']}; color: {t['text']}; border-color: {t['border_strong']}; }}
+            {widget}:checked {{ background-color: {t['accent']}; color: {t['bg_primary']}; border-color: {t['accent']}; }}
+            """
+        ).strip()
+
     if role in _NEUTRAL_PILL_ROLES or role in _NEUTRAL_CHIP_ROLES:
         chip = role in _NEUTRAL_CHIP_ROLES
-        radius = 10 if chip else 14
+        radius = 4 if chip else 6
         padding = "3px 12px" if chip else "5px 14px"
         min_h = 18 if chip else 22
         min_w = 40 if chip else 0
@@ -1342,6 +1686,20 @@ def role_button_local_qss(role: str, theme: dict | None = None, *, widget: str =
             {widget}:disabled {{ color: {t['text_disabled']}; background-color: {t['bg_tertiary']}; border-color: {t['divider']}; }}
             """
         ).strip()
+    if role == "headerActionAccent":
+        return dedent(
+            f"""
+            {widget} {{
+                background-color: transparent;
+                color: {t['text_secondary']};
+                border: 1px solid {t['border_default']};
+                border-radius: 5px;
+                padding: 4px 10px;
+                min-height: 20px;
+            }}
+            {widget}:checked {{ background-color: {t['accent_soft']}; color: {t['accent_text']}; border-color: {t['accent']}; }}
+            """
+        ).strip()
     if role == "successButton":
         return dedent(
             f"""
@@ -1349,7 +1707,7 @@ def role_button_local_qss(role: str, theme: dict | None = None, *, widget: str =
                 background-color: {t['success_soft']};
                 color: {t['success_text']};
                 border: 1px solid {t['success']};
-                border-radius: 14px;
+                border-radius: 6px;
                 padding: 5px 14px;
                 min-height: 22px;
                 font-weight: 650;
@@ -1365,7 +1723,7 @@ def role_button_local_qss(role: str, theme: dict | None = None, *, widget: str =
                 background-color: {t['danger_soft']};
                 color: {t['danger_text']};
                 border: 1px solid {t['danger']};
-                border-radius: 14px;
+                border-radius: 6px;
                 padding: 5px 14px;
                 min-height: 22px;
                 font-weight: 650;
@@ -1387,7 +1745,7 @@ def themed_input_qss(kind: str, theme: dict | None = None) -> str:
     t = normalize_theme_settings(theme)
     base = (
         f"background-color: {t['btn_bg']}; color: {t['btn_text']}; "
-        f"border: 1px solid {t['btn_border']}; border-radius: 12px; "
+        f"border: 1px solid {t['btn_border']}; border-radius: 5px; "
         f"padding: 5px 12px; min-height: 20px;"
     )
     if kind == "combo":
@@ -1411,6 +1769,21 @@ def themed_input_qss(kind: str, theme: dict | None = None) -> str:
             QDateEdit {{ {base} }}
             QDateEdit:hover {{ border-color: {t['accent']}; }}
             QDateEdit::drop-down {{ border: none; width: 18px; }}
+            QCalendarWidget QWidget {{ background-color: {t['bg_card']}; color: {t['text_primary']}; }}
+            QCalendarWidget QToolButton {{
+                background-color: transparent; color: {t['text_primary']}; border: none;
+                border-radius: 4px; padding: 5px;
+            }}
+            QCalendarWidget QToolButton:hover {{ background-color: {t['bg_hover']}; }}
+            QCalendarWidget QAbstractItemView {{
+                background-color: {t['bg_card']}; color: {t['text_primary']};
+                selection-background-color: {t['accent']}; selection-color: {t['accent_text']};
+                border: 1px solid {t['border_default']}; outline: none;
+            }}
+            QCalendarWidget QSpinBox {{
+                background-color: {t['input_bg']}; color: {t['text_primary']};
+                border: 1px solid {t['border_default']}; border-radius: 4px; padding: 3px;
+            }}
             """
         ).strip()
     if kind == "lineedit":
@@ -1427,7 +1800,7 @@ def themed_input_qss(kind: str, theme: dict | None = None) -> str:
                 background-color: {t['btn_bg']};
                 color: {t['btn_text']};
                 border: 1px solid {t['btn_border']};
-                border-radius: 10px;
+                border-radius: 5px;
                 padding: 4px 10px;
                 min-height: 16px;
             }}

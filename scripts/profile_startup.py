@@ -70,7 +70,7 @@ try:
         import main_app
         main_app.StorageManager = lambda: StorageManager(db_path)
         main_app.save_theme_settings = lambda _theme: None
-        main_app.load_theme_settings = lambda: dict(main_app.DEFAULT_THEME)
+        main_app.load_theme_settings = lambda: dict(app_config.DEFAULT_THEME)
 
         premium_method = main_app.MainWindow.request_premium_sample
         main_app.MainWindow.request_premium_sample = lambda self: None
@@ -92,6 +92,11 @@ try:
         window.close()
         app.processEvents()
         import logging
+        root_logger = logging.getLogger()
+        for handler in list(root_logger.handlers):
+            handler.flush()
+            handler.close()
+            root_logger.removeHandler(handler)
         logging.shutdown()
     result["ok"] = True
 except Exception as exc:

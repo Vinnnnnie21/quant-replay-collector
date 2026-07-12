@@ -14,6 +14,8 @@ except ImportError:  # pragma: no cover - package import path
 
 
 APP_SETTINGS_PATH = DATA_DIR / "app_settings.json"
+DEFAULT_RENDER_BACKEND = "hardware"
+RENDER_BACKENDS = ("hardware", "software")
 
 DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "language": "zh_CN",
@@ -24,6 +26,14 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "slippage_bps": None,
     "trade_notional": None,
     "initial_equity": None,
+    "right_panel_visible": True,
+    "right_panel_width": 360,
+    "right_panel_tab": 0,
+    "bottom_panel_visible": True,
+    "bottom_splitter_sizes": [720, 220],
+    "analysis_subtab": 0,
+    "cache_limit_gb": 5.0,
+    "render_backend": DEFAULT_RENDER_BACKEND,
 }
 
 SENSITIVE_KEYS = {
@@ -44,7 +54,12 @@ def sanitize_app_settings(settings: dict[str, Any] | None) -> dict[str, Any]:
             if str(key).strip().lower() in SENSITIVE_KEYS:
                 continue
             merged[key] = value
+    merged["render_backend"] = normalize_render_backend(merged.get("render_backend"))
     return merged
+
+
+def normalize_render_backend(value: Any) -> str:
+    return "software" if str(value or "").strip().lower() == "software" else DEFAULT_RENDER_BACKEND
 
 
 def build_app_settings_update(
@@ -58,6 +73,8 @@ def build_app_settings_update(
     slippage_bps: float,
     trade_notional: float,
     initial_equity: float,
+    cache_limit_gb: float | None = None,
+    render_backend: str | None = None,
 ) -> dict[str, Any]:
     settings = sanitize_app_settings(current)
     settings.update(
@@ -72,6 +89,10 @@ def build_app_settings_update(
             "initial_equity": initial_equity,
         }
     )
+    if cache_limit_gb is not None:
+        settings["cache_limit_gb"] = max(1.0, min(50.0, float(cache_limit_gb)))
+    if render_backend is not None:
+        settings["render_backend"] = normalize_render_backend(render_backend)
     return sanitize_app_settings(settings)
 
 

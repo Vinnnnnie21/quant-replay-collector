@@ -7,11 +7,13 @@ import pandas as pd
 
 try:
     from app_config import CACHE_DIR
+    from app_settings import load_app_settings
     from app_logger import get_logger
 except ImportError:  # pragma: no cover - package import path
     from ..app_config import CACHE_DIR
+    from ..app_settings import load_app_settings
     from ..app_logger import get_logger
-from .cache import KlineCache
+from .cache import DEFAULT_CACHE_LIMIT_BYTES, KlineCache
 from .client import MarketDataClient, format_request_error
 from .quality import DataQualityReport, assess_data_quality
 from .transforms import normalize_kline_df
@@ -26,6 +28,11 @@ class KlineLoader:
         self.cache = KlineCache(cache_dir)
         self.cache_dir = self.cache.cache_dir
         self.client = client or MarketDataClient()
+        try:
+            limit_gb = float(load_app_settings().get("cache_limit_gb", 5.0) or 5.0)
+        except Exception:
+            limit_gb = 5.0
+        self.cache_limit_bytes = int(max(1.0, min(50.0, limit_gb)) * 1024**3)
 
     def cache_path(self, symbol: str, interval: str, start_dt_bjt, end_dt_bjt) -> Path:
         return self.cache.path(symbol, interval, LoadRequest(symbol, interval, start_dt_bjt, end_dt_bjt))
@@ -93,35 +100,69 @@ class KlineLoader:
         if normalized_request.use_cache and cache_path.exists():
             try:
                 frame, report = self.read_cache(cache_path, normalized_request, symbol, interval)
-                return frame, f"Loaded cache {cache_path.name}; bars={len(frame)}; quality={report.data_quality_status}."
+                if not self.cache.missing_ranges(frame, normalized_request, interval):
+                    return frame, f"Loaded cache {cache_path.name}; bars={len(frame)}; quality={report.data_quality_status}."
+                progress("Exact-name cache is incomplete for the requested time range; checking coverage index.")
             except Exception as cache_error:
                 progress(f"Cache is unusable; downloading online instead: {cache_error}")
+        cached_frame = None
+        cached_paths: list[Path] = []
+        missing_ranges = []
+        if normalized_request.use_cache:
+            try:
+                cached_frame, cached_stats, cached_paths = self.cache.read_available(
+                    symbol, interval, normalized_request
+                )
+                missing_ranges = self.cache.missing_ranges(cached_frame, normalized_request, interval)
+                if not missing_ranges:
+                    frame, report = self._finalize(
+                        cached_frame, normalized_request, symbol, interval, "cache_range", cached_stats
+                    )
+                    return frame, (
+                        f"Loaded covered cache; files={len(cached_paths)}; bars={len(frame)}; "
+                        f"quality={report.data_quality_status}."
+                    )
+                progress(f"Cache partially covers request; downloading {len(missing_ranges)} missing range(s).")
+            except Exception:
+                cached_frame = None
+                cached_paths = []
+                missing_ranges = []
         try:
-            progress(f"Downloading Binance Futures klines: {symbol} {interval}.")
-            raw = self.client.download(symbol, interval, start_dt_bjt, end_dt_bjt, progress, cancelled)
+            download_ranges = missing_ranges or [(start_dt_bjt, end_dt_bjt)]
+            raw = []
+            for range_start, range_end in download_ranges:
+                progress(f"Downloading Binance Futures klines: {symbol} {interval} {range_start} - {range_end}.")
+                raw.extend(self.client.download(symbol, interval, range_start, range_end, progress, cancelled))
             if cancelled():
                 raise DataLoadCancelled("Loading cancelled.")
             if not raw:
                 raise ValueError(f"No klines returned for {symbol} {interval}.")
             progress("Parsing and cleaning downloaded klines.")
             raw_df = pd.DataFrame(raw, columns=BINANCE_RAW_COLUMNS)
+            if cached_frame is not None:
+                raw_df = pd.concat([cached_frame, raw_df], ignore_index=True)
             frame, stats = normalize_kline_df(raw_df, start_dt_bjt, end_dt_bjt, interval, "Binance download")
             progress("Validating kline data quality.")
-            frame, report = self._finalize(frame, normalized_request, symbol, interval, "binance_online", stats)
+            source = "cache+binance_online" if cached_frame is not None else "binance_online"
+            frame, report = self._finalize(frame, normalized_request, symbol, interval, source, stats)
             try:
                 self.cache.write_frame(cache_path, frame)
                 self._write_cache_manifest(cache_path, normalized_request, symbol, interval, report)
+                self.cache.enforce_limit(self.cache_limit_bytes or DEFAULT_CACHE_LIMIT_BYTES, protected={cache_path, *cached_paths})
                 cache_message = f"cache={cache_path.name}"
             except Exception as cache_error:
                 logger.warning("下载成功但缓存写入失败：%s", cache_error, exc_info=True)
                 cache_message = f"cache write failed: {cache_error}"
-            return frame, f"Downloaded bars={len(frame)}; quality={report.data_quality_status}; {cache_message}."
+            action = "Filled cache gaps" if cached_frame is not None else "Downloaded"
+            return frame, f"{action} bars={len(frame)}; quality={report.data_quality_status}; {cache_message}."
         except DataLoadCancelled:
             return pd.DataFrame(), "Loading cancelled."
         except Exception as online_error:
             if cache_path.exists():
                 try:
                     frame, report = self.read_cache(cache_path, normalized_request, symbol, interval)
+                    if self.cache.missing_ranges(frame, normalized_request, interval):
+                        raise ValueError("cached data does not fully cover the requested range")
                     return frame, (
                         f"Online load failed; using cache {cache_path.name}; bars={len(frame)}; "
                         f"quality={report.data_quality_status}; reason={format_request_error(online_error)}"

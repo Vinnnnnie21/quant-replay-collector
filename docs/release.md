@@ -93,7 +93,7 @@ Publish through a branch:
 
 ```powershell
 git switch -c release/v1.5.0
-git add .gitignore .github README.md docs quant_collector_app requirements.txt run_app.py scripts start.bat tests
+git add .gitignore .github README.md docs quant_collector_app requirements.txt run_app.py run_app.pyw scripts start.bat tests
 git status --short
 git commit -m "Prepare v1.5.0 release"
 git push -u origin release/v1.5.0

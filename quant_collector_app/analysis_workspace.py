@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import bisect
 import json
 import math
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -20,12 +22,28 @@ from performance_analysis import (
     smooth_curve_values,
     split_signed_curve,
 )
-from ui_style import COLORS, SPACING
+from ui_style import COLORS, SPACING, normalize_theme_settings
 from controllers.entry_annotation_controller import EntryAnnotationController
+from display_names import session_display_name
 from services.entry_research_service import EntryResearchService
 
 
 logger = get_logger(__name__)
+
+BJT = timezone(timedelta(hours=8))
+
+
+def _curve_timestamp(row: dict, fallback: int) -> float:
+    value = row.get("time") or row.get("created_at")
+    if value is None:
+        return float(fallback)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=BJT)
+        return parsed.timestamp()
+    except (TypeError, ValueError, OSError):
+        return float(fallback)
 
 AUDIT_COLUMNS = ["metric", "value"]
 AUDIT_METRICS = [
@@ -141,11 +159,15 @@ class SortableTableItem(QtWidgets.QTableWidgetItem):
 
 
 class AnalysisWorkspace(QtWidgets.QDialog):
-    def __init__(self, app_window, parent=None):
+    def __init__(self, app_window, parent=None, *, embedded: bool = False):
         super().__init__(parent or app_window)
         self.app_window = app_window
-        self.resize(1180, 760)
-        self.setSizeGripEnabled(True)
+        self.embedded = bool(embedded)
+        if self.embedded:
+            self.setWindowFlags(QtCore.Qt.Widget)
+        else:
+            self.resize(1180, 760)
+        self.setSizeGripEnabled(not self.embedded)
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.setAttribute(QtCore.Qt.WA_DeleteOnClose, False)
         self.last_research_dir: Path | None = None
@@ -162,6 +184,24 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self._build_ui()
         self.retranslate_ui()
         self._apply_button_theme()
+        self._apply_plot_theme()
+
+    def _apply_plot_theme(self) -> None:
+        theme = normalize_theme_settings(getattr(self.app_window, "theme_settings", None))
+        grid_alpha = max(0.0, min(1.0, theme["grid_alpha"] / 100.0))
+        for plot in (self.equityCurvePlot, self.performanceHistogramPlot):
+            plot.setBackground(theme["chart_bg"])
+            plot.showGrid(x=True, y=True, alpha=grid_alpha)
+            item = plot.getPlotItem()
+            for side in ("left", "bottom", "right", "top"):
+                axis = item.getAxis(side)
+                if axis is not None:
+                    axis.setPen(pg.mkPen(theme["chart_axis"]))
+                    axis.setTextPen(pg.mkPen(theme["chart_axis"]))
+        self.equityCurve.setPen(pg.mkPen(theme["success"], width=2))
+        self.performanceBaseline.setPen(
+            pg.mkPen(theme["text_tertiary"], style=QtCore.Qt.DashLine)
+        )
 
     def _apply_button_theme(self) -> None:
         """Give every button/input in the analysis panel the themed pill look."""
@@ -189,7 +229,8 @@ class AnalysisWorkspace(QtWidgets.QDialog):
 
     def _build_ui(self):
         root = QtWidgets.QVBoxLayout(self)
-        root.setContentsMargins(SPACING["lg"], SPACING["lg"], SPACING["lg"], SPACING["lg"])
+        margin = SPACING["md"] if self.embedded else SPACING["lg"]
+        root.setContentsMargins(margin, margin, margin, margin)
         root.setSpacing(SPACING["md"])
 
         header = QtWidgets.QHBoxLayout()
@@ -262,6 +303,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         summary_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
         summary_l.setSpacing(SPACING["md"])
         self.performanceMetricLabels = {}
+        self.performanceMetricCards = {}
         primary_metrics = (
             ("current_equity", "performance.current_equity"),
             ("total_pnl", "performance.total_pnl"),
@@ -276,25 +318,31 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             ("max_drawdown", "performance.max_drawdown"),
             ("trade_count", "performance.trade_count"),
         )
-        for metric_defs, primary in ((primary_metrics, True), (secondary_metrics, False)):
+        for metric_defs, primary, columns in ((primary_metrics, True, 4), (secondary_metrics, False, 3)):
             row_layout = QtWidgets.QGridLayout()
-            row_layout.setHorizontalSpacing(SPACING["lg"])
+            row_layout.setHorizontalSpacing(SPACING["xl"])
+            row_layout.setVerticalSpacing(SPACING["md"])
             for index, (key, label_key) in enumerate(metric_defs):
-                block = QtWidgets.QWidget()
+                block = QtWidgets.QFrame()
+                block.setProperty("role", "metricBlock")
                 block_l = QtWidgets.QVBoxLayout(block)
-                block_l.setContentsMargins(0, 0, 0, 0)
+                block_l.setContentsMargins(SPACING["md"], SPACING["sm"], SPACING["md"], SPACING["sm"])
+                block_l.setSpacing(SPACING["xs"])
                 name = QtWidgets.QLabel(self._tr(label_key))
                 name.setProperty("role", "muted")
+                name.setAlignment(QtCore.Qt.AlignCenter)
                 value = QtWidgets.QLabel("-")
                 value.setProperty("role", "metricValue" if primary else "statusValue")
+                value.setAlignment(QtCore.Qt.AlignCenter)
                 self.performanceMetricLabels[key] = value
+                self.performanceMetricCards[key] = block
                 block_l.addWidget(name)
                 block_l.addWidget(value)
-                row_layout.addWidget(block, 0, index)
+                row_layout.addWidget(block, index // columns, index % columns)
             summary_l.addLayout(row_layout)
         layout.addWidget(summary)
 
-        self.equityCurvePlot = pg.PlotWidget()
+        self.equityCurvePlot = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem(orientation="bottom")})
         self.equityCurvePlot.setMinimumHeight(280)
         self.equityCurvePlot.showGrid(x=True, y=True, alpha=0.16)
         self.equityCurvePlot.setMouseEnabled(x=True, y=True)
@@ -349,18 +397,31 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         distribution.setProperty("role", "statusBlock")
         distribution_l = QtWidgets.QHBoxLayout(distribution)
         stats = QtWidgets.QGridLayout()
+        stats.setHorizontalSpacing(SPACING["lg"])
+        stats.setVerticalSpacing(SPACING["md"])
         self.performanceDistributionLabels = {}
+        self.performanceDistributionCards = {}
         distribution_defs = (
             "win_count", "loss_count", "win_rate", "average_win", "average_loss",
             "largest_win", "largest_loss", "gross_profit", "gross_loss",
         )
         for index, key in enumerate(distribution_defs):
+            block = QtWidgets.QFrame()
+            block.setProperty("role", "metricBlock")
+            block_l = QtWidgets.QVBoxLayout(block)
+            block_l.setContentsMargins(SPACING["sm"], SPACING["sm"], SPACING["sm"], SPACING["sm"])
+            block_l.setSpacing(SPACING["xs"])
             name = QtWidgets.QLabel(self._tr(f"performance.distribution.{key}"))
             name.setProperty("role", "muted")
+            name.setAlignment(QtCore.Qt.AlignCenter)
             value = QtWidgets.QLabel("-")
+            value.setProperty("role", "statusValue")
+            value.setAlignment(QtCore.Qt.AlignCenter)
             self.performanceDistributionLabels[key] = value
-            stats.addWidget(name, index // 3, (index % 3) * 2)
-            stats.addWidget(value, index // 3, (index % 3) * 2 + 1)
+            self.performanceDistributionCards[key] = block
+            block_l.addWidget(name)
+            block_l.addWidget(value)
+            stats.addWidget(block, index // 3, index % 3)
         distribution_l.addLayout(stats, 1)
         histogram_panel = QtWidgets.QWidget()
         histogram_l = QtWidgets.QVBoxLayout(histogram_panel)
@@ -382,6 +443,10 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.performanceHistogramPlot.showGrid(x=False, y=True, alpha=0.12)
         self.performanceHistogram = pg.BarGraphItem(x=[], height=[], width=0.75)
         self.performanceHistogramPlot.addItem(self.performanceHistogram)
+        self.performanceHistogramZeroLine = pg.InfiniteLine(
+            angle=0, pen=pg.mkPen(COLORS["text_tertiary"], style=QtCore.Qt.DashLine)
+        )
+        self.performanceHistogramPlot.addItem(self.performanceHistogramZeroLine)
         histogram_l.addWidget(self.performanceHistogramPlot, 1)
         distribution_l.addWidget(histogram_panel, 1)
         layout.addWidget(distribution)
@@ -390,9 +455,20 @@ class AnalysisWorkspace(QtWidgets.QDialog):
 
     def _populate_performance_sessions(self) -> None:
         current_id = str(getattr(self.app_window, "session_id", "") or "")
+        symbol_box = getattr(self.app_window, "symbolBox", None)
+        interval_box = getattr(self.app_window, "intervalBox", None)
+        start_edit = getattr(self.app_window, "startDate", None)
+        end_edit = getattr(self.app_window, "endDate", None)
+        current_label = session_display_name(
+            symbol=symbol_box.currentText() if symbol_box is not None else "-",
+            interval=interval_box.currentText() if interval_box is not None else "-",
+            start=start_edit.date().toString("yyyy-MM-dd") if start_edit is not None else "-",
+            end=end_edit.date().toString("yyyy-MM-dd") if end_edit is not None else "-",
+        )
         self.performanceSessionBox.blockSignals(True)
         self.performanceSessionBox.clear()
-        self.performanceSessionBox.addItem(self._tr("performance.current_session"), current_id)
+        self.performanceSessionBox.addItem(current_label, current_id)
+        label_counts = {current_label: 1}
         storage = getattr(self.app_window, "storage", None)
         if storage is not None and hasattr(storage, "fetch_table"):
             try:
@@ -403,7 +479,9 @@ class AnalysisWorkspace(QtWidgets.QDialog):
                 session_id = str(session.get("session_id") or "")
                 if not session_id or session_id == current_id:
                     continue
-                label = f"{session.get('symbol') or '-'} {session.get('interval') or '-'} | {session_id[-8:]}"
+                base_label = session_display_name(session)
+                label_counts[base_label] = label_counts.get(base_label, 0) + 1
+                label = base_label if label_counts[base_label] == 1 else f"{base_label} · #{label_counts[base_label]}"
                 self.performanceSessionBox.addItem(label, session_id)
         self.performanceSessionBox.blockSignals(False)
 
@@ -418,11 +496,33 @@ class AnalysisWorkspace(QtWidgets.QDialog):
                 self.tradePnlTable.scrollToItem(item)
                 return
 
+    @staticmethod
+    def _set_performance_value_tone(label: QtWidgets.QLabel, number: float, *, zero_is_negative: bool = False) -> None:
+        if not math.isfinite(number):
+            color = COLORS["text_secondary"]
+        elif number > 0:
+            color = COLORS["success"]
+        elif number < 0 or zero_is_negative:
+            color = COLORS["danger"]
+        else:
+            color = COLORS["text_secondary"]
+        label.setStyleSheet(f"color: {color};")
+
     def _on_performance_curve_mouse_moved(self, scene_pos) -> None:
         if not self.equityCurvePlot.sceneBoundingRect().contains(scene_pos):
             return
         point = self.equityCurvePlot.getPlotItem().vb.mapSceneToView(scene_pos)
-        self._update_performance_hover(int(round(point.x())))
+        x_values = getattr(self, "_performanceCurveX", [])
+        if not x_values:
+            return
+        insertion = bisect.bisect_left(x_values, float(point.x()))
+        if insertion <= 0:
+            index = 0
+        elif insertion >= len(x_values):
+            index = len(x_values) - 1
+        else:
+            index = insertion if abs(x_values[insertion] - point.x()) < abs(x_values[insertion - 1] - point.x()) else insertion - 1
+        self._update_performance_hover(index)
 
     def _update_performance_hover(self, index: int) -> None:
         rows = getattr(self, "_performanceHoverRows", [])
@@ -565,10 +665,23 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         for key, value in metric_values.items():
             label = self.performanceMetricLabels[key]
             label.setText(value)
-            if key in signed_metric_keys:
-                number = signed_values[key]
-                color = COLORS["success"] if number > 0 else COLORS["danger"] if number < 0 else COLORS["text_secondary"]
-                label.setStyleSheet(f"color: {color};")
+            number = signed_values.get(key, float("nan"))
+            if key == "sharpe":
+                number = raw_metrics["sharpe_ratio"] if raw_metrics["sharpe_ratio"] is not None else float("nan")
+                self._set_performance_value_tone(label, number, zero_is_negative=True)
+            elif key == "payoff":
+                number = raw_metrics["payoff_ratio"] if raw_metrics["payoff_ratio"] is not None else float("nan")
+                self._set_performance_value_tone(label, number - 1.0 if math.isfinite(number) else number)
+            elif key == "win_rate":
+                number = raw_metrics["win_rate_pct"]
+                self._set_performance_value_tone(label, number - 50.0 if math.isfinite(number) else number)
+            elif key == "max_drawdown":
+                number = raw_metrics["max_drawdown_pct"] if raw_metrics["max_drawdown_pct"] is not None else float("nan")
+                self._set_performance_value_tone(label, number)
+            elif key in signed_metric_keys:
+                self._set_performance_value_tone(label, number)
+            else:
+                label.setStyleSheet("")
 
         self.equityCurveData = list(snapshot["equity_values"])
         self.equityCurve.setData([], [])
@@ -578,11 +691,13 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         curve_mode = str(self.performanceCurveMode.currentData() or "equity")
         curve_values = snapshot["pnl_values"] if curve_mode == "pnl" else snapshot["equity_values"]
         display_curve_values = smooth_curve_values(curve_values, window=5)
+        curve_x = [_curve_timestamp(row, index) for index, row in enumerate(equity_rows)]
+        self._performanceCurveX = curve_x
         baseline = 0.0 if curve_mode == "pnl" else initial
         self.performanceBaseline.setValue(baseline)
         for side, points in split_signed_curve(display_curve_values, baseline):
             item = self.equityCurvePlot.plot(
-                [point[0] for point in points],
+                [curve_x[int(point[0])] for point in points],
                 [point[1] for point in points],
                 pen=pg.mkPen(COLORS["success"] if side == "positive" else COLORS["danger"], width=2),
                 antialias=True,
@@ -609,7 +724,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
                     continue
                 marker_spots.append(
                     {
-                        "pos": (float(curve_index), float(y_value)),
+                        "pos": (float(curve_x[curve_index]), float(y_value)),
                         "data": trade_id,
                         "symbol": symbol,
                         "brush": pg.mkBrush(color),
@@ -631,18 +746,28 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             "gross_loss": _fmt_money(distribution["gross_loss"]),
         }
         for key, value in distribution_values.items():
-            self.performanceDistributionLabels[key].setText(value)
+            label = self.performanceDistributionLabels[key]
+            label.setText(value)
+            number = distribution[key] if key in distribution else raw_metrics["win_rate_pct"]
+            if key in {"loss_count", "average_loss", "largest_loss", "gross_loss"}:
+                self._set_performance_value_tone(label, -abs(float(number)))
+            elif key == "win_rate":
+                self._set_performance_value_tone(label, float(number) - 50.0)
+            else:
+                self._set_performance_value_tone(label, float(number))
 
         pnls = np.asarray(snapshot["closed_pnls"], dtype=float)
         if pnls.size:
-            bin_count = min(12, max(3, int(math.sqrt(pnls.size)) + 1))
-            counts, edges = np.histogram(pnls, bins=bin_count)
-            centers = (edges[:-1] + edges[1:]) / 2.0
-            width = max(1e-9, float(edges[1] - edges[0]) * 0.82)
-            brushes = [pg.mkBrush(COLORS["success"] if center >= 0 else COLORS["danger"]) for center in centers]
-            self.performanceHistogram.setOpts(x=centers, height=counts, width=width, brushes=brushes)
+            trade_numbers = np.arange(1, pnls.size + 1, dtype=float)
+            brushes = [pg.mkBrush(COLORS["success"] if pnl >= 0 else COLORS["danger"]) for pnl in pnls]
+            self.performanceHistogram.setOpts(x=trade_numbers, height=pnls, width=0.65, brushes=brushes)
+            self.performanceHistogramPlot.getAxis("bottom").setTicks([
+                [(float(number), str(int(number))) for number in trade_numbers]
+            ])
+            self.performanceHistogramPlot.setXRange(0.4, float(pnls.size) + 0.6, padding=0)
         else:
             self.performanceHistogram.setOpts(x=[], height=[], width=0.75)
+            self.performanceHistogramPlot.getAxis("bottom").setTicks([])
 
         trade_filter = str(self.performanceTradeFilter.currentData() or "all")
         side_filter = str(self.performanceSideFilter.currentData() or "ALL")
@@ -1560,7 +1685,10 @@ class AnalysisWorkspace(QtWidgets.QDialog):
 
     def refresh(self):
         session_id = getattr(self.app_window, "session_id", None)
-        self.sessionLabel.setText(self._tr("workspace.session").format(session_id=session_id) if session_id else self._tr("no_session_data"))
+        session_text = self._tr("workspace.session").format(session_id=session_id) if session_id else self._tr("no_session_data")
+        if bool(getattr(self.app_window, "playing", False)):
+            session_text = f"{session_text} · {'实时更新中' if self._language() == 'zh_CN' else 'Live'}"
+        self.sessionLabel.setText(session_text)
         for method_name in ("_refresh_tables", "_refresh_performance_summary", "_refresh_premium_plot"):
             method = getattr(self.app_window, method_name, None)
             if callable(method):

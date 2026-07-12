@@ -20,9 +20,9 @@ It also provides a research-only backtesting path. Backtests use historical bars
 
 ## Replay Trading And Performance / 回放交易与绩效
 
-The replay workspace supports exchange-style free pan and zoom, an explicit follow-latest mode, a current-price badge on the right price axis, and discrete playback speeds from `0.1x` to `10x`. Left and right arrow keys change speed, while `Shift+Right` advances one bar. The main chart uses an OpenGL viewport when available and falls back to software rendering if hardware initialization fails; the current Windows target has been validated against a 120 Hz frame budget.
+The replay workspace supports exchange-style free pan and zoom, an explicit follow-latest mode, a current-price badge on the right price axis, and discrete playback speeds from `0.1x` to `10x`. Left and right arrow keys change speed, while `Shift+Right` advances one bar. The main chart uses GPU acceleration by default and falls back to software if OpenGL cannot initialize. In Settings → Storage, software mode remains available for driver troubleshooting and takes effect after restart.
 
-回放工作区支持接近交易所图表的自由拖动和缩放、可主动切换的“跟随最新”、右侧价格轴上的当前价格标签，以及 `0.1x` 到 `10x` 的离散播放速度。左右方向键用于调速，`Shift+右方向键` 前进一根 K 线。主图优先使用 OpenGL 视口，硬件初始化失败时自动回退到软件渲染；当前 Windows 目标机已经按 120 Hz 帧预算完成验证。
+回放工作区支持接近交易所图表的自由拖动和缩放、可主动切换的“跟随最新”、右侧价格轴上的当前价格标签，以及 `0.1x` 到 `10x` 的离散播放速度。左右方向键用于调速，`Shift+右方向键` 前进一根 K 线。主图默认启用 GPU 加速；OpenGL 初始化失败时自动回退软件渲染。若需要排查显卡驱动，可在“设置 → 存储”切换软件渲染，重启后生效。
 
 Simulated trading uses session-level initial equity, per-trade notional, fees, slippage and optional take-profit or stop-loss settings. Every open action creates an independent position. Manual closes remain available, automatic TP/SL checks every replayed bar moving forward, and opening or closing a position does not stop playback or disable follow-latest. These are local replay records only and never become exchange orders.
 
@@ -31,6 +31,16 @@ Simulated trading uses session-level initial equity, per-trade notional, fees, s
 The performance workspace shows current equity, total, realized and unrealized PnL, total return, win rate, payoff ratio, Sharpe ratio, maximum drawdown and closed-trade count. Its continuous equity curve includes unrealized PnL, signed curves and trade results use red/green presentation, and the closed-trade table includes fills, fees, return, holding time, TP/SL snapshots and exit reason. A labeled histogram summarizes realized PnL amounts by trade.
 
 交易绩效页展示当前权益、总盈亏、已实现与浮动盈亏、总收益率、胜率、盈亏比、夏普比率、最大回撤和已平仓交易数。连续权益曲线包含浮动盈亏，曲线和交易结果按正负使用红绿配色；已平仓表包含成交价、手续费、收益率、持仓时长、止盈止损快照和平仓原因，并通过带定义的柱状图汇总每笔已实现盈亏金额。
+
+## Windows Startup And Interface / Windows 启动与界面
+
+After installing dependencies, double-click `start.bat` from the repository root for the normal Windows launch. It uses `pythonw` and `run_app.pyw`, so no extra command-prompt window is opened. Use `python run_app.py` only when you want console output for diagnosis.
+
+安装依赖后，正常使用时请双击仓库根目录的 `start.bat`。它通过 `pythonw` 和 `run_app.pyw` 启动，不会额外弹出命令行窗口；只有排查问题时才用 `python run_app.py` 查看控制台输出。
+
+The desktop theme uses a compact exchange-style type scale: `12 / 13 / 14 / 18 px` for supporting text, body text, emphasized text and headings. The UI prefers Inter when available, then falls back to Windows and Chinese system fonts. No third-party font file is bundled.
+
+桌面界面采用紧凑的交易终端字阶：辅助信息、正文、强调信息和标题分别为 `12 / 13 / 14 / 18 px`。优先使用 Inter；系统没有该字体时自动回退到 Windows 和中文系统字体，不打包来源不明的第三方字体文件。
 
 ## Research Method / 研究方法
 
@@ -98,8 +108,12 @@ Use the project virtual environment from the repository root. The root `requirem
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe run_app.py
+.\start.bat
 ```
+
+For console diagnostics, use `\.venv\Scripts\python.exe run_app.py`.
+
+如需查看控制台诊断信息，请运行 `\.venv\Scripts\python.exe run_app.py`。
 
 You can also start the package entry point directly.
 

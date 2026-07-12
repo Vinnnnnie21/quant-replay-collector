@@ -10,11 +10,12 @@ def configure_high_refresh_viewport(
     *,
     viewport_factory: Callable[[], object] | None = None,
     platform_name: str | None = None,
+    backend: str = "hardware",
 ) -> bool:
-    """Install an OpenGL viewport for the main chart with a software fallback."""
+    """Use hardware acceleration by default, with an explicit software fallback."""
 
     platform = str(platform_name or QtGui.QGuiApplication.platformName()).lower()
-    if platform in {"offscreen", "minimal"}:
+    if str(backend or "").strip().lower() == "software" or platform in {"offscreen", "minimal"}:
         graphics_view.setViewportUpdateMode(QtWidgets.QGraphicsView.MinimalViewportUpdate)
         return False
     try:

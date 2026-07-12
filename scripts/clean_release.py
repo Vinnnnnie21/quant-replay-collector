@@ -23,6 +23,7 @@ ROOT_CONTENT = (
     "requirements.txt",
     "start.bat",
     "run_app.py",
+    "run_app.pyw",
 )
 EXCLUDED_DIR_NAMES = {
     ".agents",

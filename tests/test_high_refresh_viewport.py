@@ -39,7 +39,7 @@ class _GraphicsView:
         self.update_mode = mode
 
 
-def test_high_refresh_viewport_uses_opengl_and_full_updates_on_windows():
+def test_high_refresh_viewport_defaults_to_hardware_acceleration_on_windows():
     view = _GraphicsView()
 
     enabled = configure_high_refresh_viewport(
@@ -54,6 +54,21 @@ def test_high_refresh_viewport_uses_opengl_and_full_updates_on_windows():
     assert view.update_mode == QtWidgets.QGraphicsView.FullViewportUpdate
 
 
+def test_high_refresh_viewport_honors_explicit_software_compatibility_mode():
+    view = _GraphicsView()
+
+    enabled = configure_high_refresh_viewport(
+        view,
+        viewport_factory=_Viewport,
+        platform_name="windows",
+        backend="software",
+    )
+
+    assert enabled is False
+    assert view.viewport is None
+    assert view.update_mode == QtWidgets.QGraphicsView.MinimalViewportUpdate
+
+
 def test_high_refresh_viewport_falls_back_when_opengl_initialization_fails():
     view = _GraphicsView()
 
@@ -61,6 +76,7 @@ def test_high_refresh_viewport_falls_back_when_opengl_initialization_fails():
         view,
         viewport_factory=lambda: (_ for _ in ()).throw(RuntimeError("no OpenGL")),
         platform_name="windows",
+        backend="hardware",
     )
 
     assert enabled is False

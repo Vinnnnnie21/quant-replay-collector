@@ -245,8 +245,13 @@ def test_status_presenter_updates_combined_header_text():
     assert "BTCUSDT" in text
     assert "5m" in text
     assert "sample 5m" in text
-    assert "2024-04-01 00:00" in text
-    assert "O 70446.20" in text
-    assert "C 70534.80" in text
-    assert "+0.13%" in text
+    assert text == "BTCUSDT · 5m · sample 5m"
+    assert "2024-04-01 00:00" in window.headerTimeValue.text()
+    assert "O 70446.20" in window.headerOhlcValue.text()
+    assert "+0.13%" in window.headerDeltaValue.text()
+    assert window.headerPlayBadge.property("role") == "headerStatePaused"
     assert buttons["5m"].enabled is None
+
+    window.playing = True
+    update_header(window)
+    assert window.headerPlayBadge.property("role") == "headerStateLive"

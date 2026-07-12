@@ -46,10 +46,12 @@ class SettingsDialog(QtWidgets.QDialog):
         self.appearanceTab = self._appearance_tab()
         self.languageTab = self._language_tab()
         self.executionTab = self._execution_tab()
+        self.storageTab = self._storage_tab()
         self.aiTab = self._ai_tab()
         self.tabs.addTab(self.appearanceTab, "")
         self.tabs.addTab(self.languageTab, "")
         self.tabs.addTab(self.executionTab, "")
+        self.tabs.addTab(self.storageTab, "")
         self.tabs.addTab(self.aiTab, "")
         root.addWidget(self.tabs, stretch=1)
 
@@ -154,6 +156,26 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.addStretch(1)
         return tab
 
+    def _storage_tab(self) -> QtWidgets.QWidget:
+        tab = QtWidgets.QWidget()
+        form = QtWidgets.QFormLayout(tab)
+        form.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
+        form.setSpacing(SPACING["sm"])
+        self.cacheLimitSpin = self._double_spin(1.0, 50.0, 5.0)
+        self.cacheLimitSpin.setSuffix(" GB")
+        form.addRow("市场数据缓存上限", self.cacheLimitSpin)
+        self.renderBackendBox = QtWidgets.QComboBox()
+        self.renderBackendBox.addItem("GPU 加速（推荐）", "hardware")
+        self.renderBackendBox.addItem("软件渲染（兼容模式）", "software")
+        form.addRow("图表渲染", self.renderBackendBox)
+        hint = QtWidgets.QLabel("超过上限后清理最久未使用的数据；当前会话数据不会在使用中删除。")
+        hint.setWordWrap(True)
+        form.addRow("", hint)
+        render_hint = QtWidgets.QLabel("渲染模式在下次启动时生效；GPU 模式失败会自动回退到软件渲染。")
+        render_hint.setWordWrap(True)
+        form.addRow("", render_hint)
+        return tab
+
     def _color_row(self, key: str) -> QtWidgets.QWidget:
         row = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(row)
@@ -216,6 +238,10 @@ class SettingsDialog(QtWidgets.QDialog):
         self.slippageBpsSpin.setValue(float(self._main_widget_value("slippageBpsSpin", DEFAULT_SLIPPAGE_BPS)))
         self.tradeNotionalSpin.setValue(float(self._main_widget_value("tradeNotionalSpin", DEFAULT_TRADE_NOTIONAL)))
         self.initialEquitySpin.setValue(float(self._main_widget_value("initialEquitySpin", DEFAULT_INITIAL_EQUITY)))
+        self.cacheLimitSpin.setValue(float(self.app_settings.get("cache_limit_gb", 5.0) or 5.0))
+        render_backend = str(self.app_settings.get("render_backend") or "hardware")
+        idx = self.renderBackendBox.findData(render_backend)
+        self.renderBackendBox.setCurrentIndex(max(0, idx))
 
     def _on_language_changed(self):
         if hasattr(self, "languageBox"):
@@ -268,6 +294,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.tabs.setTabText(self.tabs.indexOf(self.appearanceTab), self._tr("appearance_settings"))
         self.tabs.setTabText(self.tabs.indexOf(self.languageTab), self._tr("language_settings"))
         self.tabs.setTabText(self.tabs.indexOf(self.executionTab), self._tr("execution_cost_settings"))
+        self.tabs.setTabText(self.tabs.indexOf(self.storageTab), "存储")
         self.tabs.setTabText(self.tabs.indexOf(self.aiTab), self._tr("ai_api_settings"))
         if self.okButton is not None:
             self.okButton.setText(self._tr("save_and_apply"))
@@ -312,6 +339,8 @@ class SettingsDialog(QtWidgets.QDialog):
             slippage_bps=self.slippageBpsSpin.value(),
             trade_notional=self.tradeNotionalSpin.value(),
             initial_equity=self.initialEquitySpin.value(),
+            cache_limit_gb=self.cacheLimitSpin.value(),
+            render_backend=self.renderBackendBox.currentData() or "hardware",
         )
         save_app_settings(settings)
         self.current_language = str(language)
