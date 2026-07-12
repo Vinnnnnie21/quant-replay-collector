@@ -1,168 +1,148 @@
-# Quant Replay Collector / 量化回放采集器
+# Quant Replay Collector（QRC）
 
-Quant Replay Collector (QRC) is a local Windows desktop research system for turning a discretionary trader's repeatable chart-reading process into a testable quantitative strategy. It records the exact chart context and manual actions, classifies them into recurring setups, builds decision-time features and later outcome labels for each setup, then supports rule extraction, statistical review and research-only backtests. It is not a live trading system, does not connect to exchange order APIs, does not place orders and does not provide investment advice.
+> 把主观交易策略变成可以记录、比较、检验和复现的数据。
 
-Quant Replay Collector（QRC）是一个本地 Windows 桌面研究系统，目标是把主观交易者可重复的看盘与决策过程，沉淀成可检验的量化策略。它记录当时的图表上下文和人工操作，将交易行为归类为反复出现的 setup，再为每一类行为构建决策时特征与后验结果标签，最终用于规则提炼、统计检验和研究型回测。它不是实盘交易系统；不连接交易所下单 API，不自动下单，也不提供投资建议。
+很多主观交易者能在盘面上认出机会，却很难回答三个问题：当时到底看到了什么，为什么出手，同类场景下是否总会做出相近的决定。没有这些记录，复盘容易变成事后解释，策略也很难写成规则。
+
+QRC 从这里入手。它逐根回放 K 线，保存用户当时的开仓、平仓、标签、备注和市场上下文；再把相似交易行为归到同一类 setup，分析每类行为对应的价格结构、波动、成交量、结果分布和执行习惯。研究者可以据此提出阈值、条件和退出规则，再用事件研究、时间序列诊断和回测去检验。
+
+QRC 不承诺把经验一键变成盈利策略。它解决的是前一步：把散落在交易者脑中的判断，整理成有样本、有定义、能被反驳的候选规则。
 
 ```mermaid
 flowchart LR
-    A[主观交易判断] --> B[逐根回放并记录操作]
-    B --> C[按 setup 归类交易行为]
+    A[主观判断] --> B[回放中记录交易行为]
+    B --> C[按标签与场景归类]
     C --> D[提取决策时可见特征]
-    D --> E[独立保存后验结果标签]
-    E --> F[规则检验、回测与策略迭代]
+    D --> E[单独计算后验结果]
+    E --> F[统计检验与一致性审计]
+    F --> G[形成候选规则并回测]
+    G --> B
 ```
 
-## What The Project Can Do / 项目能做什么
+## QRC 如何收集策略
 
-The app lets you replay market data bar by bar, pause at important candles, record manual open/close decisions, attach event tags and write notes. This keeps the original discretionary decision close to the chart context where it happened, instead of turning it into a vague after-the-fact memory.
+交易发生时，QRC 保存方向、价格、时间、手续费、滑点、仓位、止盈止损、标签和备注。标签可以描述深 V 反转、长下影、放量、假突破、二次探底等盘面语言。系统同时保留当根 K 线之前已经出现的行情，之后的收益、MFE、MAE 和最终结果另行计算。
 
-应用可以逐根回放市场 K 线，在关键 K 线处暂停，记录人工开仓和平仓决策，添加事件标签并写备注。这样做能把主观决策保留在它真实发生的图表上下文里，而不是事后只剩下模糊印象。
+这套分离很重要。决策特征只能来自当时可见的数据，后验结果只用于标签和评估。否则，未来行情会混进策略输入，最后得到一个看起来很好、实际上无法交易的规则。
 
-It turns replay observations into research artifacts: event windows, decision-time context features, post-event outcome labels, performance summaries, event-study tables, time-series diagnostics, backtest results and strategy-consistency reports. These exports are meant to help you study whether a repeated visual setup has stable behavior, enough samples and a clean research boundary.
+数据积累后，可以按 setup、方向、周期、市场状态或用户标签分组。QRC 不替用户编造交易逻辑，而是回答更具体的问题：哪些条件经常一起出现，哪些判断在相似场景中稳定，哪些规则只在少量样本上成立。
 
-它会把回放观察整理成研究文件：事件窗口、决策时特征、后验结果标签、绩效摘要、事件研究表、时间序列诊断、回测结果和策略一致性报告。这些导出内容用于研究一个反复出现的图形 setup 是否有稳定行为、样本量是否足够、研究边界是否干净。
+## 当前模块
 
-It also provides a research-only backtesting path. Backtests use historical bars and declared strategy parameters to compare rule behavior with manual samples. They are diagnostic simulations, not trading recommendations, and their assumptions about fill timing, fees, slippage and holding rules must be reviewed before interpreting results.
+| 模块 | 主要用途 |
+| --- | --- |
+| K 线回放与交易记录 | 逐根回放、自由缩放、调整速度，记录开平仓、止盈止损、标签和备注 |
+| 样本与特征构建 | 生成决策时特征、事件窗口、后验标签和可追溯的样本索引 |
+| 事件研究 | 比较事件前后收益、波动和路径，检查某类 setup 是否反复出现相近结果 |
+| 策略一致性审计 | 检查样本量、方向集中度、标签完整度、风险元数据和相似场景下的动作一致性 |
+| 金融时间序列分析 | 分析收益分布、自相关、白噪声、波动聚集、尾部风险、微观结构和多资产因子 |
+| 研究型回测 | 在明确手续费、滑点、成交时点和持仓规则后，对候选规则做历史模拟 |
+| 数据质量与泄漏审计 | 检查缺口、重复值、时间顺序、未来函数和训练/验证/测试边界 |
+| 交易绩效 | 统计权益、已实现与浮动盈亏、胜率、盈亏比、夏普比率和最大回撤 |
 
-项目也提供研究型回测路径。回测使用历史 K 线和声明好的策略参数，把规则行为和人工样本进行对比。它只是诊断性模拟，不是交易建议；成交时点、手续费、滑点和持仓规则这些假设，都需要在解读结果前先检查清楚。
+### 策略一致性审计
 
-## Replay Trading And Performance / 回放交易与绩效
+一致性审计不评价交易者“守不守纪律”，也不把固定模板当成标准答案。它先看样本结构：同类场景里，方向是否过度集中，标签和退出原因是否缺失，动作是否反复变化，样本量是否足以支持结论。
 
-The replay workspace supports exchange-style free pan and zoom, an explicit follow-latest mode, a current-price badge on the right price axis, and discrete playback speeds from `0.1x` to `10x`. Left and right arrow keys change speed, while `Shift+Right` advances one bar. The main chart uses GPU acceleration by default and falls back to software if OpenGL cannot initialize. In Settings → Storage, software mode remains available for driver troubleshooting and takes effect after restart.
+一致性高，只能说明行为比较稳定；它不等于策略有效，更不等于未来盈利。QRC 会把这条边界写进审计报告。
 
-回放工作区支持接近交易所图表的自由拖动和缩放、可主动切换的“跟随最新”、右侧价格轴上的当前价格标签，以及 `0.1x` 到 `10x` 的离散播放速度。左右方向键用于调速，`Shift+右方向键` 前进一根 K 线。主图默认启用 GPU 加速；OpenGL 初始化失败时自动回退软件渲染。若需要排查显卡驱动，可在“设置 → 存储”切换软件渲染，重启后生效。
+### 金融时间序列分析
 
-Simulated trading uses session-level initial equity, per-trade notional, fees, slippage and optional take-profit or stop-loss settings. Every open action creates an independent position. Manual closes remain available, automatic TP/SL checks every replayed bar moving forward, and opening or closing a position does not stop playback or disable follow-latest. These are local replay records only and never become exchange orders.
+时间序列模块研究行情本身。当前包含收益率分布、Jarque-Bera 正态性诊断、Ljung-Box 序列依赖、波动聚集、历史与 EWMA VaR/ES、尾部损失、短周期噪声近似诊断，以及多资产数据可用时的因子分析。
 
-模拟交易按会话保存初始权益、每笔名义金额、手续费、滑点以及可为空的止盈止损。每次开仓都会创建一笔独立持仓；既可以手动平仓，也可以在回放向前推进时逐根检查并触发止盈止损。开仓和平仓不会停止播放，也不会关闭“跟随最新”。这些记录只存在于本地回放会话，不会转成交易所订单。
+这些结果用于判断数据的统计性质和建模限制，不直接生成买卖信号。短周期 K 线也不能代替逐笔成交或盘口数据。
 
-The performance workspace shows current equity, total, realized and unrealized PnL, total return, win rate, payoff ratio, Sharpe ratio, maximum drawdown and closed-trade count. Its continuous equity curve includes unrealized PnL, signed curves and trade results use red/green presentation, and the closed-trade table includes fills, fees, return, holding time, TP/SL snapshots and exit reason. A labeled histogram summarizes realized PnL amounts by trade.
+## 当前界面
 
-交易绩效页展示当前权益、总盈亏、已实现与浮动盈亏、总收益率、胜率、盈亏比、夏普比率、最大回撤和已平仓交易数。连续权益曲线包含浮动盈亏，曲线和交易结果按正负使用红绿配色；已平仓表包含成交价、手续费、收益率、持仓时长、止盈止损快照和平仓原因，并通过带定义的柱状图汇总每笔已实现盈亏金额。
+### 交易回放与行为采集
 
-## Windows Startup And Interface / Windows 启动与界面
+![QRC 交易回放与行为采集](docs/screenshots/qrc-replay-workspace.png)
 
-After installing dependencies, double-click `start.bat` from the repository root for the normal Windows launch. It uses `pythonw` and `run_app.pyw`, so no extra command-prompt window is opened. Use `python run_app.py` only when you want console output for diagnosis.
+### 数据分析工作区
 
-安装依赖后，正常使用时请双击仓库根目录的 `start.bat`。它通过 `pythonw` 和 `run_app.pyw` 启动，不会额外弹出命令行窗口；只有排查问题时才用 `python run_app.py` 查看控制台输出。
+![QRC 数据分析工作区](docs/screenshots/qrc-analysis-workspace.png)
 
-The desktop theme uses a compact exchange-style type scale: `12 / 13 / 14 / 18 px` for supporting text, body text, emphasized text and headings. The UI prefers Inter when available, then falls back to Windows and Chinese system fonts. No third-party font file is bundled.
+### 策略一致性审计
 
-桌面界面采用紧凑的交易终端字阶：辅助信息、正文、强调信息和标题分别为 `12 / 13 / 14 / 18 px`。优先使用 Inter；系统没有该字体时自动回退到 Windows 和中文系统字体，不打包来源不明的第三方字体文件。
+![QRC 策略一致性审计](docs/screenshots/qrc-consistency-audit.png)
 
-## Research Method / 研究方法
+### 金融时间序列诊断
 
-The core research idea is simple: first record what the trader actually saw and decided, then extract only the information that was visible at that decision point, and only then compare the later outcome. This prevents future information from leaking into the input features and makes the exported dataset usable for later rule mining, event studies and model experiments.
+![QRC 金融时间序列诊断](docs/screenshots/qrc-time-series-analysis.png)
 
-核心研究思路很直接：先记录交易者当时看到了什么、做了什么判断；再只提取决策点之前已经可见的信息；最后再单独比较后续结果。这样可以避免把未来信息混进输入特征里，让导出的数据集能继续用于规则挖掘、事件研究和模型实验。
-
-```text
-replay K-lines
-  -> mark manual decisions and chart events
-  -> extract decision-time context features
-  -> store post-event outcome labels separately
-  -> audit data quality and leakage risk
-  -> run event studies, backtests and consistency review
-```
-
-```text
-回放 K 线
-  -> 标记人工决策和图表事件
-  -> 提取决策时可见特征
-  -> 单独保存后验结果标签
-  -> 审计数据质量和未来函数风险
-  -> 运行事件研究、回测和一致性检查
-```
-
-## Entry Logic Research / 开仓逻辑研究
-
-Entry Logic Research focuses on one narrower question: what does the user's long-entry judgment boundary look like in deep-V reversal setups? The supervised label is `human_decision`, not future return. `ENTRY` means the user would consider a long entry, `REJECT` means the setup is rejected, `UNCERTAIN` means the structure is unclear, and `UNLABELED` means the candidate still needs review.
-
-开仓逻辑研究只关注一个更窄的问题：用户在深 V 反转做多场景里的开仓判断边界到底长什么样？监督标签是 `human_decision`，不是未来收益。`ENTRY` 表示用户会考虑开多，`REJECT` 表示拒绝该 setup，`UNCERTAIN` 表示结构不清晰，`UNLABELED` 表示候选点还没有复核。
-
-Scores such as `human_entry_similarity` and `setup_confidence` are used to prioritize review and compare candidate setups with known manual decisions. They do not predict expected return, do not create buy/sell signals and should not be wired into live order execution.
-
-`human_entry_similarity` 和 `setup_confidence` 这类分数只用于安排复核优先级，或者把候选 setup 和已有人工决策做相似度比较。它们不预测期望收益，不生成买卖信号，也不应该接入实盘下单。
-
-## Research Boundaries / 研究边界
-
-Input features and outcome labels are physically separated. Decision-time features may use only current and historical OHLCV/context data. Forward returns, MFE, MAE, win/loss, manual final outcome, stop/take results and post-event windows belong to labels, reports or audits, not to model inputs.
-
-输入特征和结果标签是物理隔离的。决策时特征只能使用当前和历史 OHLCV 及上下文数据。未来收益、MFE、MAE、胜负、人工最终结果、止盈止损结果和事件后的窗口数据，只能进入标签、报告或审计，不能进入模型输入。
-
-This boundary is the main reason the project is useful: it preserves the trader's subjective judgment while still making the later analysis reproducible. If a rule looks good only because future data leaked into the input, it is not a research finding.
-
-这个边界是项目有用的关键：它保留了交易者的主观判断，同时让后续分析可以复现。如果一条规则看起来有效只是因为未来数据混进了输入，那就不是有效研究结论。
-
-## Screenshots / 截图
-
-The old static screenshots were removed because they no longer match the current workspace. New screenshots will be published only with the corresponding UI release, so the README does not present an outdated interface as current.
-
-旧的静态截图与当前工作区已不一致，现已移除。后续只会随对应 UI 版本发布新截图，避免 README 把旧界面当作当前界面展示。
-
-## Install And Run / 安装和运行
-
-Use the project virtual environment from the repository root. The root `requirements.txt` points to the application dependency list.
-
-在仓库根目录使用项目虚拟环境。根目录的 `requirements.txt` 会指向应用依赖清单。
+截图可通过以下命令从当前代码重新生成：
 
 ```powershell
+$env:QT_QPA_PLATFORM='windows'
+.\.venv\Scripts\python.exe scripts\capture_readme_screenshots.py
+```
+
+## 安装与启动
+
+QRC 面向 Windows 桌面环境。建议使用仓库内的虚拟环境：
+
+```powershell
+git clone https://github.com/Vinnnnnie21/quant-replay-collector.git
+cd quant-replay-collector
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\start.bat
 ```
 
-For console diagnostics, use `\.venv\Scripts\python.exe run_app.py`.
+`start.bat` 使用 `pythonw` 启动，不会额外弹出命令行窗口。排查启动问题时使用：
 
-如需查看控制台诊断信息，请运行 `\.venv\Scripts\python.exe run_app.py`。
+```powershell
+.\.venv\Scripts\python.exe run_app.py
+```
 
-You can also start the package entry point directly.
-
-也可以直接使用包入口启动。
+也可以直接运行包入口：
 
 ```powershell
 .\.venv\Scripts\python.exe -m quant_collector_app
 ```
 
-## Validate Before Publishing / 发布前验证
+## 数据与研究边界
 
-Run the same checks through `.venv` before publishing code or release artifacts. The clean release scripts build and inspect a public source package that excludes databases, logs, caches, virtual environments, backup folders, previous `dist/` output and local agent files.
+- 数据库、行情缓存、导出结果、日志和个人设置只保存在本地，默认不会提交到 Git。
+- 决策时特征与后验结果分开存放。未来收益、MFE、MAE、胜负和事件后窗口不能进入模型输入。
+- 回测结果依赖手续费、滑点、成交规则、样本区间和参数选择。历史表现不代表未来结果。
+- QRC 不连接交易所下单 API，不自动交易，也不提供投资建议。
 
-发布代码或发布包之前，用 `.venv` 跑同一套检查。干净发布脚本会生成并检查公开源码包，排除数据库、日志、缓存、虚拟环境、备份目录、旧 `dist/` 输出和本地 agent 文件。
+## 发布前检查
 
 ```powershell
 .\.venv\Scripts\python.exe -m compileall -q quant_collector_app tests
 .\.venv\Scripts\python.exe -m pytest -q
-.\.venv\Scripts\python.exe -m quant_collector_app.self_check --core
+.\.venv\Scripts\python.exe -m quant_collector_app.self_check --all
 .\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-CI
 .\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-CI
 ```
 
-## Project Structure / 项目结构
+## 代码与文档
 
-The main app code lives under `quant_collector_app/`. UI widgets are under `quant_collector_app/views/`. Research modules are under `quant_collector_app/research/`. Research-only backtesting is under `quant_collector_app/backtesting/`. SQLite migrations and repositories are under `quant_collector_app/storage_core/`. Release and diagnostic tools live in `scripts/`, tests live in `tests/`, and long-form documentation lives in `docs/`.
+- `quant_collector_app/`：桌面应用、研究模块、存储层和导出逻辑
+- `quant_collector_app/views/`：主窗口与界面组件
+- `quant_collector_app/analysis/`、`quant_collector_app/time_series_analysis/`：特征、审计和时间序列分析
+- `quant_collector_app/backtesting/`：研究型回测与时间切分
+- `scripts/`：诊断、性能分析、发布检查和截图生成
+- `tests/`：业务逻辑、数据边界、UI 合同和回归测试
 
-主要应用代码在 `quant_collector_app/`。UI 组件在 `quant_collector_app/views/`。研究模块在 `quant_collector_app/research/`。研究型回测在 `quant_collector_app/backtesting/`。SQLite 迁移和仓储层在 `quant_collector_app/storage_core/`。发布与诊断工具在 `scripts/`，测试在 `tests/`，长文档在 `docs/`。
+进一步阅读：
 
-## Documentation / 文档
+- [研究工作流](docs/research_workflow.md)
+- [每日研究流程](docs/research_daily_workflow.md)
+- [开仓逻辑研究](docs/research_entry_logic_modeling.md)
+- [策略一致性](docs/strategy_consistency.md)
+- [金融时间序列分析](docs/time_series_analysis.md)
+- [回测说明](docs/backtesting.md)
+- [系统架构](docs/architecture.md)
+- [测试说明](docs/testing.md)
 
-Read these documents for implementation details and research methodology.
+## English summary
 
-实现细节和研究方法可以继续阅读这些文档。
+QRC records discretionary trading decisions during bar-by-bar replay, groups similar behaviors into setups, separates decision-time features from later outcomes, and provides consistency audits, financial time-series diagnostics, event studies and research backtests. Its purpose is to turn a trader's repeatable judgment process into explicit hypotheses that can be tested with data.
 
-- [Architecture](docs/architecture.md) / [架构](docs/architecture.md)
-- [Backtesting](docs/backtesting.md) / [回测](docs/backtesting.md)
-- [Research workflow](docs/research_workflow.md) / [研究流程](docs/research_workflow.md)
-- [Daily research workflow](docs/research_daily_workflow.md) / [每日研究流程](docs/research_daily_workflow.md)
-- [Entry logic research](docs/research_entry_logic_modeling.md) / [开仓逻辑研究](docs/research_entry_logic_modeling.md)
-- [Strategy consistency](docs/strategy_consistency.md) / [策略一致性](docs/strategy_consistency.md)
-- [Testing](docs/testing.md) / [测试](docs/testing.md)
-- [Release hygiene](docs/release.md) / [发布卫生](docs/release.md)
+## 许可证
 
-## License / 许可证
-
-This project uses the MIT license. See [LICENSE](LICENSE).
-
-本项目使用 MIT 许可证，详见 [LICENSE](LICENSE)。
+[MIT License](LICENSE)
