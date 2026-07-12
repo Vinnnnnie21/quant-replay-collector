@@ -71,7 +71,7 @@ def main() -> int:
         window._render(force=True)
         _settle(1200)
 
-    captured = [_save(window, "qrc-replay-workspace.png")]
+    captured = [_save(window, "qrc-home.png")]
 
     window.open_analysis_workspace()
     _settle(1200)
