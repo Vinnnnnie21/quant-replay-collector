@@ -1,8 +1,17 @@
 # Quant Replay Collector / 量化回放采集器
 
-Quant Replay Collector is a local Windows desktop research system for replaying crypto K-line data and turning discretionary chart-reading decisions into structured research samples. It is designed for review, annotation, dataset building and strategy research. It is not a live trading system, does not connect to Binance order APIs, does not place orders and does not provide investment advice.
+Quant Replay Collector (QRC) is a local Windows desktop research system for turning a discretionary trader's repeatable chart-reading process into a testable quantitative strategy. It records the exact chart context and manual actions, classifies them into recurring setups, builds decision-time features and later outcome labels for each setup, then supports rule extraction, statistical review and research-only backtests. It is not a live trading system, does not connect to exchange order APIs, does not place orders and does not provide investment advice.
 
-Quant Replay Collector 是一个本地 Windows 桌面研究系统，用来回放加密货币 K 线，并把主观看盘决策整理成结构化研究样本。它面向复盘、标注、数据集构建和策略研究，不是实盘交易系统；它不连接 Binance 下单 API，不自动下单，也不提供投资建议。
+Quant Replay Collector（QRC）是一个本地 Windows 桌面研究系统，目标是把主观交易者可重复的看盘与决策过程，沉淀成可检验的量化策略。它记录当时的图表上下文和人工操作，将交易行为归类为反复出现的 setup，再为每一类行为构建决策时特征与后验结果标签，最终用于规则提炼、统计检验和研究型回测。它不是实盘交易系统；不连接交易所下单 API，不自动下单，也不提供投资建议。
+
+```mermaid
+flowchart LR
+    A[主观交易判断] --> B[逐根回放并记录操作]
+    B --> C[按 setup 归类交易行为]
+    C --> D[提取决策时可见特征]
+    D --> E[独立保存后验结果标签]
+    E --> F[规则检验、回测与策略迭代]
+```
 
 ## What The Project Can Do / 项目能做什么
 
@@ -88,15 +97,9 @@ This boundary is the main reason the project is useful: it preserves the trader'
 
 ## Screenshots / 截图
 
-The screenshots below show the main replay workspace, the research analysis workspace and the strategy consistency panel.
+The old static screenshots were removed because they no longer match the current workspace. New screenshots will be published only with the corresponding UI release, so the README does not present an outdated interface as current.
 
-下面的截图展示主回放工作区、研究分析工作区和策略一致性面板。
-
-![Main replay workspace / 主回放工作区](docs/screenshots/main_ui.png)
-
-![Research analysis workspace / 研究分析工作区](docs/screenshots/analysis_workspace.png)
-
-![Strategy consistency panel / 策略一致性面板](docs/screenshots/strategy_consistency.png)
+旧的静态截图与当前工作区已不一致，现已移除。后续只会随对应 UI 版本发布新截图，避免 README 把旧界面当作当前界面展示。
 
 ## Install And Run / 安装和运行
 
