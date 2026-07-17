@@ -9,7 +9,7 @@ from scripts.clean_release import DEFAULT_OUTPUT, RELEASE_VERSION
 
 
 def test_release_metadata_uses_one_version():
-    assert APP_VERSION == "1.5.1"
+    assert APP_VERSION == "1.5.2"
     assert quant_collector_app.__version__ == APP_VERSION
     assert RELEASE_VERSION == f"v{APP_VERSION}"
     assert DEFAULT_OUTPUT.name == f"QuantReplayCollector-v{APP_VERSION}-Clean"

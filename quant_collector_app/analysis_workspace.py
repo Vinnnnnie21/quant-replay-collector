@@ -1874,6 +1874,10 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             QtWidgets.QApplication.clipboard().setText(self.last_time_series_report_text)
 
     def retranslate_ui(self):
+        for panel_name in ("backtestPanel", "strategyConsistencyPanel"):
+            panel = getattr(self.app_window, panel_name, None)
+            if panel is not None and hasattr(panel, "retranslate_ui"):
+                panel.retranslate_ui()
         self.setWindowTitle(self._tr("data_analysis"))
         self.titleLabel.setText(self._tr("data_analysis"))
         self.btnRefresh.setText(self._tr("refresh"))
@@ -1962,7 +1966,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         session_id = getattr(self.app_window, "session_id", None)
         session_text = self._tr("workspace.session").format(session_id=session_id) if session_id else self._tr("no_session_data")
         if bool(getattr(self.app_window, "playing", False)):
-            session_text = f"{session_text} · {'实时更新中' if self._language() == 'zh_CN' else 'Live'}"
+            session_text = f"{session_text} · {self._tr('workspace.live')}"
         self.sessionLabel.setText(session_text)
         refresh_tables = getattr(self.app_window, "_refresh_tables", None)
         if callable(refresh_tables):

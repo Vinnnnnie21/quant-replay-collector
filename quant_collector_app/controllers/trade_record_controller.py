@@ -7,11 +7,13 @@ from PySide6 import QtCore, QtWidgets
 try:
     from app_logger import get_logger
     from display_names import trade_display_name
+    from presenters.formatters import side_label, status_label
     from render_state import RenderState
     from services.session_service import list_performance_session_options
 except ImportError:  # pragma: no cover - package import path
     from ..app_logger import get_logger
     from ..display_names import trade_display_name
+    from ..presenters.formatters import side_label, status_label
     from ..render_state import RenderState
     from ..services.session_service import list_performance_session_options
 
@@ -55,10 +57,18 @@ def load_trade_management_session_trades(window) -> list[dict]:
         window._operation_error(window.tr("trade_data_management_preview_failed"), exc)
         rows = []
     table = window.tradeManagementSessionTradeTable
+    language = str(getattr(window, "current_language", "zh_CN") or "zh_CN")
     table.setRowCount(len(rows))
     for row_index, row in enumerate(rows):
         for column, field in enumerate(_SESSION_TRADE_COLUMNS):
-            item = QtWidgets.QTableWidgetItem(_display_cell(row.get(field)))
+            value = row.get(field)
+            if field == "side":
+                text = side_label(value, language)
+            elif field == "status":
+                text = status_label(value, language)
+            else:
+                text = _display_cell(value)
+            item = QtWidgets.QTableWidgetItem(text)
             if column == 0:
                 item.setData(QtCore.Qt.UserRole, str(row.get("trade_id") or ""))
                 item.setData(QtCore.Qt.UserRole + 1, dict(row))
@@ -308,7 +318,14 @@ def preview_trade_data_range(window) -> dict | None:
     for sequence, row in enumerate(rows, start=1):
         display_row = dict(row)
         display_row["entry_bar_time_bjt"] = row.get("entry_time")
-        combo.addItem(trade_display_name(display_row, sequence), str(row["trade_id"]))
+        combo.addItem(
+            trade_display_name(
+                display_row,
+                sequence,
+                language=str(getattr(window, "current_language", "zh_CN") or "zh_CN"),
+            ),
+            str(row["trade_id"]),
+        )
         combo.setItemData(combo.count() - 1, dict(row), QtCore.Qt.UserRole + 1)
     if rows:
         window.tradeManagementPreviewLabel.setText(
@@ -360,7 +377,10 @@ def confirm_delete_selected_trade(window) -> None:
         return
     pnl = trade.get("net_pnl_quote")
     scope = window.tr("delete_selected_trade_scope").format(
-        side=trade.get("side") or "-",
+        side=side_label(
+            trade.get("side"),
+            str(getattr(window, "current_language", "zh_CN") or "zh_CN"),
+        ) or "-",
         entry=trade.get("entry_time") or "-",
         exit=trade.get("exit_time") or "-",
         pnl="-" if pnl is None else f"{float(pnl):.2f}",
@@ -436,7 +456,10 @@ def confirm_delete_session_trade(window) -> None:
     if not preview.get("trade_ids"):
         return
     scope = window.tr("delete_selected_trade_scope").format(
-        side=trade.get("side") or "-",
+        side=side_label(
+            trade.get("side"),
+            str(getattr(window, "current_language", "zh_CN") or "zh_CN"),
+        ) or "-",
         entry=trade.get("entry_time") or "-",
         exit=trade.get("exit_time") or "-",
         pnl="-" if trade.get("pnl") is None else f"{float(trade['pnl']):.2f}",

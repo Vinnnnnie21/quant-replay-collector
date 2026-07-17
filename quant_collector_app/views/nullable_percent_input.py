@@ -20,7 +20,7 @@ class NullablePercentInput(QtWidgets.QLineEdit):
         validator.setNotation(QtGui.QDoubleValidator.StandardNotation)
         self.setValidator(validator)
         self.setProperty("role", "numericInput")
-        self.setPlaceholderText("空")
+        self.setPlaceholderText("")
         self.setClearButtonEnabled(True)
         self.textChanged.connect(self._emit_value_changed)
 

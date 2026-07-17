@@ -25,6 +25,7 @@ try:
     )
     from views.widget_effects import apply_button_shadow, apply_role_button_shadows
     from views.windows_title_bar import apply_windows_title_bar_theme
+    from views.i18n_bindings import retranslate_bound_widgets
 except ImportError:  # pragma: no cover - package import path
     from ..app_icon import apply_application_icon, apply_header_logo
     from ..app_config import (
@@ -43,6 +44,7 @@ except ImportError:  # pragma: no cover - package import path
     )
     from .widget_effects import apply_button_shadow, apply_role_button_shadows
     from .windows_title_bar import apply_windows_title_bar_theme
+    from .i18n_bindings import retranslate_bound_widgets
 
 
 def _set_tab_text(tabs: QtWidgets.QTabWidget, widget: QtWidgets.QWidget | None, text: str) -> None:
@@ -56,14 +58,28 @@ def _set_tab_text(tabs: QtWidgets.QTabWidget, widget: QtWidgets.QWidget | None, 
 def retranslate_main_window_ui(window) -> None:
     if not hasattr(window, "btnExport"):
         return
+    retranslate_bound_widgets(window, window.tr)
+    for date_picker_name in ("startDate", "endDate"):
+        date_picker = getattr(window, date_picker_name, None)
+        if date_picker is not None and hasattr(date_picker, "retranslate_ui"):
+            date_picker.retranslate_ui(window.current_language)
+    locale = QtCore.QLocale(
+        QtCore.QLocale.English if window.current_language == "en_US" else QtCore.QLocale.Chinese,
+        QtCore.QLocale.UnitedStates if window.current_language == "en_US" else QtCore.QLocale.China,
+    )
+    for editor_name in ("tradeManagementStart", "tradeManagementEnd"):
+        editor = getattr(window, editor_name, None)
+        if editor is not None:
+            editor.setLocale(locale)
+
     window.setWindowTitle(f"{APP_NAME} v{APP_VERSION} - {window.tr('trading_replay')}")
     header_defaults = {
-        "symbol": window.tr("symbol", "品种"),
-        "time_interval": window.tr("display_interval", "显示周期"),
-        "sample_interval": window.tr("sample_interval", "样本周期"),
-        "kline_time": window.tr("kline_time", "当前K线"),
+        "symbol": window.tr("symbol"),
+        "time_interval": window.tr("display_interval"),
+        "sample_interval": window.tr("sample_interval"),
+        "kline_time": window.tr("kline_time"),
         "ohlc": "O/H/L/C",
-        "change": "涨跌",
+        "change": window.tr("ui.return_pct"),
     }
     for key, label in getattr(window, "headerMetricLabels", {}).items():
         label.setText(header_defaults.get(key, window.tr(key)))
@@ -127,11 +143,61 @@ def retranslate_main_window_ui(window) -> None:
     window.btnSettings.setText(window.tr("settings"))
     if hasattr(window, "btnReplayWorkspace"):
         window.btnReplayWorkspace.setText(window.tr("trading_replay"))
+    if hasattr(window, "speedLabel"):
+        current_speed = getattr(window, "current_speed", None)
+        if callable(current_speed):
+            speed = float(current_speed())
+        else:
+            stops = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)
+            index = max(0, min(int(window.speedSlider.value()), len(stops) - 1))
+            speed = stops[index]
+        window.speedLabel.setText(window.tr("ui.speed_format").format(speed=speed))
+    window.headerPlayBadge.setText(
+        f"● {window.tr('playing') if bool(getattr(window, 'playing', False)) else window.tr('paused')}"
+    )
+    window.headerViewBadge.setText(
+        f"● {window.tr('follow_latest') if bool(getattr(window, 'follow_latest', False)) else window.tr('free_view')}"
+    )
+    for label_name, key in (
+        ("headerEquityValue", "ui.header_equity"),
+        ("headerReturnValue", "ui.header_return"),
+    ):
+        label = getattr(window, label_name, None)
+        if label is not None:
+            current = label.text().strip()
+            value = current.split(maxsplit=1)[1] if " " in current else "-"
+            label.setText(window.tr(key).format(value=value))
+    if not hasattr(window, "df") or len(getattr(window, "df", ())) == 0:
+        window.status.setText(window.tr("ui.no_market_data"))
+    if hasattr(window, "btnToggleRightPanel"):
+        window.btnToggleRightPanel.setText(
+            window.tr("ui.collapse_panel")
+            if window.btnToggleRightPanel.isChecked()
+            else window.tr("ui.expand_panel")
+        )
+    if hasattr(window, "btnToggleBottomPanel"):
+        window.btnToggleBottomPanel.setText(
+            window.tr("ui.expand_results")
+            if window.btnToggleBottomPanel.isChecked()
+            else window.tr("ui.collapse_results")
+        )
+    if hasattr(window, "btnToggleDetail"):
+        window.btnToggleDetail.setText(
+            window.tr("ui.show_details")
+            if window.btnToggleDetail.isChecked()
+            else window.tr("ui.hide_details")
+        )
+    if hasattr(window, "btnToggleLog"):
+        window.btnToggleLog.setText(
+            window.tr("ui.expand_log")
+            if window.btnToggleLog.isChecked()
+            else window.tr("ui.collapse_log")
+        )
 
     if hasattr(window, "rightTabs"):
-        _set_tab_text(window.rightTabs, getattr(window, "rightTradePage", None), "交易" if window.current_language == "zh_CN" else "Trade")
-        _set_tab_text(window.rightTabs, getattr(window, "rightOverviewScroll", None), "状态" if window.current_language == "zh_CN" else "Status")
-        _set_tab_text(window.rightTabs, getattr(window, "rightAnnotationPage", None), "标注" if window.current_language == "zh_CN" else "Annotate")
+        _set_tab_text(window.rightTabs, getattr(window, "rightTradePage", None), window.tr("ui.trade"))
+        _set_tab_text(window.rightTabs, getattr(window, "rightOverviewScroll", None), window.tr("ui.status"))
+        _set_tab_text(window.rightTabs, getattr(window, "rightAnnotationPage", None), window.tr("ui.annotate"))
     if hasattr(window, "candleTitleLabel"):
         window.candleTitleLabel.setText(window.tr("current_bar_details"))
     if hasattr(window, "barDetailLabels"):
@@ -149,7 +215,13 @@ def retranslate_main_window_ui(window) -> None:
                 label.setText(window.tr(label_key))
     if hasattr(window, "bottomTabs"):
         for index, text in enumerate(
-            ("持仓与成交", "账户收益", window.tr("trading_performance"), window.tr("event_study"), "样本概览")
+            (
+                window.tr("ui.positions_and_trades"),
+                window.tr("ui.account_returns"),
+                window.tr("ui.performance_statistics"),
+                window.tr("event_study"),
+                window.tr("ui.sample_overview"),
+            )
         ):
             if index < window.bottomTabs.count():
                 window.bottomTabs.setTabText(index, text)

@@ -115,6 +115,22 @@ def test_i18n_missing_key_returns_default():
     assert tr("missing_key", "zh_CN") == "missing_key"
 
 
+def test_english_missing_key_never_falls_back_to_chinese(monkeypatch):
+    import i18n as resource_i18n
+
+    tables = {
+        "zh_CN": {"zh_only": "仅中文"},
+        "en_US": {},
+    }
+    monkeypatch.setattr(
+        resource_i18n,
+        "load_translations",
+        lambda language: tables[language],
+    )
+
+    assert resource_i18n.tr("zh_only", "en_US") == "zh_only"
+
+
 def test_app_i18n_is_resource_facade_only():
     import app_i18n
 
@@ -172,3 +188,155 @@ def test_literal_translation_keys_exist_in_resources():
                 if key not in table:
                     missing.append((str(path.relative_to(APP_DIR)), node.lineno, language, key))
     assert missing == []
+
+
+def test_primary_ui_modules_do_not_hardcode_user_visible_language_text():
+    paths = [
+        APP_DIR / "analysis_workspace.py",
+        APP_DIR / "app_health.py",
+        APP_DIR / "backtest_panel.py",
+        APP_DIR / "main_app.py",
+        APP_DIR / "premium_monitor.py",
+        APP_DIR / "settings_dialog.py",
+        APP_DIR / "controllers" / "analysis_controller.py",
+        APP_DIR / "controllers" / "daily_backup_controller.py",
+        APP_DIR / "controllers" / "export_task_controller.py",
+        APP_DIR / "controllers" / "historical_performance_controller.py",
+        APP_DIR / "controllers" / "market_data_controller.py",
+        APP_DIR / "controllers" / "replay_ui_controller.py",
+        APP_DIR / "controllers" / "trade_action_controller.py",
+        APP_DIR / "controllers" / "session_resume_controller.py",
+        APP_DIR / "controllers" / "trade_record_controller.py",
+        APP_DIR / "multi_timeframe_panel.py",
+        APP_DIR / "presenters" / "status_presenter.py",
+        APP_DIR / "presenters" / "table_presenter.py",
+        APP_DIR / "render" / "chart_render_adapter.py",
+        APP_DIR / "views" / "date_picker.py",
+        APP_DIR / "views" / "main_window_layout.py",
+        APP_DIR / "views" / "main_window_connections.py",
+        APP_DIR / "views" / "main_window_presentation.py",
+        APP_DIR / "views" / "nullable_percent_input.py",
+        APP_DIR / "views" / "performance_trade_table.py",
+        APP_DIR / "views" / "theme_dialog.py",
+        APP_DIR / "views" / "windows_title_bar.py",
+        APP_DIR / "strategy_consistency_panel.py",
+    ]
+    text_methods = {
+        "setText",
+        "setPlainText",
+        "setPlaceholderText",
+        "setToolTip",
+        "setWindowTitle",
+        "setTitle",
+        "addRow",
+        "_log",
+    }
+    widget_constructors = {
+        "QLabel",
+        "QPushButton",
+        "QToolButton",
+        "QCheckBox",
+        "QRadioButton",
+        "QGroupBox",
+    }
+    allowed = {"-", "●", "‹", "›", "▾", "#21b26f"}
+    hardcoded: list[tuple[str, int, str]] = []
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call) or not node.args:
+                continue
+            name = (
+                node.func.attr
+                if isinstance(node.func, ast.Attribute)
+                else getattr(node.func, "id", "")
+            )
+            indexes: tuple[int, ...] = ()
+            if name in text_methods or name in widget_constructors:
+                indexes = (0,)
+            elif name in {"addTab", "setTabText"}:
+                indexes = (1,)
+            elif name in {"getOpenFileName", "getExistingDirectory", "getColor"}:
+                indexes = (1,)
+            elif name in {"information", "warning", "critical", "question"}:
+                indexes = (1, 2)
+            for index in indexes:
+                if index >= len(node.args):
+                    continue
+                arg = node.args[index]
+                values: list[str] = []
+                if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+                    values.append(arg.value)
+                elif isinstance(arg, ast.JoinedStr):
+                    values.extend(
+                        part.value
+                        for part in ast.walk(arg)
+                        if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                        and (
+                            any("\u4e00" <= char <= "\u9fff" for char in part.value)
+                            or part.value.strip().lower() == "sample"
+                        )
+                    )
+                for raw_value in values:
+                    value = raw_value.strip()
+                    if value in allowed or not value or not any(char.isalpha() for char in value):
+                        continue
+                    hardcoded.append((str(path.relative_to(APP_DIR)), node.lineno, value))
+
+    assert hardcoded == []
+
+
+def test_english_translation_values_do_not_contain_chinese_characters():
+    translations = json.loads((TRANSLATION_DIR / "en_US.json").read_text(encoding="utf-8"))
+    mixed = {
+        key: value
+        for key, value in translations.items()
+        if any("\u4e00" <= char <= "\u9fff" for char in value)
+    }
+
+    assert mixed == {}
+
+
+def test_dynamic_analysis_and_backtest_column_keys_exist_in_both_languages():
+    from analysis_workspace import (
+        AUDIT_COLUMNS,
+        AUDIT_METRICS,
+        ENTRY_REVIEW_QUEUE_COLUMNS,
+        EVENT_STUDY_COLUMNS,
+        FACTOR_BINNING_COLUMNS,
+        FACTOR_IC_COLUMNS,
+        RULE_COLUMNS,
+        WALK_FORWARD_COLUMNS,
+    )
+    from presenters.backtest_presenter import (
+        COMPARISON_COLUMNS,
+        EQUITY_COLUMNS,
+        TRADE_COLUMNS,
+    )
+
+    research_columns = {
+        column
+        for group in (
+            AUDIT_COLUMNS,
+            AUDIT_METRICS,
+            ENTRY_REVIEW_QUEUE_COLUMNS,
+            EVENT_STUDY_COLUMNS,
+            FACTOR_BINNING_COLUMNS,
+            FACTOR_IC_COLUMNS,
+            RULE_COLUMNS,
+            WALK_FORWARD_COLUMNS,
+        )
+        for column in group
+    }
+    keys = {
+        *(f"research.column.{column}" for column in research_columns),
+        *(f"backtest.column.{column}" for column in TRADE_COLUMNS),
+        *(f"backtest.column.{column}" for column in EQUITY_COLUMNS),
+        *(f"backtest.comparison.{column}" for column in COMPARISON_COLUMNS),
+    }
+    missing = {
+        language: sorted(key for key in keys if tr(key, language) == key)
+        for language in ("zh_CN", "en_US")
+    }
+
+    assert missing == {"zh_CN": [], "en_US": []}

@@ -97,6 +97,29 @@ def test_build_dataset_summary_text_reports_feature_label_separation():
     assert "已隔离未来/结果字段" in text
 
 
+def test_analysis_summary_text_respects_english_language():
+    features = pd.DataFrame(
+        [{"event_id": "evt_1", "session_id": "sess_1", "pre_ret_20": 0.1}]
+    )
+
+    dataset_text, dataset_warning = build_dataset_summary_text(
+        features,
+        language="en_US",
+    )
+    performance_text, performance_warning = build_performance_summary_text(
+        [],
+        [],
+        10_000.0,
+        language="en_US",
+    )
+
+    assert dataset_warning is None
+    assert performance_warning is None
+    assert "Feature table rows/columns" in dataset_text
+    assert "Trade Performance Statistics" in performance_text
+    assert not any("\u4e00" <= char <= "\u9fff" for char in dataset_text + performance_text)
+
+
 def test_build_dataset_summary_text_returns_warning_on_failure():
     def broken_builder(_features):
         raise RuntimeError("dataset boom")

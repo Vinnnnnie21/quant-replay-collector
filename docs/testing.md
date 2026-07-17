@@ -13,8 +13,8 @@ python quant_collector_app/self_check.py --core
 python -m quant_collector_app.self_check --core
 python scripts/profile_startup.py
 python scripts/profile_imports.py
-python scripts/clean_release.py --output dist/QuantReplayCollector-v1.5.1-Clean
-python scripts/check_release_clean.py dist/QuantReplayCollector-v1.5.1-Clean
+python scripts/clean_release.py --output dist/QuantReplayCollector-v1.5.2-Clean
+python scripts/check_release_clean.py dist/QuantReplayCollector-v1.5.2-Clean
 ```
 
 Default pytest cache and temporary output are kept below `.test-artifacts/` so test runs do not create many directories at the repository root. The directory is local-only and excluded from release packages.

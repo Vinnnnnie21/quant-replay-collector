@@ -62,7 +62,7 @@ def test_main_window_start_export_task_delegates_thread_lifecycle_to_controller(
     assert started is True
     assert window.app_state.export.running is True
     assert window.btnExport.enabled is False
-    assert window.status.text == "Exporting session data..."
+    assert window.status.text == "正在导出会话数据……"
     assert controller.calls[0][0] == "test.db"
     request = controller.calls[0][1]
     assert request.target == Path(tmp_path / "exports")

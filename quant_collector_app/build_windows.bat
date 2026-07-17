@@ -47,6 +47,7 @@ if exist "assets\app_icon.ico" set "ICON_ARG=--icon=assets\app_icon.ico --add-da
     --onefile ^
     --windowed ^
     --name QRC ^
+    --add-data=translations;translations ^
     %ICON_ARG% main_app.py >> "%LOG_FILE%" 2>&1
 
 if errorlevel 1 (

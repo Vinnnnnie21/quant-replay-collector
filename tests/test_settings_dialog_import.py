@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 import pytest
 
@@ -74,3 +75,61 @@ def test_settings_numeric_inputs_do_not_change_on_wheel(monkeypatch):
     dialog.close()
     host.close()
     app.processEvents()
+
+
+def test_english_settings_dialog_contains_no_chinese_user_interface_text(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    import settings_dialog
+    from settings_dialog import SettingsDialog
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = QtWidgets.QWidget()
+    host.current_language = "en_US"
+    monkeypatch.setattr(
+        settings_dialog,
+        "load_app_settings",
+        lambda: {"language": "en_US", "render_backend": "hardware"},
+    )
+    dialog = SettingsDialog(host)
+    try:
+        texts: list[str] = [dialog.windowTitle()]
+        for widget in dialog.findChildren(QtWidgets.QWidget):
+            if isinstance(widget, (QtWidgets.QLabel, QtWidgets.QAbstractButton)):
+                texts.append(widget.text())
+            if isinstance(widget, QtWidgets.QTabWidget):
+                texts.extend(widget.tabText(index) for index in range(widget.count()))
+            if isinstance(widget, QtWidgets.QComboBox):
+                texts.extend(widget.itemText(index) for index in range(widget.count()))
+
+        assert sorted({text for text in texts if re.search(r"[\u3400-\u9fff]", text)}) == []
+    finally:
+        dialog.close()
+        host.close()
+        app.processEvents()
+
+
+def test_ai_provider_selector_shows_localized_labels_but_keeps_canonical_values(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    import settings_dialog
+    from settings_dialog import SettingsDialog
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = QtWidgets.QWidget()
+    host.current_language = "zh_CN"
+    monkeypatch.setattr(settings_dialog, "load_app_settings", lambda: {"language": "zh_CN"})
+    dialog = SettingsDialog(host)
+    try:
+        assert [
+            dialog.providerBox.itemData(index)
+            for index in range(dialog.providerBox.count())
+        ] == ["mock", "openai", "custom_http"]
+        assert [
+            dialog.providerBox.itemText(index)
+            for index in range(dialog.providerBox.count())
+        ] == ["模拟服务", "OpenAI", "自定义 HTTP 服务"]
+    finally:
+        dialog.close()
+        host.close()
+        app.processEvents()

@@ -413,14 +413,14 @@ def test_trade_management_session_catalog_lists_only_selected_session_trades():
     assert [item.text() for item in first] == [
         "trd_history",
         "BTCUSDT",
-        "LONG",
+        "多",
         "2026-01-01T00:01:00+08:00",
         "2026-01-01T00:02:00+08:00",
         "100",
         "102",
         "10",
         "20",
-        "CLOSED",
+        "已平仓",
     ]
 
 

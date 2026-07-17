@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.5.2 - 2026-07-17
+
+### Fixed
+
+- Replaced raw translation keys and hard-coded interface text with the shared Chinese and English resources across replay, analysis, settings, backtest, status, logs and background-task progress.
+- Prevented English mode from falling back to Chinese when a translation is unavailable.
+- Localized dynamic research-table columns, backtest validation errors, walk-forward warnings, trade state and performance output.
+- Bundled both translation JSON files into the Windows executable so packaged builds match source-mode language behavior.
+
+### Compatibility and boundaries
+
+- Technical identifiers such as symbols, intervals, API names and research field identifiers retain their canonical values.
+- Trading, replay, accounting, SQLite schema, saved sessions and research algorithms are unchanged.
+
 ## v1.5.1 - 2026-07-17
 
 ### Added

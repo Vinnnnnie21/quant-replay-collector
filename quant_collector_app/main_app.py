@@ -28,7 +28,7 @@ from app_config import (
     load_theme_settings,
 )
 from app_logger import get_logger, install_exception_hook
-from app_i18n import tr as i18n_tr
+from app_i18n import tr as i18n_tr, translate_for
 from app_settings import load_app_settings, save_app_settings
 from database_backup import backup_database_if_needed
 from execution import ExecutionSettings
@@ -159,6 +159,7 @@ from services.session_service import (
     should_autosave,
 )
 from services.export_service import build_export_task_request
+from services.ui_message_localizer import localize_worker_message
 from services.trade_use_cases import TradeActionResult, TradeUseCase
 from ui_watchdog import UiFreezeWatchdog
 from state import AppState
@@ -326,7 +327,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.daily_backup_controller.cancelled.connect(self._on_daily_backup_cancelled)
         self._restore_layout_preferences()
         self.analysis_refresh_controller.progress.connect(self.status.setText)
-        self.export_task_controller.progress.connect(self.status.setText)
+        self.export_task_controller.progress.connect(
+            lambda message: self.status.setText(
+                localize_worker_message(message, self.tr)
+            )
+        )
         self._connect()
         self._install_theme()
         self.apply_theme(self.theme_settings)
@@ -388,30 +393,34 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         except Exception as exc:
             logger.exception("Local database backup failed.")
-            message = f"数据库备份失败：{type(exc).__name__}: {exc}"
+            message = translate_for(self, "log.backup_failed").format(
+                error=f"{type(exc).__name__}: {exc}"
+            )
             self.status.setText(message)
             self._log(message)
             return {"status": "failed", "error": message}
 
     def _on_daily_backup_finished(self, result: dict[str, Any]) -> None:
         status = str(result.get("status") or "ok")
-        self._log(f"Daily database backup finished: {status}")
-        self._on_daily_backup_progress("本地数据库后台备份完成")
+        self._log(self.tr("log.backup_finished").format(status=status))
+        self._on_daily_backup_progress(self.tr("worker.backup.complete"))
 
     def _on_daily_backup_progress(self, message: str) -> None:
         active_tasks = set(getattr(self.task_lifecycle, "active_tasks", ()))
         if active_tasks - {"daily_backup"}:
             return
-        self.status.setText(message)
+        self.status.setText(
+            localize_worker_message(message, lambda key: translate_for(self, key))
+        )
 
     def _on_daily_backup_failed(self, error: str) -> None:
-        message = f"数据库备份失败：{error}"
+        message = self.tr("log.backup_failed").format(error=error)
         logger.error("Daily database backup failed: %s", error)
         self.status.setText(message)
         self._log(message)
 
     def _on_daily_backup_cancelled(self) -> None:
-        self._log("Daily database backup cancelled at a safe SQLite page boundary.")
+        self._log(self.tr("log.backup_cancelled"))
 
     def _finalize_shutdown(self) -> bool:
         for timer_name in ("timer", "autosave_timer", "premium_timer"):
@@ -471,6 +480,10 @@ class MainWindow(QtWidgets.QMainWindow):
         settings["language"] = self.current_language
         save_app_settings(settings)
         self.retranslate_ui()
+        if hasattr(self, "_refresh_tables"):
+            self._refresh_tables(include_heavy=False)
+        if hasattr(self, "detailText"):
+            self.detailText.setPlainText(self.tr("ui.no_details"))
         for attr in ("_analysis_workspace",):
             widget = getattr(self, attr, None)
             if widget is not None and hasattr(widget, "retranslate_ui"):
@@ -510,7 +523,7 @@ class MainWindow(QtWidgets.QMainWindow):
         dlg = ThemeDialog(self.theme_settings, self)
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             self.apply_theme(dlg.get_theme())
-            self._log('已应用主题设置。')
+            self._log(self.tr("log.theme_applied"))
 
     def open_settings_dialog(self):
         from settings_dialog import SettingsDialog
@@ -527,7 +540,7 @@ class MainWindow(QtWidgets.QMainWindow):
             pass
         if dlg.exec() == QtWidgets.QDialog.Accepted:
             self._update_header()
-            self._log("已应用设置。")
+            self._log(self.tr("log.settings_applied"))
 
     def open_analysis_workspace(self):
         from analysis_workspace import AnalysisWorkspace
@@ -568,7 +581,11 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             self._analysis_workspace.refresh()
         except Exception as exc:
-            self._log(f"数据分析页刷新失败：{type(exc).__name__}: {exc}")
+            self._log(
+                self.tr("log.analysis_workspace_refresh_failed").format(
+                    error=f"{type(exc).__name__}: {exc}"
+                )
+            )
         self.workspaceStack.setCurrentWidget(self._analysis_workspace)
         self.btnAnalysisWorkspace.setChecked(True)
 
@@ -630,7 +647,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def toggle_detail_panel(self, hidden: bool):
         self.detailText.setVisible(not hidden)
-        self.btnToggleDetail.setText('显示详情' if hidden else '隐藏详情')
+        self.btnToggleDetail.setText(
+            self.tr("ui.show_details") if hidden else self.tr("ui.hide_details")
+        )
 
     def toggle_log_drawer(self, collapsed: bool):
         self.log.setVisible(not collapsed)
@@ -638,12 +657,12 @@ class MainWindow(QtWidgets.QMainWindow):
         if collapsed:
             self.logDrawer.setMinimumHeight(32)
             self.logDrawer.setMaximumHeight(36)
-            self.btnToggleLog.setText("展开日志")
+            self.btnToggleLog.setText(self.tr("ui.expand_log"))
         else:
             expanded_height = max(160, min(260, int(max(1, self.height()) * 0.23)))
             self.logDrawer.setMinimumHeight(120)
             self.logDrawer.setMaximumHeight(expanded_height)
-            self.btnToggleLog.setText("折叠日志")
+            self.btnToggleLog.setText(self.tr("ui.collapse_log"))
 
     def toggle_symbol_panel(self, expanded: bool):
         self.symbolPanel.setVisible(expanded)
@@ -719,11 +738,15 @@ class MainWindow(QtWidgets.QMainWindow):
             finally:
                 self._restoring_session_settings = False
             self.restore_snapshot_pending = True
-            self._log(f"发现历史会话，准备恢复 会话ID={self.session_id}")
+            self._log(self.tr("log.session_restore_start").format(session_id=self.session_id))
             QtCore.QTimer.singleShot(100, lambda: self.load_data(restore=True))
         except Exception as e:
             logger.exception("恢复历史会话失败")
-            self._log(f"恢复会话失败：{type(e).__name__}: {e}")
+            self._log(
+                self.tr("log.session_restore_failed").format(
+                    error=f"{type(e).__name__}: {e}"
+                )
+            )
             self.session_id = self._new_id("sess")
 
     def refresh_replay_performance_sessions(self):
@@ -942,7 +965,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self._sync_equity_curve()
             self._refresh_tables()
         except Exception as e:
-            self._log(f"更新模拟成交参数失败：{type(e).__name__}: {e}")
+            self._log(
+                self.tr("log.execution_settings_failed").format(
+                    error=f"{type(e).__name__}: {e}"
+                )
+            )
 
     def _sync_equity_curve(self):
         from accounting import build_equity_curve
@@ -1089,9 +1116,11 @@ class MainWindow(QtWidgets.QMainWindow):
     def on_open_trade_selected(self):
         trade = self.selected_open_trade()
         if trade:
-            self.detailText.setPlainText(format_trade_detail(trade))
+            self.detailText.setPlainText(
+                format_trade_detail(trade, language=self.current_language)
+            )
         else:
-            self.detailText.setPlainText("无")
+            self.detailText.setPlainText(self.tr("ui.no_details"))
 
     def on_closed_trade_selected(self):
         trade_id = self._selected_id_from_table(self.closedTradesTable)
@@ -1099,7 +1128,9 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         trade = self._trade_by_id.get(trade_id)
         if trade:
-            self.detailText.setPlainText(format_trade_detail(trade))
+            self.detailText.setPlainText(
+                format_trade_detail(trade, language=self.current_language)
+            )
 
     def on_event_selected(self):
         event_id = self._selected_id_from_table(self.eventTable)
@@ -1107,26 +1138,40 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         event = self._event_by_id.get(event_id)
         if not event:
-            self._log(f"选择的事件不在内存索引中：事件ID={event_id}")
+            self._log(self.tr("log.event_missing_memory").format(event_id=event_id))
             return
-        self.detailText.setPlainText(format_event_detail(event))
+        self.detailText.setPlainText(
+            format_event_detail(event, language=self.current_language)
+        )
         for cb in self.tag_checks:
-            cb.setChecked(cb.text() in event.get("label_tags", []))
+            cb.setChecked(cb.property("eventTagValue") in event.get("label_tags", []))
         self.noteEdit.setPlainText(event.get("note") or "")
 
     def apply_labels_to_selected_event(self):
         event_id = self._selected_id_from_table(self.eventTable)
         if not event_id:
-            QtWidgets.QMessageBox.warning(self, "未选择事件", "请先在“事件”表中选中一条事件记录。")
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("dialog.no_event_selected_title"),
+                self.tr("dialog.no_event_selected_message"),
+            )
             return
         event = self._event_by_id.get(event_id)
         if not event:
-            self._log(f"更新事件标签失败：内存中找不到事件ID={event_id}")
-            QtWidgets.QMessageBox.warning(self, "事件状态错误", "当前选中的事件不存在，请刷新或重新选择。")
+            self._log(self.tr("log.event_update_missing_memory").format(event_id=event_id))
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("dialog.event_state_error_title"),
+                self.tr("dialog.event_missing_memory"),
+            )
             return
         if not self.storage.fetch_event(event_id):
-            self._log(f"更新事件标签失败：SQLite 中找不到事件ID={event_id}")
-            QtWidgets.QMessageBox.warning(self, "事件状态错误", "SQLite 中找不到当前事件，请重新加载会话。")
+            self._log(self.tr("log.event_update_missing_storage").format(event_id=event_id))
+            QtWidgets.QMessageBox.warning(
+                self,
+                self.tr("dialog.event_state_error_title"),
+                self.tr("dialog.event_missing_storage"),
+            )
             return
         new_tags, new_note = self.current_tags_and_note()
         old_tags = list(event.get("label_tags", []))
@@ -1139,14 +1184,14 @@ class MainWindow(QtWidgets.QMainWindow):
             event["label_tags"] = list(new_tags)
             event["note"] = new_note
             self._refresh_tables()
-            self._log(f"已更新事件标签：{event_id}")
+            self._log(self.tr("log.event_updated").format(event_id=event_id))
 
         def undo():
             self.storage.update_event_labels(event_id, old_tags, old_note)
             event["label_tags"] = list(old_tags)
             event["note"] = old_note
             self._refresh_tables()
-            self._log(f"撤销事件标签更新：{event_id}")
+            self._log(self.tr("log.event_update_undone").format(event_id=event_id))
 
         self.execute_command(ActionCommand(name="event_meta_update", do_fn=do, undo_fn=undo))
 
@@ -1184,8 +1229,20 @@ class MainWindow(QtWidgets.QMainWindow):
             self.analysis_refresh_controller.schedule()
 
     def _populate_tables(self, include_heavy: bool = True):
-        populate_trade_tables(self.openTradesTable, self.closedTradesTable, self.trades)
-        selected_tag = self.eventFilterTag.currentText() if hasattr(self, "eventFilterTag") else "全部标签"
+        language = str(getattr(self, "current_language", "zh_CN") or "zh_CN")
+        populate_trade_tables(
+            self.openTradesTable,
+            self.closedTradesTable,
+            self.trades,
+            language=language,
+        )
+        tag_filter = getattr(self, "eventFilterTag", None)
+        if tag_filter is None:
+            selected_tag = ""
+        elif callable(getattr(tag_filter, "currentData", None)):
+            selected_tag = tag_filter.currentData()
+        else:
+            selected_tag = tag_filter.currentText()
         selected_side = self.eventFilterSide.currentData() if hasattr(self, "eventFilterSide") else ""
         selected_type = self.eventFilterType.currentData() if hasattr(self, "eventFilterType") else ""
         populate_event_table(
@@ -1194,9 +1251,15 @@ class MainWindow(QtWidgets.QMainWindow):
             selected_tag=selected_tag,
             selected_side=selected_side,
             selected_type=selected_type,
+            language=language,
         )
         if hasattr(self, "recentEventsList"):
-            populate_recent_event_list(self.recentEventsList, getattr(self, "recentEventsEmptyState", None), self.events)
+            populate_recent_event_list(
+                self.recentEventsList,
+                getattr(self, "recentEventsEmptyState", None),
+                self.events,
+                language=language,
+            )
         if include_heavy and hasattr(self, "analysis_refresh_controller"):
             self.analysis_refresh_controller.schedule()
         if hasattr(self, "_update_empty_states"):
@@ -1216,7 +1279,11 @@ class MainWindow(QtWidgets.QMainWindow):
             self.eventResearchStack.setCurrentIndex(1 if has_research else 0)
         if hasattr(self, "datasetStack"):
             text = self.datasetText.toPlainText().strip() if hasattr(self, "datasetText") else ""
-            has_dataset = bool(text) and not text.startswith("暂无")
+            empty_dataset_texts = {
+                i18n_tr("ui.dataset_initial", language)
+                for language in ("zh_CN", "en_US")
+            }
+            has_dataset = bool(text) and text not in empty_dataset_texts
             self.datasetStack.setCurrentIndex(1 if has_dataset else 0)
 
     def _clear_analysis_views(self) -> None:
@@ -1250,6 +1317,7 @@ class MainWindow(QtWidgets.QMainWindow):
                 if trade_notional_spin is not None
                 else 1000.0
             ),
+            "language": str(getattr(self, "current_language", "zh_CN") or "zh_CN"),
         }
         return AnalysisRefreshRequest(
             **values,
@@ -1258,7 +1326,16 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def _on_analysis_refresh_failed(self, error: str) -> None:
-        self._log(f"Analysis refresh failed: {error}")
+        translator = getattr(self, "tr", None)
+        template = (
+            translator("log.analysis_refresh_failed")
+            if callable(translator)
+            else i18n_tr(
+                "log.analysis_refresh_failed",
+                str(getattr(self, "current_language", "en_US") or "en_US"),
+            )
+        )
+        self._log(template.format(error=error))
 
     def _apply_analysis_refresh_result(self, result: AnalysisRefreshResult) -> None:
         if hasattr(self, "equityTable"):
@@ -1283,7 +1360,11 @@ class MainWindow(QtWidgets.QMainWindow):
         try:
             return self.storage.fetch_table("event_features", "session_id=?", (self.session_id,))
         except Exception as e:
-            self._log(f"读取事件特征失败：{type(e).__name__}: {e}")
+            self._log(
+                self.tr("log.event_features_failed").format(
+                    error=f"{type(e).__name__}: {e}"
+                )
+            )
             return []
 
     def _event_rows_for_study(self) -> list[dict[str, Any]]:
@@ -1302,6 +1383,7 @@ class MainWindow(QtWidgets.QMainWindow):
             summary, warning = build_event_study_summary_frame(
                 self._event_rows_for_study(),
                 self._feature_rows_for_session(),
+                language=self.current_language,
             )
             if warning:
                 self._log(warning)
@@ -1313,7 +1395,10 @@ class MainWindow(QtWidgets.QMainWindow):
         started = time.perf_counter()
 
         try:
-            text, warning = build_dataset_summary_text(self._feature_rows_for_session())
+            text, warning = build_dataset_summary_text(
+                self._feature_rows_for_session(),
+                language=self.current_language,
+            )
             self.datasetText.setPlainText(text)
             if warning:
                 self._log(warning)
@@ -1365,7 +1450,11 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if not self.session_id:
             return
-        target = QtWidgets.QFileDialog.getExistingDirectory(self, "选择导出目录", str(EXPORT_DIR))
+        target = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            self.tr("export.select_directory"),
+            str(EXPORT_DIR),
+        )
         if not target:
             return
         self.start_export_task(Path(target), language=self.current_language)
@@ -1394,30 +1483,39 @@ class MainWindow(QtWidgets.QMainWindow):
         self.app_state.export.last_error = None
         self._export_success_callback = on_success
         self.btnExport.setEnabled(False)
-        self.status.setText("Exporting session data...")
+        self.status.setText(translate_for(self, "export.running"))
         return self.export_task_controller.start(self.storage.db_path, request)
 
     @QtCore.Slot(str, object, float)
     def _on_export_finished(self, output_dir: str, warnings: list, elapsed: float):
         self.app_state.export.output_dir = output_dir
-        self._log(f"Export completed in {elapsed:.2f}s: {output_dir}")
+        self._log(
+            self.tr("log.export_completed").format(
+                elapsed=elapsed,
+                directory=output_dir,
+            )
+        )
         callback = self._export_success_callback
         self._finish_export_task()
         if callback is not None:
             callback(Path(output_dir))
-        QtWidgets.QMessageBox.information(self, "Export completed", f"Files written to:\n{output_dir}")
+        QtWidgets.QMessageBox.information(
+            self,
+            self.tr("export.completed_title"),
+            self.tr("export.completed_message").format(directory=output_dir),
+        )
 
     @QtCore.Slot(str, float)
     def _on_export_failed(self, error: str, elapsed: float):
         self.app_state.export.last_error = error
         logger.error("Export failed after %.2fs: %s", elapsed, error)
-        self._log(f"Export failed: {error}")
+        self._log(self.tr("log.export_failed").format(error=error))
         self._finish_export_task()
-        QtWidgets.QMessageBox.critical(self, "Export failed", error)
+        QtWidgets.QMessageBox.critical(self, self.tr("export.failed_title"), error)
 
     @QtCore.Slot()
     def _on_export_cancelled(self):
-        self._log("Export cancelled.")
+        self._log(self.tr("export.cancelled"))
         self._finish_export_task()
 
     def _finish_export_task(self):
@@ -1448,18 +1546,30 @@ class MainWindow(QtWidgets.QMainWindow):
         if row["sample_status"] == "OK":
             self._set_widget_role(self.premiumStatus, "pillLive")
             self.premiumStatus.setText(
-                f"最近采样：{row['sample_time_bjt']} | 状态：OK | 汇率源：{row.get('fx_source') or '-'}"
+                translate_for(self, "premium.latest_ok").format(
+                    time=row["sample_time_bjt"],
+                    source=row.get("fx_source") or "-",
+                )
             )
             self.premiumStats.setPlainText(
-                f"P2P买价：{row['p2p_buy_price_cny']:.4f}  买入溢价：{row['buy_premium_pct']:+.2f}%\n"
-                f"P2P卖价：{row['p2p_sell_price_cny']:.4f}  卖出溢价：{row['sell_premium_pct']:+.2f}%\n"
-                f"P2P均价：{row['p2p_avg_price_cny']:.4f}  均价溢价：{row['avg_premium_pct']:+.2f}%\n"
-                f"USD/CNY：{row['usd_cny_rate']:.4f}"
+                translate_for(self, "premium.stats").format(
+                    buy_price=row["p2p_buy_price_cny"],
+                    buy_premium=row["buy_premium_pct"],
+                    sell_price=row["p2p_sell_price_cny"],
+                    sell_premium=row["sell_premium_pct"],
+                    average_price=row["p2p_avg_price_cny"],
+                    average_premium=row["avg_premium_pct"],
+                    rate=row["usd_cny_rate"],
+                )
             )
         else:
             self._set_widget_role(self.premiumStatus, "pillWarning")
-            self.premiumStatus.setText(f"最近采样：{row['sample_time_bjt']} | 状态：ERROR")
-            self.premiumStats.setPlainText(row.get("error_message") or "采样失败")
+            self.premiumStatus.setText(
+                translate_for(self, "premium.latest_error").format(time=row["sample_time_bjt"])
+            )
+            self.premiumStats.setPlainText(
+                row.get("error_message") or translate_for(self, "premium_sample_failed")
+            )
         self._refresh_premium_plot()
         if row.get("sample_status") == "OK":
             self.task_lifecycle.complete("premium_sample")
@@ -1477,7 +1587,9 @@ class MainWindow(QtWidgets.QMainWindow):
         logger.info(message)
         if hasattr(self, "logSummaryLabel"):
             summary = str(message).replace("\n", " ").strip()
-            self.logSummaryLabel.setText(summary[:180] if summary else "暂无操作")
+            self.logSummaryLabel.setText(
+                summary[:180] if summary else self.tr("ui.no_operations")
+            )
         self.log.appendPlainText(f"[{bjt_now_iso()}] {message}")
 
 

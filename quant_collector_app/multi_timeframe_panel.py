@@ -13,6 +13,7 @@ try:
     from app_i18n import tr
     from app_logger import get_logger
     from market_data import KlineLoader, LoadRequest, interval_to_ms
+    from services.ui_message_localizer import localize_worker_message
     from multi_timeframe import (
         build_multi_timeframe_context,
         find_context_bar_by_time,
@@ -24,6 +25,7 @@ except ImportError:  # pragma: no cover - package import path
     from .app_i18n import tr
     from .app_logger import get_logger
     from .market_data import KlineLoader, LoadRequest, interval_to_ms
+    from .services.ui_message_localizer import localize_worker_message
     from .multi_timeframe import (
         build_multi_timeframe_context,
         find_context_bar_by_time,
@@ -577,7 +579,10 @@ class MultiTimeframePanel(QtWidgets.QWidget):
             if lines and lines[-1] != "":
                 lines.append("")
             lines.append(tr("multi_timeframe_load_failed", self.language))
-            lines.extend(f"  {interval}: {error}" for interval, error in self._context_errors.items())
+            lines.extend(
+                f"  {interval}: {localize_worker_message(error, lambda key: tr(key, self.language))}"
+                for interval, error in self._context_errors.items()
+            )
         self.summaryText.setPlainText("\n".join(lines).rstrip())
 
     def shutdown(self) -> bool:

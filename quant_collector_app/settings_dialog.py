@@ -19,6 +19,14 @@ from app_settings import load_app_settings, save_app_settings
 from app_settings import build_app_settings_update
 from execution import FILL_MODES
 from ui_style import SPACING
+from views.i18n_bindings import (
+    add_combo_item,
+    bind_combo_item,
+    bind_placeholder,
+    bind_tab,
+    bind_text,
+    retranslate_bound_widgets,
+)
 from views.wheel_guard import install_no_wheel_on_value_inputs
 
 
@@ -39,6 +47,16 @@ class SettingsDialog(QtWidgets.QDialog):
     def _tr(self, key: str, default: str | None = None) -> str:
         return tr(key, self.current_language, default)
 
+    def _form_label(self, key: str) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel()
+        bind_text(label, key, self._tr)
+        return label
+
+    def _hint_label(self, key: str) -> QtWidgets.QLabel:
+        label = self._form_label(key)
+        label.setWordWrap(True)
+        return label
+
     def _build_ui(self):
         root = QtWidgets.QVBoxLayout(self)
         root.setContentsMargins(SPACING["lg"], SPACING["lg"], SPACING["lg"], SPACING["lg"])
@@ -55,6 +73,14 @@ class SettingsDialog(QtWidgets.QDialog):
         self.tabs.addTab(self.executionTab, "")
         self.tabs.addTab(self.storageTab, "")
         self.tabs.addTab(self.aiTab, "")
+        for page, key in (
+            (self.appearanceTab, "appearance_settings"),
+            (self.languageTab, "language_settings"),
+            (self.executionTab, "execution_cost_settings"),
+            (self.storageTab, "settings.storage"),
+            (self.aiTab, "ai_api_settings"),
+        ):
+            bind_tab(self.tabs, page, key, self._tr)
         root.addWidget(self.tabs, stretch=1)
 
         self.buttonBox = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
@@ -77,25 +103,26 @@ class SettingsDialog(QtWidgets.QDialog):
         form = QtWidgets.QFormLayout()
         form.setSpacing(SPACING["sm"])
         self.themePresetBox = QtWidgets.QComboBox()
-        self.themePresetBox.addItems(list(THEME_PRESETS.keys()))
-        form.addRow("主题预设", self.themePresetBox)
+        for name in THEME_PRESETS:
+            key = "settings.theme.dark" if name == "暗色" else "settings.theme.light"
+            add_combo_item(self.themePresetBox, key, name, self._tr)
+        form.addRow(self._form_label("settings.theme_preset"), self.themePresetBox)
 
-        for key, label in (
-            ("candle_up", "上涨 K 线颜色"),
-            ("candle_down", "下跌 K 线颜色"),
-            ("grid", "网格颜色"),
-            ("crosshair", "十字光标颜色"),
+        for key, label_key in (
+            ("candle_up", "settings.candle_up_color"),
+            ("candle_down", "settings.candle_down_color"),
+            ("grid", "settings.grid_color"),
+            ("crosshair", "settings.crosshair_color"),
         ):
-            form.addRow(label, self._color_row(key))
+            form.addRow(self._form_label(label_key), self._color_row(key))
 
         self.gridAlphaSlider = self._slider(0, 100)
         self.crosshairAlphaSlider = self._slider(0, 255)
-        form.addRow("网格透明度", self.gridAlphaSlider)
-        form.addRow("十字光标透明度", self.crosshairAlphaSlider)
+        form.addRow(self._form_label("settings.grid_opacity"), self.gridAlphaSlider)
+        form.addRow(self._form_label("settings.crosshair_opacity"), self.crosshairAlphaSlider)
         layout.addLayout(form)
 
-        hint = QtWidgets.QLabel("外观设置会立即影响主图表和交易面板。")
-        hint.setWordWrap(True)
+        hint = self._hint_label("settings.appearance_hint")
         layout.addWidget(hint)
         layout.addStretch(1)
         self.themePresetBox.currentTextChanged.connect(self._on_preset_changed)
@@ -108,13 +135,12 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.setSpacing(SPACING["md"])
         form = QtWidgets.QFormLayout()
         self.languageBox = QtWidgets.QComboBox()
-        self.languageBox.addItem("中文", "zh_CN")
-        self.languageBox.addItem("English", "en_US")
+        add_combo_item(self.languageBox, "settings.language.chinese", "zh_CN", self._tr)
+        add_combo_item(self.languageBox, "settings.language.english", "en_US", self._tr)
         self.languageBox.currentIndexChanged.connect(self._on_language_changed)
-        form.addRow("界面语言", self.languageBox)
+        form.addRow(self._form_label("settings.interface_language"), self.languageBox)
         layout.addLayout(form)
-        hint = QtWidgets.QLabel("本阶段只保存语言配置，并翻译主要入口。完整国际化后续完善。")
-        hint.setWordWrap(True)
+        hint = self._hint_label("settings.language_hint")
         layout.addWidget(hint)
         layout.addStretch(1)
         return tab
@@ -127,17 +153,22 @@ class SettingsDialog(QtWidgets.QDialog):
 
         self.fillModeBox = QtWidgets.QComboBox()
         for mode in FILL_MODES:
-            self.fillModeBox.addItem(self._fill_mode_label(mode), mode)
+            add_combo_item(
+                self.fillModeBox,
+                f"ui.fill_mode.{mode.lower()}",
+                mode,
+                self._tr,
+            )
         self.feeBpsSpin = self._double_spin(0.0, 100.0, DEFAULT_FEE_BPS)
         self.slippageBpsSpin = self._double_spin(0.0, 100.0, DEFAULT_SLIPPAGE_BPS)
         self.tradeNotionalSpin = self._double_spin(1.0, 1_000_000_000.0, DEFAULT_TRADE_NOTIONAL)
         self.initialEquitySpin = self._double_spin(1.0, 1_000_000_000.0, DEFAULT_INITIAL_EQUITY)
 
-        form.addRow("成交模式", self.fillModeBox)
-        form.addRow("手续费 bps", self.feeBpsSpin)
-        form.addRow("滑点 bps", self.slippageBpsSpin)
-        form.addRow("每笔名义金额", self.tradeNotionalSpin)
-        form.addRow("初始权益", self.initialEquitySpin)
+        form.addRow(self._form_label("ui.execution_mode"), self.fillModeBox)
+        form.addRow(self._form_label("ui.fee_bps"), self.feeBpsSpin)
+        form.addRow(self._form_label("ui.slippage_bps"), self.slippageBpsSpin)
+        form.addRow(self._form_label("ui.trade_notional"), self.tradeNotionalSpin)
+        form.addRow(self._form_label("ui.initial_equity"), self.initialEquitySpin)
         return tab
 
     def _ai_tab(self) -> QtWidgets.QWidget:
@@ -147,13 +178,17 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.setSpacing(SPACING["md"])
         form = QtWidgets.QFormLayout()
         self.providerBox = QtWidgets.QComboBox()
-        self.providerBox.addItems(["mock", "openai", "custom_http"])
+        for key, provider in (
+            ("settings.llm_provider.mock", "mock"),
+            ("settings.llm_provider.openai", "openai"),
+            ("settings.llm_provider.custom_http", "custom_http"),
+        ):
+            add_combo_item(self.providerBox, key, provider, self._tr)
         self.localApiLabel = QtWidgets.QLabel(str(self.app_settings.get("local_api_url") or "http://127.0.0.1:8765"))
-        form.addRow("LLM provider", self.providerBox)
-        form.addRow("本地 API", self.localApiLabel)
+        form.addRow(self._form_label("settings.llm_provider"), self.providerBox)
+        form.addRow(self._form_label("settings.local_api"), self.localApiLabel)
         layout.addLayout(form)
-        warning = QtWidgets.QLabel("API Key 只从环境变量读取，不在界面保存明文。AI 只解释研究结果，不提供投资建议。")
-        warning.setWordWrap(True)
+        warning = self._hint_label("settings.ai_warning")
         layout.addWidget(warning)
         layout.addStretch(1)
         return tab
@@ -165,16 +200,14 @@ class SettingsDialog(QtWidgets.QDialog):
         form.setSpacing(SPACING["sm"])
         self.cacheLimitSpin = self._double_spin(1.0, 50.0, 5.0)
         self.cacheLimitSpin.setSuffix(" GB")
-        form.addRow("市场数据缓存上限", self.cacheLimitSpin)
+        form.addRow(self._form_label("settings.cache_limit"), self.cacheLimitSpin)
         self.renderBackendBox = QtWidgets.QComboBox()
-        self.renderBackendBox.addItem("GPU 加速（推荐）", "hardware")
-        self.renderBackendBox.addItem("软件渲染（兼容模式）", "software")
-        form.addRow("图表渲染", self.renderBackendBox)
-        hint = QtWidgets.QLabel("超过上限后清理最久未使用的数据；当前会话数据不会在使用中删除。")
-        hint.setWordWrap(True)
+        add_combo_item(self.renderBackendBox, "settings.render.hardware", "hardware", self._tr)
+        add_combo_item(self.renderBackendBox, "settings.render.software", "software", self._tr)
+        form.addRow(self._form_label("settings.chart_rendering"), self.renderBackendBox)
+        hint = self._hint_label("settings.cache_hint")
         form.addRow("", hint)
-        render_hint = QtWidgets.QLabel("渲染模式在下次启动时生效；GPU 模式失败会自动回退到软件渲染。")
-        render_hint.setWordWrap(True)
+        render_hint = self._hint_label("settings.render_hint")
         form.addRow("", render_hint)
         return tab
 
@@ -184,7 +217,8 @@ class SettingsDialog(QtWidgets.QDialog):
         layout.setContentsMargins(0, 0, 0, 0)
         edit = QtWidgets.QLineEdit()
         edit.setPlaceholderText("#21b26f")
-        button = QtWidgets.QPushButton("选择")
+        button = QtWidgets.QPushButton()
+        bind_text(button, "settings.choose_color", self._tr)
         button.setProperty("role", "secondaryButton")
         button.clicked.connect(lambda _=False, k=key: self._choose_color(k))
         layout.addWidget(edit, stretch=1)
@@ -206,10 +240,6 @@ class SettingsDialog(QtWidgets.QDialog):
         spin.setValue(float(value))
         return spin
 
-    @staticmethod
-    def _fill_mode_label(mode: Any) -> str:
-        return {"MID": "中间价", "CLOSE": "收盘价", "OPEN": "开盘价"}.get(str(mode or "").upper(), str(mode or ""))
-
     def _main_widget_value(self, name: str, default: Any) -> Any:
         widget = getattr(self.app_window, name, None)
         if widget is None:
@@ -224,7 +254,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def _load_from_app(self):
         preset = str(self.theme.get("name") or DEFAULT_THEME.get("name") or "")
-        idx = self.themePresetBox.findText(preset)
+        idx = self.themePresetBox.findData(preset)
         self.themePresetBox.setCurrentIndex(max(0, idx))
         self._load_theme_controls(self.theme)
 
@@ -232,7 +262,7 @@ class SettingsDialog(QtWidgets.QDialog):
         idx = self.languageBox.findData(language)
         self.languageBox.setCurrentIndex(max(0, idx))
         provider = str(self.app_settings.get("llm_provider") or "mock")
-        idx = self.providerBox.findText(provider)
+        idx = self.providerBox.findData(provider)
         self.providerBox.setCurrentIndex(max(0, idx))
 
         self._set_fill_mode_value(self._main_widget_value("fillModeBox", DEFAULT_FILL_MODE))
@@ -257,7 +287,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.gridAlphaSlider.setValue(int(float(theme.get("grid_alpha", DEFAULT_THEME.get("grid_alpha", 22)))))
         self.crosshairAlphaSlider.setValue(int(float(theme.get("crosshair_alpha", DEFAULT_THEME.get("crosshair_alpha", 130)))))
 
-    def _on_preset_changed(self, name: str):
+    def _on_preset_changed(self, _value):
+        name = self.themePresetBox.currentData()
         preset = THEME_PRESETS.get(name)
         if preset:
             self.theme = dict(DEFAULT_THEME)
@@ -267,7 +298,11 @@ class SettingsDialog(QtWidgets.QDialog):
     def _choose_color(self, key: str):
         edit = self._color_edits[key]
         current = QtGui.QColor(edit.text())
-        color = QtWidgets.QColorDialog.getColor(current if current.isValid() else QtGui.QColor("#ffffff"), self, "选择颜色")
+        color = QtWidgets.QColorDialog.getColor(
+            current if current.isValid() else QtGui.QColor("#ffffff"),
+            self,
+            self._tr("settings.choose_color_title"),
+        )
         if color.isValid():
             edit.setText(color.name())
 
@@ -280,7 +315,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def _build_theme_payload(self) -> dict[str, Any]:
         theme = dict(DEFAULT_THEME)
-        preset = THEME_PRESETS.get(self.themePresetBox.currentText())
+        preset = THEME_PRESETS.get(self.themePresetBox.currentData())
         if preset:
             theme.update(preset)
         for key, edit in self._color_edits.items():
@@ -292,11 +327,12 @@ class SettingsDialog(QtWidgets.QDialog):
         return theme
 
     def retranslate_ui(self):
+        retranslate_bound_widgets(self, self._tr)
         self.setWindowTitle(self._tr("settings_center"))
         self.tabs.setTabText(self.tabs.indexOf(self.appearanceTab), self._tr("appearance_settings"))
         self.tabs.setTabText(self.tabs.indexOf(self.languageTab), self._tr("language_settings"))
         self.tabs.setTabText(self.tabs.indexOf(self.executionTab), self._tr("execution_cost_settings"))
-        self.tabs.setTabText(self.tabs.indexOf(self.storageTab), "存储")
+        self.tabs.setTabText(self.tabs.indexOf(self.storageTab), self._tr("settings.storage"))
         self.tabs.setTabText(self.tabs.indexOf(self.aiTab), self._tr("ai_api_settings"))
         if self.okButton is not None:
             self.okButton.setText(self._tr("save_and_apply"))
@@ -334,7 +370,7 @@ class SettingsDialog(QtWidgets.QDialog):
         settings = build_app_settings_update(
             self.app_settings,
             language=language,
-            llm_provider=self.providerBox.currentText(),
+            llm_provider=self.providerBox.currentData() or "mock",
             local_api_url="http://127.0.0.1:8765",
             fill_mode=self.fillModeBox.currentData() or self.fillModeBox.currentText(),
             fee_bps=self.feeBpsSpin.value(),

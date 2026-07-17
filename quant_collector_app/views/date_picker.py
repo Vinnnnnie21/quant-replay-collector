@@ -2,6 +2,17 @@ from __future__ import annotations
 
 from PySide6 import QtCore, QtGui, QtWidgets
 
+try:
+    from app_i18n import tr
+except ImportError:  # pragma: no cover - package import path
+    from ..app_i18n import tr
+
+
+def _locale_for_language(language: str) -> QtCore.QLocale:
+    if str(language) == "en_US":
+        return QtCore.QLocale(QtCore.QLocale.English, QtCore.QLocale.UnitedStates)
+    return QtCore.QLocale(QtCore.QLocale.Chinese, QtCore.QLocale.China)
+
 
 class _ClickLineEdit(QtWidgets.QLineEdit):
     clicked = QtCore.Signal()
@@ -17,8 +28,10 @@ class _ClickLineEdit(QtWidgets.QLineEdit):
 class DatePickerPopup(QtWidgets.QFrame):
     dateSelected = QtCore.Signal(QtCore.QDate)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, language: str = "zh_CN"):
         super().__init__(parent, QtCore.Qt.Popup | QtCore.Qt.FramelessWindowHint)
+        self.language = str(language or "zh_CN")
+        self._locale = _locale_for_language(self.language)
         self.setObjectName("datePickerPopup")
         self.setAttribute(QtCore.Qt.WA_StyledBackground, True)
         self.setFixedWidth(312)
@@ -43,6 +56,7 @@ class DatePickerPopup(QtWidgets.QFrame):
         root.addLayout(header)
 
         self.calendar = QtWidgets.QCalendarWidget()
+        self.calendar.setLocale(self._locale)
         self.calendar.setObjectName("datePickerCalendar")
         self.calendar.setNavigationBarVisible(False)
         self.calendarView = self.calendar.findChild(QtWidgets.QTableView)
@@ -54,7 +68,7 @@ class DatePickerPopup(QtWidgets.QFrame):
         self.calendar.setGridVisible(False)
         root.addWidget(self.calendar)
 
-        self.todayButton = QtWidgets.QPushButton("今天")
+        self.todayButton = QtWidgets.QPushButton()
         self.todayButton.setProperty("role", "calendarToday")
         root.addWidget(self.todayButton, alignment=QtCore.Qt.AlignRight)
 
@@ -63,10 +77,27 @@ class DatePickerPopup(QtWidgets.QFrame):
         self.calendar.currentPageChanged.connect(self._update_title)
         self.calendar.clicked.connect(self._choose_date)
         self.todayButton.clicked.connect(lambda: self._choose_date(QtCore.QDate.currentDate()))
+        self.retranslate_ui(self.language)
+
+    def retranslate_ui(self, language: str) -> None:
+        self.language = str(language or "zh_CN")
+        self._locale = _locale_for_language(self.language)
+        self.calendar.setLocale(self._locale)
+        self.todayButton.setText(tr("date_picker.today", self.language))
         self._update_title(self.calendar.yearShown(), self.calendar.monthShown())
 
     def _update_title(self, year: int, month: int) -> None:
-        self.monthLabel.setText(f"{year}年 {month}月")
+        month_text = (
+            self._locale.monthName(month, QtCore.QLocale.LongFormat)
+            if self.language == "en_US"
+            else str(month)
+        )
+        self.monthLabel.setText(
+            tr("date_picker.month_year", self.language).format(
+                year=year,
+                month=month_text,
+            )
+        )
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt override
         super().resizeEvent(event)
@@ -89,8 +120,9 @@ class DatePicker(QtWidgets.QWidget):
 
     dateChanged = QtCore.Signal(QtCore.QDate)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, language: str = "zh_CN"):
         super().__init__(parent)
+        self.language = str(language or "zh_CN")
         self.setProperty("role", "datePicker")
         self.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
         self._minimum = QtCore.QDate(1900, 1, 1)
@@ -107,16 +139,21 @@ class DatePicker(QtWidgets.QWidget):
         self.openButton = QtWidgets.QToolButton()
         self.openButton.setObjectName("datePickerButton")
         self.openButton.setText("▾")
-        self.openButton.setToolTip("选择日期")
+        self.openButton.setToolTip(tr("date_picker.select_date", self.language))
         self.openButton.setFocusPolicy(QtCore.Qt.NoFocus)
         layout.addWidget(self.textField, 1)
         layout.addWidget(self.openButton)
 
-        self.popup = DatePickerPopup(self)
+        self.popup = DatePickerPopup(self, language=self.language)
         self.textField.clicked.connect(self.showCalendar)
         self.openButton.clicked.connect(self.showCalendar)
         self.popup.dateSelected.connect(self.setDate)
         self._refresh_text()
+
+    def retranslate_ui(self, language: str) -> None:
+        self.language = str(language or "zh_CN")
+        self.openButton.setToolTip(tr("date_picker.select_date", self.language))
+        self.popup.retranslate_ui(self.language)
 
     def _refresh_text(self) -> None:
         self.textField.setText(self._date.toString("yyyy/MM/dd"))

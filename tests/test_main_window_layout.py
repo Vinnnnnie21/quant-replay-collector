@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import gc
 import importlib
+import json
 import os
+import re
+from pathlib import Path
 
 import pytest
 
@@ -120,11 +123,13 @@ class _LayoutHost(QtWidgets.QMainWindow):
         retranslate_main_window_ui(self)
 
     def tr(self, key: str, default: str | None = None) -> str:
-        return {
-            "reset_view": "重置缩放",
-            "reset_view_hint": "仅重置缩放和可视范围，不清空K线数据。",
-            "trading_replay": "交易回放",
-        }.get(key, i18n_tr(key, self.current_language, default))
+        if self.current_language == "zh_CN":
+            return {
+                "reset_view": "重置缩放",
+                "reset_view_hint": "仅重置缩放和可视范围，不清空K线数据。",
+                "trading_replay": "交易回放",
+            }.get(key, i18n_tr(key, self.current_language, default))
+        return i18n_tr(key, self.current_language, default)
 
     def _chart_render_state(self):
         return self._render_state
@@ -152,6 +157,102 @@ def _close_layout_host(host: _LayoutHost, app: QtWidgets.QApplication) -> None:
     host.__dict__.clear()
     gc.collect()
     app.processEvents()
+
+
+def _widget_user_texts(root: QtWidgets.QWidget) -> list[str]:
+    texts: list[str] = []
+    for widget in (root, *root.findChildren(QtWidgets.QWidget)):
+        if isinstance(widget, (QtWidgets.QLabel, QtWidgets.QAbstractButton)):
+            texts.append(widget.text())
+        if isinstance(widget, QtWidgets.QGroupBox):
+            texts.append(widget.title())
+        if isinstance(widget, QtWidgets.QTabWidget):
+            texts.extend(widget.tabText(index) for index in range(widget.count()))
+        if isinstance(widget, QtWidgets.QComboBox):
+            texts.extend(widget.itemText(index) for index in range(widget.count()))
+        if isinstance(widget, QtWidgets.QTableWidget):
+            for index in range(widget.columnCount()):
+                item = widget.horizontalHeaderItem(index)
+                if item is not None:
+                    texts.append(item.text())
+        if isinstance(widget, QtWidgets.QLineEdit):
+            texts.append(widget.placeholderText())
+        texts.extend((widget.toolTip(), widget.statusTip()))
+    return sorted({text.strip() for text in texts if text and text.strip()})
+
+
+def test_english_main_window_has_no_chinese_user_interface_text():
+    class EnglishLayoutHost(_LayoutHost):
+        current_language = "en_US"
+
+        def tr(self, key: str, default: str | None = None) -> str:
+            return i18n_tr(key, self.current_language, default)
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = EnglishLayoutHost()
+    try:
+        build_main_window_ui(host)
+        retranslate_main_window_ui(host)
+
+        chinese_texts = [
+            text for text in _widget_user_texts(host) if re.search(r"[\u3400-\u9fff]", text)
+        ]
+
+        assert chinese_texts == []
+    finally:
+        _close_layout_host(host, app)
+
+
+def test_switching_main_window_to_english_retranslates_all_visible_user_interface_text():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _LayoutHost()
+    try:
+        build_main_window_ui(host)
+        host.current_language = "en_US"
+        retranslate_main_window_ui(host)
+
+        chinese_texts = [
+            text for text in _widget_user_texts(host) if re.search(r"[\u3400-\u9fff]", text)
+        ]
+
+        assert chinese_texts == []
+    finally:
+        _close_layout_host(host, app)
+
+
+def test_chinese_main_window_has_no_raw_translation_keys_or_english_actions():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _LayoutHost()
+    try:
+        build_main_window_ui(host)
+        retranslate_main_window_ui(host)
+
+        texts = _widget_user_texts(host)
+        translation_keys = set(
+            json.loads(
+                (
+                    Path(__file__).resolve().parents[1]
+                    / "quant_collector_app"
+                    / "translations"
+                    / "zh_CN.json"
+                ).read_text(encoding="utf-8")
+            )
+        )
+        forbidden_actions = {
+            "Trading Replay",
+            "Data Analysis",
+            "Apply Market",
+            "Play (Space)",
+            "Step Next (→)",
+            "Open Long (B)",
+            "Trade Actions",
+            "Trade Data Management",
+        }
+
+        assert sorted(set(texts).intersection(translation_keys)) == []
+        assert sorted(set(texts).intersection(forbidden_actions)) == []
+    finally:
+        _close_layout_host(host, app)
 
 
 def test_main_window_layout_builds_existing_primary_widgets():
@@ -187,7 +288,7 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert host.headerLogoLabel.pixmap() is not None
     assert not host.headerLogoLabel.pixmap().isNull()
     assert host.headerLogoLabel.width() == host.headerLogoLabel.height()
-    assert host.headerTitleLabel.text() == "Quant Replay Collector v1.5.1"
+    assert host.headerTitleLabel.text() == "Quant Replay Collector v1.5.2"
     header_layout = host.headerBar.layout()
     assert header_layout.indexOf(host.headerLogoLabel) < header_layout.indexOf(host.headerTitleLabel)
     assert header_layout.indexOf(host.headerTitleLabel) < header_layout.indexOf(host.btnReplayWorkspace)

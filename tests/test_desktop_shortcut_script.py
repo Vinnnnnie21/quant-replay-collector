@@ -71,6 +71,7 @@ def test_windows_build_produces_qrc_exe_and_uses_icon_only_when_available():
     assert "dist\\QRC.exe" in source
     assert 'if exist "assets\\app_icon.ico"' in source
     assert "--icon=assets\\app_icon.ico" in source
+    assert "--add-data=translations;translations" in source
 
 
 def test_shortcut_dry_run_uses_qrc_name_and_target_working_directory(tmp_path):

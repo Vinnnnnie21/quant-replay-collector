@@ -14,6 +14,7 @@ try:
     from market_data import LoadRequest
     from render_state import RenderState
     from services.session_service import load_session_snapshot_state
+    from services.ui_message_localizer import localize_worker_message
     from controllers.session_resume_controller import (
         abort_performance_session_resume,
         complete_performance_session_resume,
@@ -30,6 +31,7 @@ except ImportError:  # pragma: no cover - package import path
     from ..market_data import LoadRequest
     from ..render_state import RenderState
     from ..services.session_service import load_session_snapshot_state
+    from ..services.ui_message_localizer import localize_worker_message
     from .session_resume_controller import (
         abort_performance_session_resume,
         complete_performance_session_resume,
@@ -45,10 +47,10 @@ except ImportError:  # pragma: no cover - package import path
 logger = get_logger(__name__)
 
 
-def _chart_status_message(message: str) -> str:
+def _chart_status_message(message: str, translator=None) -> str:
     text = str(message or "").strip()
     if text.startswith("Loaded cache "):
-        return "已从本地缓存加载K线"
+        return translator("market.loaded_cache") if translator else "K-lines loaded from local cache"
     if "; cache=" in text:
         text = text.split("; cache=", 1)[0].strip() + "."
     if "; quality=" in text:
@@ -56,7 +58,11 @@ def _chart_status_message(message: str) -> str:
     if "; reason=" in text:
         text = text.split("; reason=", 1)[0].strip() + "."
     if "cache fallback failed" in text:
-        text = "Online load failed; cache fallback failed."
+        text = (
+            translator("market.cache_fallback_failed")
+            if translator
+            else "Online load failed; cache fallback also failed."
+        )
     return text[:96] + "..." if len(text) > 99 else text
 
 
@@ -74,7 +80,11 @@ def _render_state(window) -> RenderState:
 def normalized_symbol(window) -> str | None:
     symbol = window.symbolBox.currentText().strip().upper()
     if not re.fullmatch(r"[A-Z0-9]{3,30}", symbol):
-        QtWidgets.QMessageBox.warning(window, "品种格式错误", "品种只能包含大写字母和数字，例如 BTCUSDT。")
+        QtWidgets.QMessageBox.warning(
+            window,
+            window.tr("dialog.invalid_symbol_title"),
+            window.tr("dialog.invalid_symbol_message"),
+        )
         return None
     return symbol
 
@@ -129,7 +139,13 @@ def on_multi_timeframe_load_failed(window, interval: str, error: str) -> None:
         if window._loaded_market_key
         else window.symbolBox.currentText().strip().upper()
     )
-    window._log(f"高周期上下文加载失败：{symbol} {interval} {error}")
+    window._log(
+        window.tr("log.higher_timeframe_failed").format(
+            symbol=symbol,
+            interval=interval,
+            error=error,
+        )
+    )
 
 
 def on_interval_changed_for_dynamic_switch(window, new_interval: str) -> None:
@@ -232,7 +248,11 @@ def load_data(
     d0 = window.startDate.date()
     d1 = window.endDate.date()
     if d0 > d1:
-        QtWidgets.QMessageBox.warning(window, "日期范围错误", "开始日期不能晚于结束日期。")
+        QtWidgets.QMessageBox.warning(
+            window,
+            window.tr("dialog.invalid_date_range_title"),
+            window.tr("dialog.invalid_date_range_message"),
+        )
         return False
     start_dt = QtCore.QDateTime(d0, QtCore.QTime(0, 0)).toPython().replace(tzinfo=BJT)
     end_dt = QtCore.QDateTime(d1, QtCore.QTime(23, 59, 59)).toPython().replace(tzinfo=BJT)
@@ -267,7 +287,11 @@ def load_data(
 
     if not dynamic_switch and not restore:
         window.persist_session_state()
-    window.status.setText(window.tr("dynamic_switch_loading") if dynamic_switch else f"{symbol} {interval} 加载中...")
+    window.status.setText(
+        window.tr("dynamic_switch_loading")
+        if dynamic_switch
+        else window.tr("market.loading_format").format(symbol=symbol, interval=interval)
+    )
     window._loading_data = True
     window.app_state.data_load.loading = True
     window.app_state.data_load.status_message = f"Loading {symbol} {interval}"
@@ -287,8 +311,9 @@ def load_data(
 
 def on_load_progress(window, message: str) -> None:
     window.app_state.data_load.status_message = message
-    window.status.setText(_chart_status_message(message))
-    window._log(message)
+    localized = localize_worker_message(message, window.tr)
+    window.status.setText(_chart_status_message(localized, window.tr))
+    window._log(localized)
 
 
 def restore_session_snapshot(window) -> bool:
@@ -320,7 +345,12 @@ def restore_session_snapshot(window) -> bool:
     if analysis_refresh is not None and hasattr(analysis_refresh, "schedule"):
         analysis_refresh.schedule()
     window._render(force=True)
-    window._log(f"已恢复交易={len(window.trades)}，事件={len(window.events)}")
+    window._log(
+        window.tr("log.session_snapshot_restored").format(
+            trades=len(window.trades),
+            events=len(window.events),
+        )
+    )
     if getattr(window, "_session_resume_rollback", None) is not None:
         complete_performance_session_resume(window)
     else:
@@ -331,7 +361,8 @@ def restore_session_snapshot(window) -> bool:
 def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
     window._loading_data = False
     window.app_state.data_load.loading = False
-    window._log(message)
+    localized_message = localize_worker_message(message, window.tr)
+    window._log(localized_message)
     load_failed = message.startswith("加载失败")
     dynamic_switch = bool(getattr(window, "_timeframe_switch_pending", False))
     dynamic_success = dynamic_switch and not load_failed and isinstance(frame, pd.DataFrame) and not frame.empty
@@ -344,7 +375,7 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
         lifecycle = getattr(window, "task_lifecycle", None)
         if lifecycle is not None:
             lifecycle.fail("market_data_load", message)
-        window.status.setText(message)
+        window.status.setText(localized_message)
         return
     if dynamic_switch and not dynamic_success:
         previous_interval = getattr(window, "_pending_switch_from_interval", None)
@@ -402,7 +433,11 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
     window._render_dirty = True
 
     if window.df.empty and load_failed:
-        QtWidgets.QMessageBox.critical(window, "K线加载失败", message)
+        QtWidgets.QMessageBox.critical(
+            window,
+            window.tr("dialog.market_load_failed_title"),
+            localized_message,
+        )
     elif not window.df.empty:
         window._persist_loaded_market_data()
 
@@ -439,8 +474,11 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
     window.manual_xrange = restored_xrange or (-0.5, max(20.0, float(default_span)))
     window._set_xrange(*window.manual_xrange, force=True)
     window.status.setText(
-        f"{window.symbolBox.currentText().strip().upper()} "
-        f"{window.intervalBox.currentText().strip()} K线={len(window.df)}"
+        window.tr("market.loaded_count").format(
+            symbol=window.symbolBox.currentText().strip().upper(),
+            interval=window.intervalBox.currentText().strip(),
+            count=len(window.df),
+        )
     )
     window._update_load_play_button()
     window._render(force=True)
@@ -495,7 +533,11 @@ def persist_loaded_market_data(window) -> None:
         )
     except Exception as exc:
         logger.exception("Kline quality persistence failed.")
-        window._log(f"数据质量记录保存失败：{type(exc).__name__}: {exc}")
+        window._log(
+            window.tr("log.data_quality_save_failed").format(
+                error=f"{type(exc).__name__}: {exc}"
+            )
+        )
 
 
 def load_or_toggle_play(window) -> None:

@@ -22,9 +22,18 @@ try:
         equity_rows,
         format_errors,
         format_summary,
+        localize_warnings,
         trade_rows,
     )
+    from presenters.formatters import side_label
     from views.wheel_guard import install_no_wheel_on_value_inputs
+    from views.i18n_bindings import (
+        add_combo_item,
+        bind_table_headers,
+        bind_tab,
+        bind_text,
+        retranslate_bound_widgets,
+    )
 except ImportError:  # pragma: no cover - package import path
     from .app_i18n import tr
     from .backtesting.engine import run_backtest
@@ -41,9 +50,18 @@ except ImportError:  # pragma: no cover - package import path
         equity_rows,
         format_errors,
         format_summary,
+        localize_warnings,
         trade_rows,
     )
+    from .presenters.formatters import side_label
     from .views.wheel_guard import install_no_wheel_on_value_inputs
+    from .views.i18n_bindings import (
+        add_combo_item,
+        bind_table_headers,
+        bind_tab,
+        bind_text,
+        retranslate_bound_widgets,
+    )
 
 
 class BacktestPanel(QtWidgets.QWidget):
@@ -61,6 +79,14 @@ class BacktestPanel(QtWidgets.QWidget):
         self._build_ui()
         install_no_wheel_on_value_inputs(self)
 
+    def _tr(self, key: str, default: str | None = None) -> str:
+        return tr(key, self._language(), default)
+
+    def _form_label(self, key: str) -> QtWidgets.QLabel:
+        label = QtWidgets.QLabel()
+        bind_text(label, key, self._tr)
+        return label
+
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)
         research_form = QtWidgets.QFormLayout()
@@ -76,7 +102,12 @@ class BacktestPanel(QtWidgets.QWidget):
             widget.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
 
         self.directionBox = QtWidgets.QComboBox()
-        self.directionBox.addItem("long_only")
+        add_combo_item(
+            self.directionBox,
+            "backtest.direction.long_only",
+            "long_only",
+            self._tr,
+        )
         self.trendLookbackSpin = self._integer_spin(1, 10000)
         self.minDropSpin = self._fraction_spin()
         self.volumeSpikeSpin = self._number_spin(0.01, 100.0, 4)
@@ -89,28 +120,34 @@ class BacktestPanel(QtWidgets.QWidget):
         self.slippageParamSpin = self._number_spin(0.0, 10000.0, 4)
         self.notionalParamSpin = self._number_spin(0.01, 1_000_000_000.0, 2)
 
-        research_form.addRow("symbol", self.symbolEdit)
-        research_form.addRow("interval", self.intervalCombo)
-        research_form.addRow("backtest_start", self.backtestStartEdit)
-        research_form.addRow("backtest_end", self.backtestEndEdit)
-        research_form.addRow("direction", self.directionBox)
-        research_form.addRow("trend_lookback", self.trendLookbackSpin)
-        research_form.addRow("min_drop_pct", self.minDropSpin)
-        research_form.addRow("volume_spike_multiple", self.volumeSpikeSpin)
-        research_form.addRow("lower_shadow_min_ratio", self.lowerShadowSpin)
-        research_form.addRow("bullish_next_candle_min_body_ratio", self.bullishNextCandleSpin)
-        research_form.addRow("take_profit_pct", self.takeProfitParamSpin)
-        research_form.addRow("stop_loss_pct", self.stopLossParamSpin)
-        research_form.addRow("max_holding_bars", self.maxHoldingBarsSpin)
-        research_form.addRow("fee_bps", self.feeParamSpin)
-        research_form.addRow("slippage_bps", self.slippageParamSpin)
-        research_form.addRow("notional_per_trade", self.notionalParamSpin)
+        for key, widget in (
+            ("backtest.field.symbol", self.symbolEdit),
+            ("backtest.field.interval", self.intervalCombo),
+            ("backtest.field.start", self.backtestStartEdit),
+            ("backtest.field.end", self.backtestEndEdit),
+            ("backtest.field.direction", self.directionBox),
+            ("backtest.field.trend_lookback", self.trendLookbackSpin),
+            ("backtest.field.min_drop_pct", self.minDropSpin),
+            ("backtest.field.volume_spike_multiple", self.volumeSpikeSpin),
+            ("backtest.field.lower_shadow_min_ratio", self.lowerShadowSpin),
+            ("backtest.field.bullish_next_candle_min_body_ratio", self.bullishNextCandleSpin),
+            ("backtest.field.take_profit_pct", self.takeProfitParamSpin),
+            ("backtest.field.stop_loss_pct", self.stopLossParamSpin),
+            ("backtest.field.max_holding_bars", self.maxHoldingBarsSpin),
+            ("backtest.field.fee_bps", self.feeParamSpin),
+            ("backtest.field.slippage_bps", self.slippageParamSpin),
+            ("backtest.field.notional_per_trade", self.notionalParamSpin),
+        ):
+            research_form.addRow(self._form_label(key), widget)
         layout.addLayout(research_form)
 
         param_button_row = QtWidgets.QHBoxLayout()
-        self.btnLoadDefaults = QtWidgets.QPushButton("Load default params")
-        self.btnApplyAnalysis = QtWidgets.QPushButton("Apply params from analysis")
-        self.btnReset = QtWidgets.QPushButton("Reset")
+        self.btnLoadDefaults = QtWidgets.QPushButton()
+        self.btnApplyAnalysis = QtWidgets.QPushButton()
+        self.btnReset = QtWidgets.QPushButton()
+        bind_text(self.btnLoadDefaults, "backtest.load_defaults", self._tr)
+        bind_text(self.btnApplyAnalysis, "backtest.apply_analysis", self._tr)
+        bind_text(self.btnReset, "backtest.reset", self._tr)
         for button in (self.btnLoadDefaults, self.btnApplyAnalysis, self.btnReset):
             button.setProperty("role", "secondaryButton")
             param_button_row.addWidget(button)
@@ -119,7 +156,12 @@ class BacktestPanel(QtWidgets.QWidget):
         form = QtWidgets.QFormLayout()
 
         self.strategyBox = QtWidgets.QComboBox()
-        self.strategyBox.addItems(["Deep V Reversal", "MA Cross", "Feature Rule Long"])
+        for key, value in (
+            ("backtest.strategy.deep_v", "Deep V Reversal"),
+            ("backtest.strategy.ma_cross", "MA Cross"),
+            ("backtest.strategy.feature_rule_long", "Feature Rule Long"),
+        ):
+            add_combo_item(self.strategyBox, key, value, self._tr)
         self.fastSpin = QtWidgets.QSpinBox()
         self.fastSpin.setRange(1, 500)
         self.fastSpin.setValue(5)
@@ -138,24 +180,32 @@ class BacktestPanel(QtWidgets.QWidget):
         self.ruleIndexSpin = QtWidgets.QSpinBox()
         self.ruleIndexSpin.setRange(0, 100000)
         self.ruleIndexSpin.setValue(0)
-        self.btnImportRule = QtWidgets.QPushButton("Import candidate rule")
+        self.btnImportRule = QtWidgets.QPushButton()
+        bind_text(self.btnImportRule, "backtest.import_rule", self._tr)
         self.btnImportRule.setProperty("role", "secondaryButton")
 
-        form.addRow("Strategy", self.strategyBox)
-        form.addRow("fast_window", self.fastSpin)
-        form.addRow("slow_window", self.slowSpin)
-        form.addRow("exit_bars", self.exitBarsSpin)
-        form.addRow("stop_loss_pct", self.stopSpin)
-        form.addRow("take_profit_pct", self.takeSpin)
-        form.addRow("rule_index", self.ruleIndexSpin)
-        form.addRow("candidate_rules.csv", self.btnImportRule)
+        for key, widget in (
+            ("backtest.field.strategy", self.strategyBox),
+            ("backtest.field.fast_window", self.fastSpin),
+            ("backtest.field.slow_window", self.slowSpin),
+            ("backtest.field.exit_bars", self.exitBarsSpin),
+            ("backtest.field.stop_loss_pct", self.stopSpin),
+            ("backtest.field.take_profit_pct", self.takeSpin),
+            ("backtest.field.rule_index", self.ruleIndexSpin),
+            ("backtest.field.candidate_rules", self.btnImportRule),
+        ):
+            form.addRow(self._form_label(key), widget)
         layout.addLayout(form)
 
         button_row = QtWidgets.QHBoxLayout()
-        self.btnRun = QtWidgets.QPushButton("Run backtest")
-        self.btnScan = QtWidgets.QPushButton("Run parameter scan")
-        self.btnWalkForward = QtWidgets.QPushButton("Run walk-forward")
-        self.btnExport = QtWidgets.QPushButton("Export backtest")
+        self.btnRun = QtWidgets.QPushButton()
+        self.btnScan = QtWidgets.QPushButton()
+        self.btnWalkForward = QtWidgets.QPushButton()
+        self.btnExport = QtWidgets.QPushButton()
+        bind_text(self.btnRun, "run_backtest", self._tr)
+        bind_text(self.btnScan, "run_parameter_scan", self._tr)
+        bind_text(self.btnWalkForward, "run_walk_forward", self._tr)
+        bind_text(self.btnExport, "backtest.export", self._tr)
         self.btnRun.setProperty("role", "primaryButton")
         self.btnScan.setProperty("role", "secondaryButton")
         self.btnWalkForward.setProperty("role", "secondaryButton")
@@ -168,16 +218,35 @@ class BacktestPanel(QtWidgets.QWidget):
 
         self.resultText = QtWidgets.QPlainTextEdit()
         self.resultText.setReadOnly(True)
-        self.resultText.setPlainText("Backtest results are for research only and do not represent live trading returns.")
+        self.resultText.setPlainText(self._tr("backtest.initial_message"))
         layout.addWidget(self.resultText)
 
         result_tabs = QtWidgets.QTabWidget()
+        self.resultTabs = result_tabs
         self.tradeResultTable = self._result_table(TRADE_COLUMNS)
         self.equityResultTable = self._result_table(EQUITY_COLUMNS)
         self.comparisonTable = self._result_table(("metric", "value"))
-        result_tabs.addTab(self.tradeResultTable, "Trades")
-        result_tabs.addTab(self.equityResultTable, "Equity")
-        result_tabs.addTab(self.comparisonTable, "Manual vs Rule")
+        result_tabs.addTab(self.tradeResultTable, "")
+        result_tabs.addTab(self.equityResultTable, "")
+        result_tabs.addTab(self.comparisonTable, "")
+        bind_tab(result_tabs, self.tradeResultTable, "backtest.tab.trades", self._tr)
+        bind_tab(result_tabs, self.equityResultTable, "backtest.tab.equity", self._tr)
+        bind_tab(result_tabs, self.comparisonTable, "backtest.tab.comparison", self._tr)
+        bind_table_headers(
+            self.tradeResultTable,
+            (f"backtest.column.{column}" for column in TRADE_COLUMNS),
+            self._tr,
+        )
+        bind_table_headers(
+            self.equityResultTable,
+            (f"backtest.column.{column}" for column in EQUITY_COLUMNS),
+            self._tr,
+        )
+        bind_table_headers(
+            self.comparisonTable,
+            ("backtest.column.metric", "backtest.column.value"),
+            self._tr,
+        )
         layout.addWidget(result_tabs, stretch=1)
 
         self.btnLoadDefaults.clicked.connect(self.load_default_params)
@@ -226,7 +295,7 @@ class BacktestPanel(QtWidgets.QWidget):
                 "interval": self.intervalCombo.currentText().strip(),
                 "backtest_start": self.backtestStartEdit.dateTime().toString(QtCore.Qt.ISODate),
                 "backtest_end": self.backtestEndEdit.dateTime().toString(QtCore.Qt.ISODate),
-                "direction": self.directionBox.currentText(),
+                "direction": self.directionBox.currentData() or "long_only",
                 "trend_lookback": self.trendLookbackSpin.value(),
                 "min_drop_pct": self.minDropSpin.value(),
                 "volume_spike_multiple": self.volumeSpikeSpin.value(),
@@ -259,9 +328,7 @@ class BacktestPanel(QtWidgets.QWidget):
         values = self.controller.default_form_values()
         values.update(self._host_market_values())
         self._set_form_values(values)
-        self.resultText.setPlainText(
-            "Backtest results are for research only and do not represent live trading returns."
-        )
+        self.resultText.setPlainText(self._tr("backtest.initial_message"))
         for table in (self.tradeResultTable, self.equityResultTable, self.comparisonTable):
             table.setRowCount(0)
 
@@ -276,11 +343,9 @@ class BacktestPanel(QtWidgets.QWidget):
                 current_values=self.collect_form_values(),
             )
             self._set_form_values(values)
-            self.resultText.setPlainText(
-                "Applied analysis candidate parameters. Review them before running the historical simulation."
-            )
+            self.resultText.setPlainText(self._tr("backtest.analysis_applied"))
         except Exception as exc:
-            self.resultText.setPlainText(format_errors([str(exc)]))
+            self.resultText.setPlainText(format_errors([str(exc)], translator=self._tr))
 
     def _available_analysis_params(self) -> dict[str, Any] | None:
         if self._analysis_params_source:
@@ -340,7 +405,9 @@ class BacktestPanel(QtWidgets.QWidget):
         self.intervalCombo.setCurrentText(interval)
         self._set_datetime(self.backtestStartEdit, values.get("backtest_start"))
         self._set_datetime(self.backtestEndEdit, values.get("backtest_end"))
-        self.directionBox.setCurrentText(str(values.get("direction") or "long_only"))
+        direction = str(values.get("direction") or "long_only")
+        index = self.directionBox.findData(direction)
+        self.directionBox.setCurrentIndex(max(0, index))
         self.trendLookbackSpin.setValue(int(values.get("trend_lookback", 20)))
         self.minDropSpin.setValue(float(values.get("min_drop_pct", 0.02)))
         self.volumeSpikeSpin.setValue(float(values.get("volume_spike_multiple", 2.0)))
@@ -369,13 +436,24 @@ class BacktestPanel(QtWidgets.QWidget):
 
     def retranslate_ui(self):
         language = self._language()
+        retranslate_bound_widgets(self, self._tr)
         self.btnRun.setText(tr("run_backtest", language))
         self.btnScan.setText(tr("run_parameter_scan", language))
         self.btnWalkForward.setText(tr("run_walk_forward", language))
-        self.btnExport.setText(tr("export_session", language))
-        self.btnLoadDefaults.setText("加载默认参数" if language == "zh_CN" else "Load default params")
-        self.btnApplyAnalysis.setText("应用分析候选参数" if language == "zh_CN" else "Apply params from analysis")
-        self.btnReset.setText("重置" if language == "zh_CN" else "Reset")
+        self.btnExport.setText(tr("backtest.export", language))
+        self.btnLoadDefaults.setText(tr("backtest.load_defaults", language))
+        self.btnApplyAnalysis.setText(tr("backtest.apply_analysis", language))
+        self.btnReset.setText(tr("backtest.reset", language))
+        locale = QtCore.QLocale(
+            QtCore.QLocale.English if language == "en_US" else QtCore.QLocale.Chinese,
+            QtCore.QLocale.UnitedStates if language == "en_US" else QtCore.QLocale.China,
+        )
+        self.backtestStartEdit.setLocale(locale)
+        self.backtestEndEdit.setLocale(locale)
+        if self.last_service_result is not None:
+            self._apply_service_result(self.last_service_result)
+        elif self.last_result is not None:
+            self._display_metrics(self.last_result.metrics)
 
     def _safe_float(self, value: Any, default: float = 0.0) -> float:
         try:
@@ -411,7 +489,7 @@ class BacktestPanel(QtWidgets.QWidget):
         return self.loaded_rule_conditions or [{"column": "pre_ret_20", "op": "<=", "value": -0.03}]
 
     def _strategy(self):
-        if self.strategyBox.currentText() == "MA Cross":
+        if self.strategyBox.currentData() == "MA Cross":
             return MovingAverageCrossStrategy(self.fastSpin.value(), self.slowSpin.value(), "LONG_ONLY")
         return FeatureRuleLongStrategy(
             self._conditions(),
@@ -421,7 +499,7 @@ class BacktestPanel(QtWidgets.QWidget):
         )
 
     def _strategy_factory_grid(self):
-        if self.strategyBox.currentText() == "MA Cross":
+        if self.strategyBox.currentData() == "MA Cross":
             grid = {
                 "fast_window": sorted({self.fastSpin.value(), max(1, self.fastSpin.value() // 2), self.fastSpin.value() * 2}),
                 "slow_window": sorted({self.slowSpin.value(), max(2, self.slowSpin.value() // 2), self.slowSpin.value() * 2}),
@@ -439,13 +517,18 @@ class BacktestPanel(QtWidgets.QWidget):
 
     def _display_metrics(self, metrics: dict):
         keys = ["total_return_pct", "win_rate_pct", "profit_factor", "max_drawdown_pct", "trade_sharpe", "time_sharpe", "closed_trades"]
-        lines = ["Backtest results are for research only and do not represent live trading returns.", ""]
+        lines = [self._tr("backtest.initial_message"), ""]
         for key in keys:
-            lines.append(f"{key}: {metrics.get(key)}")
+            lines.append(f"{self._tr(f'backtest.metric.{key}')}: {metrics.get(key)}")
         self.resultText.setPlainText("\n".join(lines))
 
     def import_candidate_rule(self):
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(self, "Select candidate_rules.csv", "", "CSV Files (*.csv)")
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self,
+            self._tr("backtest.select_rule_file"),
+            "",
+            self._tr("backtest.csv_filter"),
+        )
         if not path:
             return
         try:
@@ -453,13 +536,23 @@ class BacktestPanel(QtWidgets.QWidget):
             self.loaded_rule_conditions = strategy.conditions
             self.loaded_rule_path = path
             self.set_analysis_params_source({"conditions_json": list(strategy.conditions)})
-            self.strategyBox.setCurrentText("Feature Rule Long")
-            self.resultText.setPlainText(f"Imported rule {self.ruleIndexSpin.value()} from candidate_rules.csv")
+            self.strategyBox.setCurrentIndex(
+                max(0, self.strategyBox.findData("Feature Rule Long"))
+            )
+            self.resultText.setPlainText(
+                self._tr("backtest.rule_imported").format(
+                    index=self.ruleIndexSpin.value()
+                )
+            )
         except Exception as exc:
-            self.resultText.setPlainText(f"Candidate rule import failed: {type(exc).__name__}: {exc}")
+            self.resultText.setPlainText(
+                self._tr("backtest.rule_import_failed").format(
+                    error=f"{type(exc).__name__}: {exc}"
+                )
+            )
 
     def run_backtest(self):
-        if self.strategyBox.currentText() != "Deep V Reversal":
+        if self.strategyBox.currentData() != "Deep V Reversal":
             self._run_legacy_backtest()
             return
         try:
@@ -472,27 +565,39 @@ class BacktestPanel(QtWidgets.QWidget):
             self.last_service_result = result
             self._apply_service_result(result)
         except Exception as exc:
-            self.resultText.setPlainText(format_errors([f"{type(exc).__name__}: {exc}"]))
+            self.resultText.setPlainText(
+                format_errors([f"{type(exc).__name__}: {exc}"], translator=self._tr)
+            )
 
     def _run_legacy_backtest(self):
         try:
             data = self._df()
             if data.empty:
-                self.resultText.setPlainText("No K-line data available for backtest.")
+                self.resultText.setPlainText(self._tr("backtest.no_data"))
                 return
             symbol, interval = self._symbol_interval()
             self.last_result = run_backtest(data, self._strategy(), self._config(), symbol, interval)
             self._display_metrics(self.last_result.metrics)
         except Exception as exc:
-            self.resultText.setPlainText(f"Backtest failed: {type(exc).__name__}: {exc}")
+            self.resultText.setPlainText(
+                self._tr("backtest.failed").format(
+                    error=f"{type(exc).__name__}: {exc}"
+                )
+            )
 
     def _apply_service_result(self, result) -> None:
         if not result.success:
-            self.resultText.setPlainText(format_errors(result.errors))
+            self.resultText.setPlainText(format_errors(result.errors, translator=self._tr))
             for table in (self.tradeResultTable, self.equityResultTable, self.comparisonTable):
                 table.setRowCount(0)
             return
-        self.resultText.setPlainText(format_summary(result.summary, warnings=result.warnings))
+        self.resultText.setPlainText(
+            format_summary(
+                result.summary,
+                warnings=result.warnings,
+                translator=self._tr,
+            )
+        )
         self._populate_result_table(self.tradeResultTable, trade_rows(result.trades), TRADE_COLUMNS)
         self._populate_result_table(self.equityResultTable, equity_rows(result.equity_curve), EQUITY_COLUMNS)
         self._populate_result_table(
@@ -501,8 +606,8 @@ class BacktestPanel(QtWidgets.QWidget):
             ("metric", "value"),
         )
 
-    @staticmethod
     def _populate_result_table(
+        self,
         table: QtWidgets.QTableWidget,
         rows: list[dict[str, Any]],
         columns: tuple[str, ...],
@@ -511,7 +616,22 @@ class BacktestPanel(QtWidgets.QWidget):
         for row_index, row in enumerate(rows):
             for column_index, column in enumerate(columns):
                 value = row.get(column)
-                text = "" if value is None else str(value)
+                if value is None:
+                    text = ""
+                elif column == "side":
+                    text = side_label(value, self._language())
+                elif column == "exit_reason":
+                    text = self._tr(
+                        f"backtest.exit_reason.{value}",
+                        default=str(value),
+                    )
+                elif column == "metric":
+                    text = self._tr(
+                        f"backtest.comparison.{value}",
+                        default=str(value),
+                    )
+                else:
+                    text = str(value)
                 table.setItem(row_index, column_index, QtWidgets.QTableWidgetItem(text))
         table.resizeColumnsToContents()
 
@@ -519,24 +639,28 @@ class BacktestPanel(QtWidgets.QWidget):
         try:
             data = self._df()
             if data.empty:
-                self.resultText.setPlainText("No K-line data available for parameter scan.")
+                self.resultText.setPlainText(self._tr("backtest.no_scan_data"))
                 return
             symbol, interval = self._symbol_interval()
             factory, grid = self._strategy_factory_grid()
             self.last_scan = grid_search(data, factory, grid, self._config(), symbol, interval)
             top = self.last_scan.sort_values("sharpe", ascending=False, na_position="last").head(10)
             self.resultText.setPlainText(
-                "Parameter scan is research-only. In-sample best parameters are not live-trading proof.\n\n"
+                self._tr("backtest.scan_disclaimer") + "\n\n"
                 + top.to_string(index=False)
             )
         except Exception as exc:
-            self.resultText.setPlainText(f"Parameter scan failed: {type(exc).__name__}: {exc}")
+            self.resultText.setPlainText(
+                self._tr("backtest.scan_failed").format(
+                    error=f"{type(exc).__name__}: {exc}"
+                )
+            )
 
     def run_walk_forward(self):
         try:
             data = self._df()
             if data.empty:
-                self.resultText.setPlainText("No K-line data available for walk-forward validation.")
+                self.resultText.setPlainText(self._tr("backtest.no_walk_forward_data"))
                 return
             symbol, interval = self._symbol_interval()
             factory, grid = self._strategy_factory_grid()
@@ -544,28 +668,43 @@ class BacktestPanel(QtWidgets.QWidget):
             valid = pd.DataFrame(self.last_walk_forward.get("valid_results") or pd.DataFrame())
             valid_top = valid.sort_values("sharpe", ascending=False, na_position="last").head(1) if not valid.empty and "sharpe" in valid.columns else valid.head(1)
             lines = [
-                "Walk-forward validation. Test is evaluated once only and must not be used for parameter tuning.",
+                self._tr("backtest.walk_forward_disclaimer"),
                 "",
-                f"selected_params: {self.last_walk_forward.get('selected_params')}",
-                f"test_result: {self.last_walk_forward.get('test_result')}",
-                f"warnings: {self.last_walk_forward.get('warnings')}",
+                f"{self._tr('backtest.walk_forward_selected')}: {self.last_walk_forward.get('selected_params')}",
+                f"{self._tr('backtest.walk_forward_test')}: {self.last_walk_forward.get('test_result')}",
+                f"{self._tr('backtest.warnings')}: "
+                f"{localize_warnings(self.last_walk_forward.get('warnings'), translator=self._tr)}",
                 "",
-                "validation_top:",
-                valid_top.to_string(index=False) if not valid_top.empty else "(empty)",
+                f"{self._tr('backtest.walk_forward_validation_top')}:",
+                valid_top.to_string(index=False) if not valid_top.empty else self._tr("backtest.empty"),
             ]
             self.resultText.setPlainText("\n".join(lines))
         except Exception as exc:
-            self.resultText.setPlainText(f"Walk-forward failed: {type(exc).__name__}: {exc}")
+            self.resultText.setPlainText(
+                self._tr("backtest.walk_forward_failed").format(
+                    error=f"{type(exc).__name__}: {exc}"
+                )
+            )
 
     def export_result(self):
         if self.last_result is None:
-            self.resultText.setPlainText("Run a backtest first.")
+            self.resultText.setPlainText(self._tr("backtest.run_first"))
             return
-        target = QtWidgets.QFileDialog.getExistingDirectory(self, "Select backtest export directory")
+        target = QtWidgets.QFileDialog.getExistingDirectory(
+            self,
+            self._tr("backtest.select_export_directory"),
+        )
         if not target:
             return
         try:
             out = export_backtest_result(self.last_result, Path(target), self.last_scan, self.last_walk_forward)
-            self.resultText.appendPlainText(f"\nExported: {out}")
+            self.resultText.appendPlainText(
+                "\n" + self._tr("backtest.exported").format(path=out)
+            )
         except Exception as exc:
-            self.resultText.appendPlainText(f"\nExport failed: {type(exc).__name__}: {exc}")
+            self.resultText.appendPlainText(
+                "\n"
+                + self._tr("backtest.export_failed").format(
+                    error=f"{type(exc).__name__}: {exc}"
+                )
+            )

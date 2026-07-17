@@ -69,6 +69,33 @@ def test_formatters_preserve_main_window_display_text():
     assert "wick, panic" in event_detail
 
 
+def test_formatters_and_trade_tables_use_english_when_requested():
+    _app()
+    open_table = QtWidgets.QTableWidget()
+    open_table.setColumnCount(10)
+    closed_table = QtWidgets.QTableWidget()
+    closed_table.setColumnCount(13)
+    trades = [
+        {
+            "trade_id": "trd_english",
+            "side": "LONG",
+            "status": "OPEN",
+            "entry_bar_time_bjt": "2026-01-01T00:00:00+08:00",
+            "entry_price_proxy": 100.0,
+            "fill_mode": "CLOSE",
+        }
+    ]
+
+    detail = format_trade_detail(trades[0], language="en_US")
+    populate_trade_tables(open_table, closed_table, trades, language="en_US")
+
+    assert "Trade Details" in detail
+    assert "交易详情" not in detail
+    assert open_table.item(0, 1).text() == "Long"
+    assert open_table.item(0, 8).text() == "Open"
+    assert open_table.item(0, 9).text() == "Close Price"
+
+
 def test_trade_and_event_tables_are_populated_with_short_ids_and_roles():
     _app()
     open_table = QtWidgets.QTableWidget()
@@ -339,7 +366,7 @@ def test_status_account_overview_includes_unrealized_pnl():
     assert window.accountReturnValue.text() == "3.00%"
     assert window.accountWinRateValue.text() == "100.00%"
     assert mini_table.rowCount() == 1
-    assert mini_table.item(0, 1).text() == "LONG"
+    assert mini_table.item(0, 1).text() == "多"
     assert mini_table.item(0, 3).text() == "10.00"
 
 

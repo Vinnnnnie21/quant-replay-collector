@@ -10,6 +10,7 @@ import pandas as pd
 from PySide6 import QtCore
 
 try:
+    from app_i18n import translate_for
     from app_config import BJT
     from market_data import clamp
     from presenters.formatters import fmt_num
@@ -18,6 +19,7 @@ try:
     from render.visible_window import build_rebuild_plan
     from render_state import RenderState
 except ImportError:  # pragma: no cover - package import path
+    from ..app_i18n import translate_for
     from ..app_config import BJT
     from ..market_data import clamp
     from ..presenters.formatters import fmt_num
@@ -318,10 +320,22 @@ def render_chart(window, force: bool = False) -> None:
         )
         bar = window.df.iloc[index]
         window.status.setText(
-            f"{window.symbolBox.currentText().strip().upper()} {window.intervalBox.currentText().strip()} | "
-            f"{'播放' if window.playing else '暂停'} | {bar_time} | "
-            f"C {fmt_num(bar.get('close'))} | "
-            f"{'跟随最新' if window.follow_latest else '自由浏览'}"
+                translate_for(window, "chart.status_format").format(
+                symbol=window.symbolBox.currentText().strip().upper(),
+                interval=window.intervalBox.currentText().strip(),
+                    play_state=(
+                        translate_for(window, "playing")
+                        if window.playing
+                        else translate_for(window, "paused")
+                    ),
+                bar_time=bar_time,
+                close=fmt_num(bar.get("close")),
+                view_state=(
+                        translate_for(window, "follow_latest")
+                        if window.follow_latest
+                        else translate_for(window, "free_view")
+                ),
+            )
         )
         if window._is_market_params_dirty():
             window.status.setText(window.tr("market_params_changed"))
