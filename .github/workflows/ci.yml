@@ -22,7 +22,18 @@ jobs:
       - name: Compile application
         run: python -m compileall quant_collector_app scripts
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -q --junitxml=pytest-results.xml
+      - name: Report test failures
+        if: failure() && hashFiles('pytest-results.xml') != ''
+        shell: pwsh
+        run: |
+          [xml]$report = Get-Content -LiteralPath pytest-results.xml -Raw
+          foreach ($case in $report.SelectNodes('//testcase[failure or error]')) {
+            $failure = if ($case.failure) { $case.failure } else { $case.error }
+            $message = "$($case.classname)::$($case.name): $($failure.message)"
+            $escaped = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+            Write-Output "::error title=Pytest failure::$escaped"
+          }
       - name: Run core self check
         run: python quant_collector_app/self_check.py --core
       - name: Build clean release
