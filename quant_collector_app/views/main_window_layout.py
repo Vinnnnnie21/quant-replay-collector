@@ -598,15 +598,18 @@ def build_main_window_ui(self) -> None:
     self.tradeManagementStart.setObjectName("tradeManagementStart")
     self.tradeManagementStart.setCalendarPopup(True)
     self.tradeManagementStart.setDisplayFormat("yyyy-MM-dd HH:mm")
+    replay_time_zone = QtCore.QTimeZone(b"Asia/Shanghai")
     self.tradeManagementStart.setDateTime(
-        QtCore.QDateTime(self.startDate.date(), QtCore.QTime(0, 0))
+        QtCore.QDateTime(self.startDate.date(), QtCore.QTime(0, 0), replay_time_zone)
     )
     self.tradeManagementEnd = QtWidgets.QDateTimeEdit()
     self.tradeManagementEnd.setObjectName("tradeManagementEnd")
     self.tradeManagementEnd.setCalendarPopup(True)
     self.tradeManagementEnd.setDisplayFormat("yyyy-MM-dd HH:mm")
     self.tradeManagementEnd.setDateTime(
-        QtCore.QDateTime(self.endDate.date().addDays(1), QtCore.QTime(0, 0))
+        QtCore.QDateTime(
+            self.endDate.date().addDays(1), QtCore.QTime(0, 0), replay_time_zone
+        )
     )
     self.tradeManagementStartLabel = QtWidgets.QLabel("开始")
     self.tradeManagementEndLabel = QtWidgets.QLabel("结束")
