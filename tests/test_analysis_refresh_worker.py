@@ -142,9 +142,9 @@ def test_analysis_refresh_worker_emits_low_frequency_stage_progress() -> None:
     )
 
     assert [(event.revision, event.message) for event in progress] == [
-        (7, "Preparing event study..."),
-        (7, "Preparing research dataset..."),
-        (7, "Calculating performance statistics..."),
+        (7, "正在准备事件研究…"),
+        (7, "正在准备研究样本…"),
+        (7, "正在计算绩效统计…"),
     ]
 
 

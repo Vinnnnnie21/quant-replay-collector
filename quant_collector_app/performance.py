@@ -3,6 +3,11 @@ from __future__ import annotations
 import math
 from typing import Any
 
+try:
+    from app_i18n import tr
+except ImportError:  # pragma: no cover - package import path
+    from .app_i18n import tr
+
 
 SIDES = ("LONG", "SHORT")
 SIDE_LABELS = {"LONG": "多头", "SHORT": "空头"}
@@ -152,6 +157,7 @@ def _recent_trade_summary(trades: list[dict[str, Any]]) -> dict[str, Any]:
         "recent_trade_status": status,
         "recent_trade_return_pct": ret,
         "recent_trade_holding_bars": holding,
+        "recent_trade_entry_time": trade.get("entry_bar_time_bjt"),
         "recent_trade_result": result,
     }
 
@@ -242,41 +248,75 @@ def _fmt_num(value: Any) -> str:
     return "-" if num is None else f"{num:.2f}"
 
 
-def format_performance_report(summary: dict[str, Any]) -> str:
+def _recent_trade_report(summary: dict[str, Any], language: str) -> str:
+    trade_id = summary.get("recent_trade_id")
+    if not trade_id:
+        return tr("performance.report.no_trades", language)
+    side = str(summary.get("recent_trade_side") or "").upper()
+    side_text = tr("ui.long", language) if side == "LONG" else tr("ui.short", language) if side == "SHORT" else side or "-"
+    status = str(summary.get("recent_trade_status") or "").upper()
+    if status == "CLOSED":
+        text = tr("performance.report.recent_closed", language).format(
+            side=side_text,
+            return_value=_fmt_pct(summary.get("recent_trade_return_pct")),
+        )
+        holding = summary.get("recent_trade_holding_bars")
+        if holding is not None:
+            text += tr("performance.report.recent_holding", language).format(bars=holding)
+        return text
+    if status == "OPEN":
+        text = tr("performance.report.recent_open", language).format(side=side_text)
+        entry_time = summary.get("recent_trade_entry_time")
+        if entry_time:
+            text += tr("performance.report.recent_entry", language).format(time=entry_time)
+        return text
+    return tr("performance.report.recent_unknown", language).format(side=side_text, status=status or "-")
+
+
+def format_performance_report(summary: dict[str, Any], language: str = "zh_CN") -> str:
     by_side = summary.get("by_side", {})
     lines = [
-        "交易绩效统计（仅基于手动回放记录）",
+        tr("performance.report.title", language),
         "",
-        f"总交易数：{summary.get('total_trades', 0)}",
-        f"已平仓交易数：{summary.get('closed_trades', 0)}",
-        f"未平仓交易数：{summary.get('open_trades', 0)}",
-        f"胜率：{_fmt_pct(summary.get('win_rate_pct'))}",
-        f"平均收益率：{_fmt_pct(summary.get('average_return_pct'))}",
-        f"最大单笔盈利：{_fmt_pct(summary.get('max_profit_pct'))}",
-        f"最大单笔亏损：{_fmt_pct(summary.get('max_loss_pct'))}",
-        f"平均持仓K线数：{_fmt_num(summary.get('average_holding_bars'))}",
-        f"总收益率：{_fmt_pct(summary.get('total_return_pct'))}",
-        f"最大回撤：{_fmt_pct(summary.get('max_drawdown_pct'))}",
-        f"盈亏比：{_fmt_num(summary.get('profit_factor'))}",
-        f"期望收益：{_fmt_pct(summary.get('expectancy_pct'))}",
-        f"Sharpe(按交易)：{_fmt_num(summary.get('sharpe_trade'))}",
-        f"Sortino(按交易)：{_fmt_num(summary.get('sortino_trade'))}",
+        tr("performance.report.total_trades", language).format(value=summary.get("total_trades", 0)),
+        tr("performance.report.closed_trades", language).format(value=summary.get("closed_trades", 0)),
+        tr("performance.report.open_trades", language).format(value=summary.get("open_trades", 0)),
+        tr("performance.report.win_rate", language).format(value=_fmt_pct(summary.get("win_rate_pct"))),
+        tr("performance.report.average_return", language).format(value=_fmt_pct(summary.get("average_return_pct"))),
+        tr("performance.report.max_profit", language).format(value=_fmt_pct(summary.get("max_profit_pct"))),
+        tr("performance.report.max_loss", language).format(value=_fmt_pct(summary.get("max_loss_pct"))),
+        tr("performance.report.average_holding", language).format(value=_fmt_num(summary.get("average_holding_bars"))),
+        tr("performance.report.total_return", language).format(value=_fmt_pct(summary.get("total_return_pct"))),
+        tr("performance.report.max_drawdown", language).format(value=_fmt_pct(summary.get("max_drawdown_pct"))),
+        tr("performance.report.profit_factor", language).format(value=_fmt_num(summary.get("profit_factor"))),
+        tr("performance.report.expectancy", language).format(value=_fmt_pct(summary.get("expectancy_pct"))),
+        tr("performance.report.sharpe", language).format(value=_fmt_num(summary.get("sharpe_trade"))),
+        tr("performance.report.sortino", language).format(value=_fmt_num(summary.get("sortino_trade"))),
         "",
-        "分方向统计",
+        tr("performance.report.by_side", language),
     ]
 
     for side in SIDES:
         stats = by_side.get(side, {})
         lines.extend(
             [
-                f"{SIDE_LABELS.get(side, side)}：总数 {stats.get('total_trades', 0)}，已平 {stats.get('closed_trades', 0)}，未平 {stats.get('open_trades', 0)}，胜率 {_fmt_pct(stats.get('win_rate_pct'))}，平均收益 {_fmt_pct(stats.get('average_return_pct'))}",
+                tr("performance.report.side_summary", language).format(
+                    side=(tr("ui.long", language) if side == "LONG" else tr("ui.short", language)),
+                    total=stats.get("total_trades", 0),
+                    closed=stats.get("closed_trades", 0),
+                    open=stats.get("open_trades", 0),
+                    win_rate=_fmt_pct(stats.get("win_rate_pct")),
+                    average_return=_fmt_pct(stats.get("average_return_pct")),
+                ),
             ]
         )
 
     lines.extend(
         [
             "",
-            f"最近一次交易结果：{summary.get('recent_trade_result') or '-'}",
+            tr("performance.report.recent_result", language).format(
+                value=_recent_trade_report(summary, language)
+            ),
         ]
     )
     return "\n".join(lines)

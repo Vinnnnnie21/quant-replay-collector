@@ -21,7 +21,6 @@ try:
     )
     from execution import FILL_MODES
     from multi_timeframe_panel import MultiTimeframePanel
-    from presenters.formatters import fill_mode_label
     from ui_style import (
         COLORS,
         SPACING,
@@ -32,6 +31,18 @@ try:
     from views.nullable_percent_input import NullablePercentInput
     from views.k_view_box import KViewBox
     from views.high_refresh_viewport import configure_high_refresh_viewport, verify_high_refresh_viewport
+    from views.i18n_bindings import (
+        add_combo_item,
+        add_tab,
+        bind_combo_item,
+        bind_group_title,
+        bind_placeholder,
+        bind_plain_text,
+        bind_table_headers,
+        bind_tab,
+        bind_text,
+        bind_tooltip,
+    )
     from views.plot_lifecycle import (
         close_parent_owned_graphics_view,
         prepare_plot_for_shutdown,
@@ -54,7 +65,6 @@ except ImportError:  # pragma: no cover - package import path
     )
     from ..execution import FILL_MODES
     from ..multi_timeframe_panel import MultiTimeframePanel
-    from ..presenters.formatters import fill_mode_label
     from ..ui_style import (
         COLORS,
         SPACING,
@@ -65,6 +75,18 @@ except ImportError:  # pragma: no cover - package import path
     from .nullable_percent_input import NullablePercentInput
     from .k_view_box import KViewBox
     from .high_refresh_viewport import configure_high_refresh_viewport, verify_high_refresh_viewport
+    from .i18n_bindings import (
+        add_combo_item,
+        add_tab,
+        bind_combo_item,
+        bind_group_title,
+        bind_placeholder,
+        bind_plain_text,
+        bind_table_headers,
+        bind_tab,
+        bind_text,
+        bind_tooltip,
+    )
     from .plot_lifecycle import (
         close_parent_owned_graphics_view,
         prepare_plot_for_shutdown,
@@ -276,6 +298,18 @@ def _empty_state(title: str, body: str, *, compact: bool = False) -> QtWidgets.Q
     return frame
 
 
+def _bind_empty_state(
+    frame: QtWidgets.QFrame,
+    title_key: str,
+    body_key: str,
+    translator,
+) -> None:
+    labels = frame.findChildren(QtWidgets.QLabel, options=QtCore.Qt.FindDirectChildrenOnly)
+    if len(labels) >= 2:
+        bind_text(labels[0], title_key, translator)
+        bind_text(labels[1], body_key, translator)
+
+
 def _stacked_empty_table(title: str, body: str, table: QtWidgets.QTableWidget) -> QtWidgets.QStackedWidget:
     stack = QtWidgets.QStackedWidget()
     stack.addWidget(_empty_state(title, body))
@@ -316,11 +350,11 @@ def build_main_window_ui(self) -> None:
     header_l.addWidget(self.headerTitleLabel)
 
     self.headerMetricLabels = {}
-    self.btnReplayWorkspace = QtWidgets.QPushButton("行情回放")
+    self.btnReplayWorkspace = QtWidgets.QPushButton(self.tr("trading_replay"))
     self.btnReplayWorkspace.setProperty("role", "workspaceNavButton")
     self.btnReplayWorkspace.setCheckable(True)
     self.btnReplayWorkspace.setChecked(True)
-    self.btnAnalysisWorkspace = QtWidgets.QPushButton("数据分析")
+    self.btnAnalysisWorkspace = QtWidgets.QPushButton(self.tr("data_analysis"))
     self.btnAnalysisWorkspace.setProperty("role", "workspaceNavButton")
     self.btnAnalysisWorkspace.setCheckable(True)
     self.workspaceNavGroup = QtWidgets.QButtonGroup(header)
@@ -339,9 +373,13 @@ def build_main_window_ui(self) -> None:
     self.headerMainLabel.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
     header_l.addStretch(1)
 
-    self.headerEquityValue = QtWidgets.QLabel("权益 -")
+    self.headerEquityValue = QtWidgets.QLabel(
+        self.tr("ui.header_equity").format(value="-")
+    )
     self.headerEquityValue.setProperty("role", "marketMetric")
-    self.headerReturnValue = QtWidgets.QLabel("收益 -")
+    self.headerReturnValue = QtWidgets.QLabel(
+        self.tr("ui.header_return").format(value="-")
+    )
     self.headerReturnValue.setProperty("role", "marketMetric")
 
     self.headerSymbolValue = _hidden_header_label(header, DEFAULT_SYMBOL)
@@ -353,17 +391,18 @@ def build_main_window_ui(self) -> None:
     self.headerCloseValue = self.headerOhlcValue
     self.headerDeltaValue = _hidden_header_label(header)
 
-    self.headerPlayBadge = QtWidgets.QLabel("● 暂停")
+    self.headerPlayBadge = QtWidgets.QLabel(f"● {self.tr('paused')}")
     self.headerPlayBadge.setProperty("role", "headerState")
     self.headerPlayBadge.setMinimumWidth(54)
     self.headerPlayBadge.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
     self.headerPlayBadge.setAlignment(QtCore.Qt.AlignCenter)
-    self.headerViewBadge = QtWidgets.QLabel("自由浏览")
+    self.headerViewBadge = QtWidgets.QLabel(self.tr("free_view"))
     self.headerViewBadge.setProperty("role", "headerState")
     self.headerViewBadge.setMinimumWidth(68)
     self.headerViewBadge.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
     self.headerViewBadge.setAlignment(QtCore.Qt.AlignCenter)
-    self.headerSessionBadge = QtWidgets.QLabel("session -")
+    self.headerSessionBadge = QtWidgets.QLabel()
+    bind_text(self.headerSessionBadge, "ui.session_empty", self.tr)
     self.headerSessionBadge.setProperty("role", "headerSession")
     self.headerSessionBadge.setMinimumWidth(88)
     self.headerSessionBadge.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
@@ -416,7 +455,7 @@ def build_main_window_ui(self) -> None:
     sidebar_l.setContentsMargins(SPACING["xs"], SPACING["xs"], SPACING["xs"], SPACING["xs"])
     sidebar_l.setSpacing(SPACING["lg"])
 
-    data_box, data_l = _card("市场")
+    data_box, data_l = _card(self.tr("ui.market"))
     data_box.setObjectName("marketSection")
     self.dataBox = data_box
     form = QtWidgets.QFormLayout()
@@ -434,25 +473,25 @@ def build_main_window_ui(self) -> None:
     self.intervalBox.addItems(["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"])
     self.intervalBox.setCurrentText(DEFAULT_INTERVAL)
 
-    self.startDate = DatePicker()
+    self.startDate = DatePicker(language=self.current_language)
     self.startDate.setObjectName("startDate")
     self.startDate.setDate(QtCore.QDate.currentDate().addDays(-2))
 
-    self.endDate = DatePicker()
+    self.endDate = DatePicker(language=self.current_language)
     self.endDate.setObjectName("endDate")
     self.endDate.setDate(QtCore.QDate.currentDate())
     bind_date_range(self.startDate, self.endDate)
 
-    form.addRow("品种", self.symbolBox)
-    form.addRow("周期", self.intervalBox)
-    form.addRow("开始", self.startDate)
-    form.addRow("结束", self.endDate)
+    form.addRow(self.tr("symbol"), self.symbolBox)
+    form.addRow(self.tr("ui.interval"), self.intervalBox)
+    form.addRow(self.tr("ui.start"), self.startDate)
+    form.addRow(self.tr("ui.end"), self.endDate)
     data_l.addLayout(form)
-    self.btnApplyMarket = QtWidgets.QPushButton("应用行情")
+    self.btnApplyMarket = QtWidgets.QPushButton(self.tr("apply_market"))
     self.btnApplyMarket.setProperty("role", "primaryButton")
     self.btnLoadData = self.btnApplyMarket
     data_l.addWidget(self.btnApplyMarket)
-    self.marketDirtyHint = QtWidgets.QLabel("行情参数已更改，请应用")
+    self.marketDirtyHint = QtWidgets.QLabel(self.tr("market_params_dirty_hint"))
     self.marketDirtyHint.setProperty("role", "tiny")
     self.marketDirtyHint.setWordWrap(True)
     self.marketDirtyHint.hide()
@@ -465,7 +504,7 @@ def build_main_window_ui(self) -> None:
     symbol_panel_l.setSpacing(SPACING["sm"])
     self.symbolSearchEdit = QtWidgets.QLineEdit()
     self.symbolSearchEdit.setProperty("role", "searchInput")
-    self.symbolSearchEdit.setPlaceholderText("搜索品种，例如 BTC、ETH、1000PEPE")
+    self.symbolSearchEdit.setPlaceholderText(self.tr("ui.search_symbol_placeholder"))
     self.symbolList = QtWidgets.QListWidget()
     self.symbolList.setMaximumHeight(140)
     self.symbolList.addItems(BINANCE_TOP_MARKET_CAP_SYMBOLS)
@@ -475,14 +514,14 @@ def build_main_window_ui(self) -> None:
     data_l.addWidget(self.symbolPanel)
     sidebar_l.addWidget(data_box)
 
-    replay_box, replay_l = _card("回放控制")
+    replay_box, replay_l = _card(self.tr("replay_control"))
     replay_box.setObjectName("replaySection")
     self.replayBox = replay_box
-    self.btnLoadPlay = QtWidgets.QPushButton("播放 / 暂停")
-    self.btnStep = QtWidgets.QPushButton("下一根 (→)")
-    self.btnToEnd = QtWidgets.QPushButton("跳到末尾")
-    self.btnFollow = QtWidgets.QPushButton("跟随最新 (F)")
-    self.btnResetView = QtWidgets.QPushButton("重置缩放 (K)")
+    self.btnLoadPlay = QtWidgets.QPushButton(f"{self.tr('play')} (Space)")
+    self.btnStep = QtWidgets.QPushButton(f"{self.tr('step_next')} (→)")
+    self.btnToEnd = QtWidgets.QPushButton(self.tr("jump_to_end"))
+    self.btnFollow = QtWidgets.QPushButton(f"{self.tr('follow_latest')} (F)")
+    self.btnResetView = QtWidgets.QPushButton(f"{self.tr('reset_view')} (K)")
     self.btnLoadPlay.setProperty("role", "primaryButton")
     for btn in (self.btnStep, self.btnToEnd, self.btnFollow, self.btnResetView):
         btn.setProperty("role", "secondaryButton")
@@ -495,7 +534,9 @@ def build_main_window_ui(self) -> None:
     grid.addWidget(self.btnFollow, 2, 0)
     grid.addWidget(self.btnResetView, 2, 1)
     replay_l.addLayout(grid)
-    self.speedLabel = QtWidgets.QLabel("速度: 1.0x")
+    self.speedLabel = QtWidgets.QLabel(
+        self.tr("ui.speed_format").format(speed=1.0)
+    )
     self.speedLabel.setProperty("role", "muted")
     self.speedSlider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
     self.speedSlider.setMinimum(0)
@@ -505,20 +546,20 @@ def build_main_window_ui(self) -> None:
     replay_l.addWidget(self.speedSlider)
     sidebar_l.addWidget(replay_box)
 
-    trade_box, trade_l = _card("交易操作")
+    trade_box, trade_l = _card(self.tr("trade_actions"))
     trade_box.setObjectName("tradeSection")
     self.tradeBox = trade_box
     trade_grid = QtWidgets.QGridLayout()
     trade_grid.setContentsMargins(0, 0, 0, 0)
     trade_grid.setHorizontalSpacing(SPACING["sm"])
     trade_grid.setVerticalSpacing(SPACING["sm"])
-    self.btnOpenLong = QtWidgets.QPushButton("开多 (B)")
-    self.btnCloseLong = QtWidgets.QPushButton("平多 (C)")
-    self.btnOpenShort = QtWidgets.QPushButton("开空 (S)")
-    self.btnCloseShort = QtWidgets.QPushButton("平空 (X)")
-    self.btnUndo = QtWidgets.QPushButton("撤销")
-    self.btnRedo = QtWidgets.QPushButton("重做")
-    self.btnClearTradeRecords = QtWidgets.QPushButton("清空交易样本")
+    self.btnOpenLong = QtWidgets.QPushButton(f"{self.tr('open_long')} (B)")
+    self.btnCloseLong = QtWidgets.QPushButton(f"{self.tr('close_long')} (C)")
+    self.btnOpenShort = QtWidgets.QPushButton(f"{self.tr('open_short')} (S)")
+    self.btnCloseShort = QtWidgets.QPushButton(f"{self.tr('close_short')} (X)")
+    self.btnUndo = QtWidgets.QPushButton(self.tr("undo"))
+    self.btnRedo = QtWidgets.QPushButton(self.tr("redo"))
+    self.btnClearTradeRecords = QtWidgets.QPushButton(self.tr("clear_trade_records"))
     for btn in (self.btnOpenLong, self.btnCloseLong):
         btn.setProperty("role", "successButton")
     for btn in (self.btnOpenShort, self.btnCloseShort, self.btnClearTradeRecords):
@@ -535,11 +576,11 @@ def build_main_window_ui(self) -> None:
     trade_l.addLayout(trade_grid)
     sidebar_l.addWidget(trade_box)
 
-    danger_box, danger_l = _card("交易数据管理")
+    danger_box, danger_l = _card(self.tr("trade_data_management_title"))
     danger_box.setObjectName("dangerSection")
     self.dangerBox = danger_box
     self.btnToggleDanger = QtWidgets.QToolButton()
-    self.btnToggleDanger.setText("交易数据管理")
+    self.btnToggleDanger.setText(self.tr("trade_data_management_title"))
     self.btnToggleDanger.setCheckable(True)
     self.btnToggleDanger.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
     self.btnToggleDanger.setProperty("role", "compactButton")
@@ -548,7 +589,9 @@ def build_main_window_ui(self) -> None:
     danger_actions_l.setContentsMargins(0, 0, 0, 0)
     danger_actions_l.setSpacing(SPACING["sm"])
 
-    self.tradeManagementSessionLabel = QtWidgets.QLabel("按绩效会话")
+    self.tradeManagementSessionLabel = QtWidgets.QLabel(
+        self.tr("trade_data_management_session_group")
+    )
     self.tradeManagementSessionLabel.setProperty("role", "sectionLabel")
     danger_actions_l.addWidget(self.tradeManagementSessionLabel)
     self.tradeManagementSessionBox = QtWidgets.QComboBox()
@@ -558,16 +601,16 @@ def build_main_window_ui(self) -> None:
     self.tradeManagementSessionTradeTable.setObjectName("tradeManagementSessionTradeTable")
     self.tradeManagementSessionTradeTable.setHorizontalHeaderLabels(
         [
-            "交易",
-            "品种",
-            "方向",
-            "开仓时间",
-            "平仓时间",
-            "开仓价",
-            "平仓价",
-            "数量",
-            "PnL",
-            "状态",
+            self.tr("ui.trade"),
+            self.tr("symbol"),
+            self.tr("ui.side"),
+            self.tr("ui.entry_time"),
+            self.tr("ui.exit_time"),
+            self.tr("ui.entry_price"),
+            self.tr("ui.exit_price"),
+            self.tr("ui.quantity"),
+            self.tr("ui.total_pnl"),
+            self.tr("ui.status"),
         ]
     )
     self.tradeManagementSessionTradeTable.setEditTriggers(
@@ -582,12 +625,16 @@ def build_main_window_ui(self) -> None:
     self.tradeManagementSessionTradeTable.verticalHeader().setVisible(False)
     self.tradeManagementSessionTradeTable.setMinimumHeight(132)
     self.tradeManagementSessionTradeTable.setMaximumHeight(180)
-    self.btnDeleteSessionTrade = QtWidgets.QPushButton("删除选中交易样本")
+    self.btnDeleteSessionTrade = QtWidgets.QPushButton(
+        self.tr("delete_selected_trade_title")
+    )
     self.btnDeleteSessionTrade.setProperty("role", "dangerGhostButton")
     danger_actions_l.addWidget(self.tradeManagementSessionTradeTable)
     danger_actions_l.addWidget(self.btnDeleteSessionTrade)
 
-    self.tradeManagementRangeLabel = QtWidgets.QLabel("按回放时间段")
+    self.tradeManagementRangeLabel = QtWidgets.QLabel(
+        self.tr("trade_data_management_range_group")
+    )
     self.tradeManagementRangeLabel.setProperty("role", "sectionLabel")
     danger_actions_l.addWidget(self.tradeManagementRangeLabel)
     range_form = QtWidgets.QFormLayout()
@@ -598,6 +645,12 @@ def build_main_window_ui(self) -> None:
     self.tradeManagementStart.setObjectName("tradeManagementStart")
     self.tradeManagementStart.setCalendarPopup(True)
     self.tradeManagementStart.setDisplayFormat("yyyy-MM-dd HH:mm")
+    self.tradeManagementStart.setLocale(
+        QtCore.QLocale(
+            QtCore.QLocale.English if self.current_language == "en_US" else QtCore.QLocale.Chinese,
+            QtCore.QLocale.UnitedStates if self.current_language == "en_US" else QtCore.QLocale.China,
+        )
+    )
     replay_time_zone = QtCore.QTimeZone(b"Asia/Shanghai")
     self.tradeManagementStart.setTimeZone(replay_time_zone)
     self.tradeManagementStart.setDateTime(
@@ -607,29 +660,36 @@ def build_main_window_ui(self) -> None:
     self.tradeManagementEnd.setObjectName("tradeManagementEnd")
     self.tradeManagementEnd.setCalendarPopup(True)
     self.tradeManagementEnd.setDisplayFormat("yyyy-MM-dd HH:mm")
+    self.tradeManagementEnd.setLocale(self.tradeManagementStart.locale())
     self.tradeManagementEnd.setTimeZone(replay_time_zone)
     self.tradeManagementEnd.setDateTime(
         QtCore.QDateTime(
             self.endDate.date().addDays(1), QtCore.QTime(0, 0), replay_time_zone
         )
     )
-    self.tradeManagementStartLabel = QtWidgets.QLabel("开始")
-    self.tradeManagementEndLabel = QtWidgets.QLabel("结束")
+    self.tradeManagementStartLabel = QtWidgets.QLabel(self.tr("ui.start"))
+    self.tradeManagementEndLabel = QtWidgets.QLabel(self.tr("ui.end"))
     range_form.addRow(self.tradeManagementStartLabel, self.tradeManagementStart)
     range_form.addRow(self.tradeManagementEndLabel, self.tradeManagementEnd)
     danger_actions_l.addLayout(range_form)
-    self.btnPreviewTradeRange = QtWidgets.QPushButton("预览时间段")
+    self.btnPreviewTradeRange = QtWidgets.QPushButton(
+        self.tr("trade_data_management_preview_range")
+    )
     self.btnPreviewTradeRange.setProperty("role", "secondaryButton")
     danger_actions_l.addWidget(self.btnPreviewTradeRange)
-    self.tradeManagementPreviewLabel = QtWidgets.QLabel("尚未预览")
+    self.tradeManagementPreviewLabel = QtWidgets.QLabel(
+        self.tr("trade_data_management_preview_initial")
+    )
     self.tradeManagementPreviewLabel.setProperty("role", "muted")
     self.tradeManagementPreviewLabel.setWordWrap(True)
     danger_actions_l.addWidget(self.tradeManagementPreviewLabel)
     self.tradeManagementCandidateBox = QtWidgets.QComboBox()
     self.tradeManagementCandidateBox.setObjectName("tradeManagementCandidateBox")
     danger_actions_l.addWidget(self.tradeManagementCandidateBox)
-    self.btnDeleteSelectedTrade = QtWidgets.QPushButton("删除选中交易样本")
-    self.btnDeleteTradeRange = QtWidgets.QPushButton("删除时间段交易数据")
+    self.btnDeleteSelectedTrade = QtWidgets.QPushButton(
+        self.tr("delete_selected_trade_title")
+    )
+    self.btnDeleteTradeRange = QtWidgets.QPushButton(self.tr("delete_trade_range_title"))
     for button in (self.btnDeleteSelectedTrade, self.btnDeleteTradeRange):
         button.setProperty("role", "dangerGhostButton")
         danger_actions_l.addWidget(button)
@@ -639,7 +699,7 @@ def build_main_window_ui(self) -> None:
     danger_l.addWidget(self.dangerActions)
     sidebar_l.addWidget(danger_box)
 
-    exec_box, exec_l = _card("交易成本设置")
+    exec_box, exec_l = _card(self.tr("execution_cost_settings"))
     exec_box.setObjectName("executionSection")
     exec_box.setMinimumWidth(0)
     exec_box.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
@@ -649,7 +709,7 @@ def build_main_window_ui(self) -> None:
     exec_form.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
     self.fillModeBox = QtWidgets.QComboBox()
     for mode in FILL_MODES:
-        self.fillModeBox.addItem(fill_mode_label(mode), mode)
+        self.fillModeBox.addItem(self.tr(f"ui.fill_mode.{mode.lower()}"), mode)
     self._set_fill_mode_value(DEFAULT_FILL_MODE)
     self.feeBpsSpin = QtWidgets.QDoubleSpinBox()
     self.feeBpsSpin.setRange(0.0, 100.0)
@@ -669,57 +729,73 @@ def build_main_window_ui(self) -> None:
     self.initialEquitySpin.setValue(DEFAULT_INITIAL_EQUITY)
     self.takeProfitPctSpin = NullablePercentInput()
     self.takeProfitPctSpin.setObjectName("takeProfitPctInput")
+    self.takeProfitPctSpin.setPlaceholderText(self.tr("none"))
     self.stopLossPctSpin = NullablePercentInput()
     self.stopLossPctSpin.setObjectName("stopLossPctInput")
-    exec_form.addRow("成交模式", self.fillModeBox)
-    exec_form.addRow("手续费 bps", self.feeBpsSpin)
-    exec_form.addRow("滑点 bps", self.slippageBpsSpin)
-    self.tradeNotionalLabel = QtWidgets.QLabel("每笔名义金额")
+    self.stopLossPctSpin.setPlaceholderText(self.tr("none"))
+    exec_form.addRow(self.tr("ui.execution_mode"), self.fillModeBox)
+    exec_form.addRow(self.tr("ui.fee_bps"), self.feeBpsSpin)
+    exec_form.addRow(self.tr("ui.slippage_bps"), self.slippageBpsSpin)
+    self.tradeNotionalLabel = QtWidgets.QLabel(self.tr("ui.trade_notional"))
     self.tradeNotionalLabel.setMinimumWidth(
         self.tradeNotionalLabel.fontMetrics().horizontalAdvance(self.tradeNotionalLabel.text())
     )
     self.tradeNotionalLabel.setSizePolicy(QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Preferred)
     exec_form.addRow(self.tradeNotionalLabel, self.tradeNotionalSpin)
-    exec_form.addRow("初始权益", self.initialEquitySpin)
-    exec_form.addRow("止盈 %", self.takeProfitPctSpin)
-    exec_form.addRow("止损 %", self.stopLossPctSpin)
+    exec_form.addRow(self.tr("ui.initial_equity"), self.initialEquitySpin)
+    exec_form.addRow(self.tr("ui.take_profit_pct"), self.takeProfitPctSpin)
+    exec_form.addRow(self.tr("ui.stop_loss_pct"), self.stopLossPctSpin)
     exec_l.addLayout(exec_form)
     self.executionSettingsBox = exec_box
     self.executionSettingsBox.setVisible(True)
 
-    tag_box, tag_l = _card("快捷标注")
+    tag_box, tag_l = _card(self.tr("event_tags_notes"))
     tag_box.setObjectName("tagSection")
     self.tagBox = tag_box
     self.tag_checks = []
     tag_grid = QtWidgets.QGridLayout()
     tag_grid.setHorizontalSpacing(SPACING["sm"])
     tag_grid.setVerticalSpacing(SPACING["sm"])
-    for idx, tag in enumerate(EVENT_TAGS):
-        cb = QtWidgets.QCheckBox(tag)
+    event_tag_keys = (
+        "deep_v_reversal",
+        "long_lower_wick",
+        "volume_spike",
+        "panic_wick",
+        "reclaim_prior_low",
+        "second_bottom",
+        "false_breakout",
+        "acceleration_exhaustion",
+        "high_conviction",
+        "other",
+    )
+    for idx, (tag, tag_key) in enumerate(zip(EVENT_TAGS, event_tag_keys)):
+        cb = QtWidgets.QCheckBox(self.tr(f"ui.event_tag.{tag_key}"))
+        cb.setProperty("eventTagValue", tag)
+        bind_text(cb, f"ui.event_tag.{tag_key}", self.tr)
         cb.setProperty("role", "tagChip")
         self.tag_checks.append(cb)
         tag_grid.addWidget(cb, idx // 2, idx % 2)
     tag_l.addLayout(tag_grid)
     self.noteEdit = QtWidgets.QPlainTextEdit()
     self.noteEdit.setObjectName("noteEdit")
-    self.noteEdit.setPlaceholderText("备注会写入选中事件，或随下一次开仓/平仓事件保存。")
+    self.noteEdit.setPlaceholderText(self.tr("ui.note_placeholder"))
     self.noteEdit.setFixedHeight(82)
-    self.eventHintLabel = QtWidgets.QLabel("先选择事件可编辑标签；未选择事件时，当前标签随下一次交易事件写入。")
+    self.eventHintLabel = QtWidgets.QLabel(self.tr("ui.event_edit_hint"))
     self.eventHintLabel.setProperty("role", "muted")
     self.eventHintLabel.setWordWrap(True)
-    self.btnApplyEventMeta = QtWidgets.QPushButton("保存事件")
+    self.btnApplyEventMeta = QtWidgets.QPushButton(self.tr("ui.save_event"))
     self.btnApplyEventMeta.setProperty("role", "secondaryButton")
     tag_l.addWidget(self.noteEdit)
     tag_l.addWidget(self.eventHintLabel)
     tag_l.addWidget(self.btnApplyEventMeta)
     sidebar_l.addWidget(tag_box)
 
-    export_box, export_l = _card("工具")
+    export_box, export_l = _card(self.tr("tools"))
     export_box.setObjectName("toolsSection")
     self.toolsBox = export_box
-    self.btnExport = QtWidgets.QPushButton("导出会话 (E)")
+    self.btnExport = QtWidgets.QPushButton(f"{self.tr('export_session')} (E)")
     self.btnAnalysis = self.btnAnalysisWorkspace
-    self.btnSettings = QtWidgets.QPushButton("设置")
+    self.btnSettings = QtWidgets.QPushButton(self.tr("settings"))
     self.btnTheme = self.btnSettings
     self.btnExport.setProperty("role", "primaryButton")
     self.btnSettings.setProperty("role", "secondaryButton")
@@ -730,11 +806,11 @@ def build_main_window_ui(self) -> None:
     sidebar_scroll.setWidget(sidebar_content)
     left_l.addWidget(sidebar_scroll)
 
-    self.btnExport.setText("导出")
+    self.btnExport.setText(self.tr("export_session"))
     self.btnExport.setProperty("role", "headerAction")
     self.btnSettings.setProperty("role", "headerAction")
     self.btnToggleRightPanel = QtWidgets.QToolButton()
-    self.btnToggleRightPanel.setText("面板")
+    self.btnToggleRightPanel.setText(self.tr("ui.panel"))
     self.btnToggleRightPanel.setCheckable(True)
     self.btnToggleRightPanel.setChecked(True)
     self.btnToggleRightPanel.setProperty("role", "headerActionAccent")
@@ -768,13 +844,18 @@ def build_main_window_ui(self) -> None:
     market_toolbar_l = QtWidgets.QHBoxLayout(market_toolbar)
     market_toolbar_l.setContentsMargins(SPACING["sm"], SPACING["xs"], SPACING["sm"], SPACING["xs"])
     market_toolbar_l.setSpacing(SPACING["sm"])
-    for label_text, control in (("品种", self.symbolBox),):
-        label = QtWidgets.QLabel(label_text)
+    for label_key, control in (("symbol", self.symbolBox),):
+        label = QtWidgets.QLabel()
+        bind_text(label, label_key, self.tr)
         label.setProperty("role", "muted")
         market_toolbar_l.addWidget(label)
         market_toolbar_l.addWidget(control)
-    for label_text, control in (("开始", self.startDate), ("结束", self.endDate)):
-        label = QtWidgets.QLabel(label_text)
+    for label_key, control in (
+        ("ui.start", self.startDate),
+        ("ui.end", self.endDate),
+    ):
+        label = QtWidgets.QLabel()
+        bind_text(label, label_key, self.tr)
         label.setProperty("role", "muted")
         market_toolbar_l.addWidget(label)
         market_toolbar_l.addWidget(control)
@@ -798,7 +879,7 @@ def build_main_window_ui(self) -> None:
     replay_toolbar_l.addWidget(self.btnToEnd)
     replay_toolbar_l.addWidget(self.btnFollow)
     replay_toolbar_l.addWidget(self.btnResetView)
-    self.replayPerformanceSessionLabel = QtWidgets.QLabel("绩效会话")
+    self.replayPerformanceSessionLabel = QtWidgets.QLabel(self.tr("performance_session"))
     self.replayPerformanceSessionLabel.setProperty("role", "muted")
     self.replayPerformanceSessionBox = QtWidgets.QComboBox()
     self.replayPerformanceSessionBox.setObjectName("replayPerformanceSessionBox")
@@ -807,7 +888,9 @@ def build_main_window_ui(self) -> None:
     self.replayPerformanceSessionBox.setSizePolicy(
         QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed
     )
-    self.btnContinuePerformanceSession = QtWidgets.QPushButton("继续绩效会话")
+    self.btnContinuePerformanceSession = QtWidgets.QPushButton(
+        self.tr("continue_performance_session")
+    )
     self.btnContinuePerformanceSession.setProperty("role", "secondaryButton")
     self.btnContinuePerformanceSession.setMaximumWidth(130)
     self.btnContinuePerformanceSession.setSizePolicy(
@@ -826,16 +909,16 @@ def build_main_window_ui(self) -> None:
     toolbar_l = QtWidgets.QHBoxLayout(chart_toolbar)
     toolbar_l.setContentsMargins(SPACING["sm"], SPACING["xs"], SPACING["sm"], SPACING["xs"])
     toolbar_l.setSpacing(SPACING["sm"])
-    self.chartSectionLabel = QtWidgets.QLabel("行情回放")
+    self.chartSectionLabel = QtWidgets.QLabel(self.tr("ui.chart_replay"))
     self.chartSectionLabel.setProperty("role", "toolbarTitle")
     toolbar_l.addWidget(self.chartSectionLabel)
-    self.status = QtWidgets.QLabel("未加载数据")
+    self.status = QtWidgets.QLabel(self.tr("ui.no_market_data"))
     self.status.setProperty("role", "tiny")
     self.status.setMinimumWidth(0)
     self.status.setSizePolicy(QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Preferred)
     toolbar_l.addWidget(self.status, stretch=1)
     self.btnToggleBottomPanel = QtWidgets.QToolButton()
-    self.btnToggleBottomPanel.setText("收起结果")
+    self.btnToggleBottomPanel.setText(self.tr("ui.collapse_results"))
     self.btnToggleBottomPanel.setCheckable(True)
     self.btnToggleBottomPanel.setProperty("role", "compactButton")
     toolbar_l.addWidget(self.btnToggleBottomPanel)
@@ -930,37 +1013,44 @@ def build_main_window_ui(self) -> None:
     self.openTradesTable = QtWidgets.QTableWidget()
     self.openTradesTable.setColumnCount(10)
     self.openTradesTable.setHorizontalHeaderLabels([
-        "交易ID", "方向", "入场时间", "代理价", "成交价",
-        "手续费", "名义金额", "K线", "状态", "成交模式",
+        self.tr("ui.trade_id"), self.tr("ui.side"), self.tr("ui.entry_time"),
+        self.tr("ui.proxy_price"), self.tr("ui.fill_price"), self.tr("ui.fees"),
+        self.tr("ui.notional"), self.tr("ui.candle"), self.tr("ui.status"),
+        self.tr("ui.execution_mode"),
     ])
     self._setup_table(self.openTradesTable)
 
     self.closedTradesTable = QtWidgets.QTableWidget()
     self.closedTradesTable.setColumnCount(13)
     self.closedTradesTable.setHorizontalHeaderLabels([
-        "交易ID", "方向", "入场", "出场", "入场成交", "出场成交",
-        "毛收益%", "净收益%", "手续费", "净盈亏", "持仓K线", "状态", "成交模式",
+        self.tr("ui.trade_id"), self.tr("ui.side"), self.tr("ui.entry_time"),
+        self.tr("ui.exit_time"), self.tr("ui.entry_fill"), self.tr("ui.exit_fill"),
+        self.tr("ui.gross_return_pct"), self.tr("ui.net_return_pct"),
+        self.tr("ui.fees"), self.tr("ui.net_pnl"), self.tr("ui.holding_bars"),
+        self.tr("ui.status"), self.tr("ui.execution_mode"),
     ])
     self._setup_table(self.closedTradesTable)
-    self.closedTradesTable.setHorizontalHeaderLabels([
-        "\u4ea4\u6613ID", "\u65b9\u5411", "\u5f00\u4ed3\u65f6\u95f4", "\u5e73\u4ed3\u65f6\u95f4", "\u5f00\u4ed3\u6210\u4ea4", "\u5e73\u4ed3\u6210\u4ea4",
-        "\u6bdb\u6536\u76ca%", "\u51c0\u6536\u76ca%", "\u624b\u7eed\u8d39", "\u51c0\u76c8\u4e8f", "\u6301\u4ed3K\u7ebf", "\u72b6\u6001", "\u6210\u4ea4\u6a21\u5f0f",
-    ])
 
     self.eventTable = QtWidgets.QTableWidget()
     self.eventTable.setColumnCount(8)
-    self.eventTable.setHorizontalHeaderLabels(["事件ID", "交易ID", "事件", "方向", "K线时间", "代理价", "标签", "备注"])
+    self.eventTable.setHorizontalHeaderLabels([
+        self.tr("ui.event_id"), self.tr("ui.trade_id"), self.tr("ui.event"),
+        self.tr("ui.side"), self.tr("ui.bar_time"), self.tr("ui.proxy_price"),
+        self.tr("ui.tags"), self.tr("ui.note"),
+    ])
     self._setup_table(self.eventTable)
     self.eventFilterTag = QtWidgets.QComboBox()
-    self.eventFilterTag.addItems(["全部标签", *EVENT_TAGS])
+    self.eventFilterTag.addItem(self.tr("ui.all_tags"), "")
+    for tag, tag_key in zip(EVENT_TAGS, event_tag_keys):
+        self.eventFilterTag.addItem(self.tr(f"ui.event_tag.{tag_key}"), tag)
     self.eventFilterSide = QtWidgets.QComboBox()
-    self.eventFilterSide.addItem("全部方向", "")
-    self.eventFilterSide.addItem("多", "LONG")
-    self.eventFilterSide.addItem("空", "SHORT")
+    self.eventFilterSide.addItem(self.tr("ui.all_sides"), "")
+    self.eventFilterSide.addItem(self.tr("ui.long"), "LONG")
+    self.eventFilterSide.addItem(self.tr("ui.short"), "SHORT")
     self.eventFilterType = QtWidgets.QComboBox()
-    self.eventFilterType.addItem("全部事件", "")
-    self.eventFilterType.addItem("开仓", "OPEN")
-    self.eventFilterType.addItem("平仓", "CLOSE")
+    self.eventFilterType.addItem(self.tr("ui.all_events"), "")
+    self.eventFilterType.addItem(self.tr("ui.open"), "OPEN")
+    self.eventFilterType.addItem(self.tr("ui.close"), "CLOSE")
     event_filters = QtWidgets.QHBoxLayout()
     event_filters.setSpacing(SPACING["sm"])
     event_filters.addWidget(self.eventFilterTag)
@@ -976,26 +1066,32 @@ def build_main_window_ui(self) -> None:
     self.performanceText = QtWidgets.QPlainTextEdit()
     self.performanceText.setReadOnly(True)
     self.performanceText.setMinimumHeight(140)
-    self.performanceText.setPlainText("暂无绩效统计")
+    self.performanceText.setPlainText(self.tr("ui.performance_initial"))
 
     self.equityTable = QtWidgets.QTableWidget()
     self.equityTable.setColumnCount(8)
     self.equityTable.setHorizontalHeaderLabels([
-        "序号", "K线/交易", "已实现", "浮盈亏", "持仓/费用", "权益", "收益%", "回撤%",
+        self.tr("ui.sequence"), self.tr("ui.candle_or_trade"),
+        self.tr("ui.realized"), self.tr("ui.unrealized_pnl"),
+        self.tr("ui.position_or_fees"), self.tr("ui.equity"),
+        self.tr("ui.return_pct"), self.tr("ui.drawdown_pct"),
     ])
     self._setup_table(self.equityTable)
 
     self.eventStudyTable = QtWidgets.QTableWidget()
     self.eventStudyTable.setColumnCount(9)
     self.eventStudyTable.setHorizontalHeaderLabels([
-        "标签", "事件", "方向", "样本数", "未来1均值", "未来3均值", "未来5均值", "未来10均值", "未来1胜率",
+        self.tr("ui.tags"), self.tr("ui.event"), self.tr("ui.side"),
+        self.tr("ui.sample_count"), self.tr("ui.forward_1_mean"),
+        self.tr("ui.forward_3_mean"), self.tr("ui.forward_5_mean"),
+        self.tr("ui.forward_10_mean"), self.tr("ui.forward_1_win_rate"),
     ])
     self._setup_table(self.eventStudyTable)
 
     self.datasetText = QtWidgets.QPlainTextEdit()
     self.datasetText.setReadOnly(True)
     self.datasetText.setMinimumHeight(140)
-    self.datasetText.setPlainText("暂无机器学习样本信息。导出后会生成特征表、标签表和样本索引。")
+    self.datasetText.setPlainText(self.tr("ui.dataset_initial"))
 
     bottom_tabs = QtWidgets.QTabWidget()
     bottom_tabs.setObjectName("bottomTabs")
@@ -1003,34 +1099,46 @@ def build_main_window_ui(self) -> None:
     self.bottomTabs = bottom_tabs
     trade_tabs = QtWidgets.QTabWidget()
     self.tradeResultsTabs = trade_tabs
-    trade_tabs.addTab(_table_box(self.openTradesTable), "当前持仓")
-    trade_tabs.addTab(_table_box(self.closedTradesTable), "成交历史")
+    trade_tabs.addTab(_table_box(self.openTradesTable), self.tr("current_positions"))
+    trade_tabs.addTab(_table_box(self.closedTradesTable), self.tr("ui.trade_history"))
     self.tradeResultsStack = QtWidgets.QStackedWidget()
-    self.emptyTradeResults = _empty_state("暂无交易样本", "回放中开仓或平仓后，这里会显示记录")
+    self.emptyTradeResults = _empty_state(
+        self.tr("ui.empty.no_trade_samples"), self.tr("ui.empty.trade_samples_body")
+    )
     self.tradeResultsStack.addWidget(self.emptyTradeResults)
     self.tradeResultsStack.addWidget(trade_tabs)
     event_research_tabs = QtWidgets.QTabWidget()
     self.eventResearchTabs = event_research_tabs
-    event_research_tabs.addTab(_table_box(self.eventStudyTable), "事件研究统计")
-    event_research_tabs.addTab(self.eventTab, "事件列表")
+    event_research_tabs.addTab(_table_box(self.eventStudyTable), self.tr("ui.event_statistics"))
+    event_research_tabs.addTab(self.eventTab, self.tr("ui.event_list"))
     self.eventResearchStack = QtWidgets.QStackedWidget()
-    self.emptyEventStudy = _empty_state("暂无事件研究", "标注事件后可查看未来收益统计")
+    self.emptyEventStudy = _empty_state(
+        self.tr("ui.empty.no_event_study"), self.tr("ui.empty.event_study_body")
+    )
     self.eventResearchStack.addWidget(self.emptyEventStudy)
     self.eventResearchStack.addWidget(event_research_tabs)
-    self.equityStack = _stacked_empty_table("暂无账户收益", "平仓后这里会显示权益曲线和回撤记录", self.equityTable)
+    self.equityStack = _stacked_empty_table(
+        self.tr("ui.empty.no_account_returns"),
+        self.tr("ui.empty.account_returns_body"),
+        self.equityTable,
+    )
     self.performanceStack = QtWidgets.QStackedWidget()
-    self.emptyPerformance = _empty_state("暂无绩效统计", "平仓后生成胜率、盈亏比和回撤")
+    self.emptyPerformance = _empty_state(
+        self.tr("ui.empty.no_performance"), self.tr("ui.empty.performance_body")
+    )
     self.performanceStack.addWidget(self.emptyPerformance)
     self.performanceStack.addWidget(self.performanceText)
     self.datasetStack = QtWidgets.QStackedWidget()
-    self.emptyDataset = _empty_state("暂无样本概览", "导出或刷新研究样本后，这里会显示特征、标签和样本索引摘要")
+    self.emptyDataset = _empty_state(
+        self.tr("ui.empty.no_sample_overview"), self.tr("ui.empty.sample_overview_body")
+    )
     self.datasetStack.addWidget(self.emptyDataset)
     self.datasetStack.addWidget(self.datasetText)
-    bottom_tabs.addTab(self.tradeResultsStack, "持仓与成交")
-    bottom_tabs.addTab(self.equityStack, "账户收益")
-    bottom_tabs.addTab(self.performanceStack, "绩效统计")
-    bottom_tabs.addTab(self.eventResearchStack, "事件研究")
-    bottom_tabs.addTab(self.datasetStack, "样本概览")
+    bottom_tabs.addTab(self.tradeResultsStack, self.tr("ui.positions_and_trades"))
+    bottom_tabs.addTab(self.equityStack, self.tr("ui.account_returns"))
+    bottom_tabs.addTab(self.performanceStack, self.tr("ui.performance_statistics"))
+    bottom_tabs.addTab(self.eventResearchStack, self.tr("event_study"))
+    bottom_tabs.addTab(self.datasetStack, self.tr("ui.sample_overview"))
 
     self.centerSplitter.addWidget(chart_panel)
     self.centerSplitter.addWidget(bottom_tabs)
@@ -1059,10 +1167,16 @@ def build_main_window_ui(self) -> None:
     right_rail_l.setContentsMargins(4, 8, 4, 8)
     right_rail_l.setSpacing(SPACING["sm"])
     self.rightRailButtons = []
-    for text, tooltip in (("交", "交易"), ("态", "状态"), ("标", "标注")):
+    for text_key, tooltip_key in (
+        ("ui.trade_short", "ui.trade"),
+        ("ui.status_short", "ui.status"),
+        ("ui.annotate_short", "ui.annotate"),
+    ):
         button = QtWidgets.QToolButton()
-        button.setText(text)
-        button.setToolTip(tooltip)
+        button.setText(self.tr(text_key))
+        button.setToolTip(self.tr(tooltip_key))
+        button.setProperty("i18nTextKey", text_key)
+        button.setProperty("i18nToolTipKey", tooltip_key)
         button.setProperty("role", "compactButton")
         button.setFixedSize(34, 34)
         right_rail_l.addWidget(button)
@@ -1085,10 +1199,14 @@ def build_main_window_ui(self) -> None:
     trade_position_l = QtWidgets.QVBoxLayout(trade_position_card)
     trade_position_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     trade_position_l.setSpacing(SPACING["sm"])
-    trade_position_title = QtWidgets.QLabel("当前持仓")
+    trade_position_title = QtWidgets.QLabel(self.tr("current_positions"))
     trade_position_title.setProperty("role", "sectionTitle")
     trade_position_l.addWidget(trade_position_title)
-    self.tradePositionEmptyState = _empty_state("无持仓", "开仓后在此显示当前持仓", compact=True)
+    self.tradePositionEmptyState = _empty_state(
+        self.tr("ui.empty.no_position"),
+        self.tr("ui.empty.position_trade_body"),
+        compact=True,
+    )
     self.tradePositionEmptyHost = QtWidgets.QWidget()
     trade_empty_l = QtWidgets.QVBoxLayout(self.tradePositionEmptyHost)
     trade_empty_l.setContentsMargins(0, 0, 0, 0)
@@ -1140,10 +1258,14 @@ def build_main_window_ui(self) -> None:
     position_l = QtWidgets.QVBoxLayout(position_card)
     position_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     position_l.setSpacing(SPACING["sm"])
-    title_position = QtWidgets.QLabel("当前状态")
+    title_position = QtWidgets.QLabel(self.tr("ui.current_status"))
     title_position.setProperty("role", "sectionTitle")
     position_l.addWidget(title_position)
-    self.positionEmptyState = _empty_state("无持仓", "开仓后显示数量、入场价和浮动盈亏", compact=True)
+    self.positionEmptyState = _empty_state(
+        self.tr("ui.empty.no_position"),
+        self.tr("ui.empty.position_status_body"),
+        compact=True,
+    )
     position_l.addWidget(self.positionEmptyState)
     self.positionDetails = QtWidgets.QWidget()
     position_details_l = QtWidgets.QVBoxLayout(self.positionDetails)
@@ -1155,20 +1277,25 @@ def build_main_window_ui(self) -> None:
     self.positionCurrentValue = _metric_label()
     self.positionPnlValue = _metric_label()
     self.positionPnlPctValue = _metric_label()
-    for label, value in (
-        ("方向", self.positionSideValue),
-        ("数量", self.positionQtyValue),
-        ("入场价", self.positionEntryValue),
-        ("当前价", self.positionCurrentValue),
-        ("浮动盈亏", self.positionPnlValue),
-        ("未实现盈亏率", self.positionPnlPctValue),
+    for label_key, value in (
+        ("ui.side", self.positionSideValue),
+        ("ui.quantity", self.positionQtyValue),
+        ("ui.entry_price", self.positionEntryValue),
+        ("ui.current_price", self.positionCurrentValue),
+        ("ui.unrealized_pnl", self.positionPnlValue),
+        ("ui.unrealized_return", self.positionPnlPctValue),
     ):
-        position_details_l.addWidget(_value_row(label, value))
+        row = _value_row(self.tr(label_key), value)
+        bind_text(row.nameLabel, label_key, self.tr)
+        position_details_l.addWidget(row)
     self.positionDetails.setVisible(False)
     position_l.addWidget(self.positionDetails)
     self.openPositionsMiniTable = QtWidgets.QTableWidget()
     self.openPositionsMiniTable.setColumnCount(6)
-    self.openPositionsMiniTable.setHorizontalHeaderLabels(["交易", "方向", "入场", "浮盈亏", "TP", "SL"])
+    self.openPositionsMiniTable.setHorizontalHeaderLabels([
+        self.tr("ui.trade"), self.tr("ui.side"), self.tr("ui.entry"),
+        self.tr("ui.unrealized_pnl"), "TP", "SL",
+    ])
     self.openPositionsMiniTable.verticalHeader().setVisible(False)
     self.openPositionsMiniTable.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
     self.openPositionsMiniTable.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -1191,7 +1318,7 @@ def build_main_window_ui(self) -> None:
     account_l = QtWidgets.QVBoxLayout(account_card)
     account_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     account_l.setSpacing(SPACING["sm"])
-    account_title = QtWidgets.QLabel("账户总览")
+    account_title = QtWidgets.QLabel(self.tr("ui.account_overview"))
     account_title.setProperty("role", "sectionTitle")
     account_l.addWidget(account_title)
     self.accountEquityValue = _metric_label()
@@ -1202,17 +1329,19 @@ def build_main_window_ui(self) -> None:
     self.accountProfitFactorValue = _metric_label()
     self.accountPayoffValue = _metric_label()
     self.accountMaxDrawdownValue = _metric_label()
-    for label, value in (
-        ("当前权益", self.accountEquityValue),
-        ("总收益率", self.accountReturnValue),
-        ("总盈亏", self.accountPnlValue),
-        ("总胜率", self.accountWinRateValue),
-        ("夏普比率", self.accountSharpeValue),
-        ("利润因子", self.accountProfitFactorValue),
-        ("盈亏比", self.accountPayoffValue),
-        ("最大回撤", self.accountMaxDrawdownValue),
+    for label_key, value in (
+        ("ui.current_equity", self.accountEquityValue),
+        ("ui.total_return", self.accountReturnValue),
+        ("ui.total_pnl", self.accountPnlValue),
+        ("ui.win_rate", self.accountWinRateValue),
+        ("ui.sharpe_ratio", self.accountSharpeValue),
+        ("ui.profit_factor", self.accountProfitFactorValue),
+        ("ui.payoff_ratio", self.accountPayoffValue),
+        ("ui.max_drawdown", self.accountMaxDrawdownValue),
     ):
-        account_l.addWidget(_value_row(label, value))
+        row = _value_row(self.tr(label_key), value)
+        bind_text(row.nameLabel, label_key, self.tr)
+        account_l.addWidget(row)
     overview_l.addWidget(account_card)
 
     recent_card = QtWidgets.QFrame()
@@ -1221,10 +1350,12 @@ def build_main_window_ui(self) -> None:
     recent_l = QtWidgets.QVBoxLayout(recent_card)
     recent_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     recent_l.setSpacing(SPACING["sm"])
-    recent_title = QtWidgets.QLabel("最近事件")
+    recent_title = QtWidgets.QLabel(self.tr("ui.recent_events"))
     recent_title.setProperty("role", "sectionTitle")
     recent_l.addWidget(recent_title)
-    self.recentEventsEmptyState = _empty_state("暂无事件", "标注或交易后显示在这里", compact=True)
+    self.recentEventsEmptyState = _empty_state(
+        self.tr("ui.empty.no_events"), self.tr("ui.empty.events_body"), compact=True
+    )
     recent_l.addWidget(self.recentEventsEmptyState)
     self.recentEventsList = QtWidgets.QWidget()
     self.recentEventsList.setProperty("role", "softPanel")
@@ -1241,7 +1372,7 @@ def build_main_window_ui(self) -> None:
     candle_l = QtWidgets.QVBoxLayout(candle_card)
     candle_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     candle_l.setSpacing(SPACING["sm"])
-    self.candleTitleLabel = QtWidgets.QLabel("当前K线详情")
+    self.candleTitleLabel = QtWidgets.QLabel(self.tr("current_bar_details"))
     self.candleTitleLabel.setProperty("role", "sectionTitle")
     candle_l.addWidget(self.candleTitleLabel)
     self.barTimeValue = _metric_label()
@@ -1253,13 +1384,13 @@ def build_main_window_ui(self) -> None:
     self.barIndexValue = _metric_label()
     self.barDetailLabels = {}
     for key, label, value in (
-        ("time", "时间", self.barTimeValue),
-        ("open", "开盘价", self.barOpenValue),
-        ("high", "最高价", self.barHighValue),
-        ("low", "最低价", self.barLowValue),
-        ("close", "收盘价", self.barCloseValue),
-        ("volume", "成交量", self.barVolumeValue),
-        ("index", "K线序号", self.barIndexValue),
+        ("time", self.tr("bar_time"), self.barTimeValue),
+        ("open", self.tr("bar_open"), self.barOpenValue),
+        ("high", self.tr("bar_high"), self.barHighValue),
+        ("low", self.tr("bar_low"), self.barLowValue),
+        ("close", self.tr("bar_close"), self.barCloseValue),
+        ("volume", self.tr("bar_volume"), self.barVolumeValue),
+        ("index", self.tr("bar_index"), self.barIndexValue),
     ):
         row = _value_row(label, value)
         self.barDetailLabels[key] = row.nameLabel
@@ -1289,12 +1420,12 @@ def build_main_window_ui(self) -> None:
     detail_l = QtWidgets.QVBoxLayout(detail_box)
     detail_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     detail_l.setSpacing(SPACING["sm"])
-    self.btnToggleDetail = QtWidgets.QPushButton("隐藏详情")
+    self.btnToggleDetail = QtWidgets.QPushButton(self.tr("ui.hide_details"))
     self.btnToggleDetail.setCheckable(True)
     self.btnToggleDetail.setProperty("role", "secondaryButton")
     self.detailText = QtWidgets.QPlainTextEdit()
     self.detailText.setReadOnly(True)
-    self.detailText.setPlainText("无")
+    self.detailText.setPlainText(self.tr("ui.no_details"))
     self.detailText.setMinimumHeight(220)
     detail_l.addWidget(self.btnToggleDetail)
     detail_l.addWidget(self.detailText)
@@ -1319,9 +1450,9 @@ def build_main_window_ui(self) -> None:
     annotation_scroll.setWidget(annotation_page)
     self.rightAnnotationPage = annotation_scroll
 
-    tabs.addTab(trade_scroll, "交易")
-    tabs.addTab(overview_scroll, "状态")
-    tabs.addTab(annotation_scroll, "标注")
+    tabs.addTab(trade_scroll, self.tr("ui.trade"))
+    tabs.addTab(overview_scroll, self.tr("ui.status"))
+    tabs.addTab(annotation_scroll, self.tr("ui.annotate"))
     tabs.setCurrentWidget(trade_scroll)
     right_l.addWidget(tabs, stretch=1)
     for index, button in enumerate(self.rightRailButtons):
@@ -1334,7 +1465,7 @@ def build_main_window_ui(self) -> None:
     premium_l = QtWidgets.QVBoxLayout(self.premiumBox)
     premium_l.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     premium_l.setSpacing(SPACING["sm"])
-    self.premiumStatus = QtWidgets.QLabel("等待采样...")
+    self.premiumStatus = QtWidgets.QLabel(self.tr("ui.premium_waiting"))
     self.premiumStatus.setProperty("role", "pill")
     self.premiumStats = QtWidgets.QPlainTextEdit()
     self.premiumStats.setReadOnly(True)
@@ -1343,9 +1474,9 @@ def build_main_window_ui(self) -> None:
     self.premiumPlot = _ManagedPlotWidget()
     self.premiumPlot.showGrid(x=True, y=True, alpha=0.14)
     self.premiumPlot.addLegend(offset=(8, 8))
-    self.premiumBuyCurve = self.premiumPlot.plot([], [], pen=pg.mkPen(COLORS["success"], width=1.5, style=QtCore.Qt.DashLine), symbol="o", symbolSize=4, name="买入溢价")
-    self.premiumSellCurve = self.premiumPlot.plot([], [], pen=pg.mkPen(COLORS["danger"], width=1.5, style=QtCore.Qt.DotLine), symbol="t", symbolSize=4, name="卖出溢价")
-    self.premiumAvgCurve = self.premiumPlot.plot([], [], pen=pg.mkPen(COLORS["chart_axis"], width=1.8), symbol="s", symbolSize=4, name="均价溢价")
+    self.premiumBuyCurve = self.premiumPlot.plot([], [], pen=pg.mkPen(COLORS["success"], width=1.5, style=QtCore.Qt.DashLine), symbol="o", symbolSize=4, name=self.tr("ui.premium_buy"))
+    self.premiumSellCurve = self.premiumPlot.plot([], [], pen=pg.mkPen(COLORS["danger"], width=1.5, style=QtCore.Qt.DotLine), symbol="t", symbolSize=4, name=self.tr("ui.premium_sell"))
+    self.premiumAvgCurve = self.premiumPlot.plot([], [], pen=pg.mkPen(COLORS["chart_axis"], width=1.8), symbol="s", symbolSize=4, name=self.tr("ui.premium_average"))
     premium_l.addWidget(self.premiumStatus)
     premium_l.addWidget(self.premiumStats)
     premium_l.addWidget(self.premiumPlot, stretch=1)
@@ -1376,7 +1507,9 @@ def build_main_window_ui(self) -> None:
             right.setMinimumWidth(48)
             right.setMaximumWidth(48)
             body.setSizes([max(1, body.width() - 48), 48])
-        self.btnToggleRightPanel.setText("收起面板" if visible else "展开面板")
+        self.btnToggleRightPanel.setText(
+            self.tr("ui.collapse_panel") if visible else self.tr("ui.expand_panel")
+        )
 
     self._set_right_panel_expanded = set_right_panel_visible
 
@@ -1384,7 +1517,9 @@ def build_main_window_ui(self) -> None:
 
     def set_bottom_panel_collapsed(collapsed: bool) -> None:
         bottom_tabs.setVisible(not collapsed)
-        self.btnToggleBottomPanel.setText("展开结果" if collapsed else "收起结果")
+        self.btnToggleBottomPanel.setText(
+            self.tr("ui.expand_results") if collapsed else self.tr("ui.collapse_results")
+        )
 
     self.btnToggleBottomPanel.toggled.connect(set_bottom_panel_collapsed)
 
@@ -1399,12 +1534,12 @@ def build_main_window_ui(self) -> None:
     log_l.setSpacing(2)
     log_header = QtWidgets.QHBoxLayout()
     log_header.setSpacing(SPACING["sm"])
-    log_title = QtWidgets.QLabel("操作日志")
+    log_title = QtWidgets.QLabel(self.tr("ui.operation_log"))
     log_title.setProperty("role", "sectionTitle")
-    self.logSummaryLabel = QtWidgets.QLabel("暂无操作")
+    self.logSummaryLabel = QtWidgets.QLabel(self.tr("ui.no_operations"))
     self.logSummaryLabel.setProperty("role", "tiny")
     self.logSummaryLabel.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Preferred)
-    self.btnToggleLog = QtWidgets.QPushButton("展开日志")
+    self.btnToggleLog = QtWidgets.QPushButton(self.tr("ui.expand_log"))
     self.btnToggleLog.setProperty("role", "compactButton")
     self.btnToggleLog.setCheckable(True)
     self.btnToggleLog.setChecked(True)
@@ -1420,6 +1555,169 @@ def build_main_window_ui(self) -> None:
     log_l.addLayout(log_header)
     log_l.addWidget(self.log)
     replay_workspace_l.addWidget(self.logDrawer)
+
+    # Bind static UI copy to resource keys so language changes do not rebuild
+    # the window or disturb the replay/session state.
+    for widget, key, suffix in (
+        (self.btnReplayWorkspace, "trading_replay", ""),
+        (self.btnAnalysisWorkspace, "data_analysis", ""),
+        (self.btnApplyMarket, "apply_market", ""),
+        (self.marketDirtyHint, "market_params_dirty_hint", ""),
+        (self.symbolSearchEdit, "ui.search_symbol_placeholder", ""),
+        (self.btnLoadPlay, "play", " (Space)"),
+        (self.btnStep, "step_next", " (→)"),
+        (self.btnToEnd, "jump_to_end", ""),
+        (self.btnFollow, "follow_latest", " (F)"),
+        (self.btnResetView, "reset_view", " (K)"),
+        (self.btnOpenLong, "open_long", " (B)"),
+        (self.btnCloseLong, "close_long", " (C)"),
+        (self.btnOpenShort, "open_short", " (S)"),
+        (self.btnCloseShort, "close_short", " (X)"),
+        (self.btnUndo, "undo", ""),
+        (self.btnRedo, "redo", ""),
+        (self.btnClearTradeRecords, "clear_trade_records", ""),
+        (self.btnToggleDanger, "trade_data_management_title", ""),
+        (self.tradeManagementSessionLabel, "trade_data_management_session_group", ""),
+        (self.btnDeleteSessionTrade, "delete_selected_trade_title", ""),
+        (self.tradeManagementRangeLabel, "trade_data_management_range_group", ""),
+        (self.tradeManagementStartLabel, "ui.start", ""),
+        (self.tradeManagementEndLabel, "ui.end", ""),
+        (self.btnPreviewTradeRange, "trade_data_management_preview_range", ""),
+        (self.tradeManagementPreviewLabel, "trade_data_management_preview_initial", ""),
+        (self.btnDeleteSelectedTrade, "delete_selected_trade_title", ""),
+        (self.btnDeleteTradeRange, "delete_trade_range_title", ""),
+        (self.tradeNotionalLabel, "ui.trade_notional", ""),
+        (self.eventHintLabel, "ui.event_edit_hint", ""),
+        (self.btnApplyEventMeta, "ui.save_event", ""),
+        (self.btnExport, "export_session", " (E)"),
+        (self.btnSettings, "settings", ""),
+        (self.btnToggleRightPanel, "ui.panel", ""),
+        (self.replayPerformanceSessionLabel, "performance_session", ""),
+        (self.btnContinuePerformanceSession, "continue_performance_session", ""),
+        (self.chartSectionLabel, "ui.chart_replay", ""),
+        (self.btnToggleBottomPanel, "ui.collapse_results", ""),
+        (trade_position_title, "current_positions", ""),
+        (title_position, "ui.current_status", ""),
+        (account_title, "ui.account_overview", ""),
+        (recent_title, "ui.recent_events", ""),
+        (self.candleTitleLabel, "current_bar_details", ""),
+        (self.btnToggleDetail, "ui.hide_details", ""),
+        (self.premiumStatus, "ui.premium_waiting", ""),
+        (log_title, "ui.operation_log", ""),
+        (self.logSummaryLabel, "ui.no_operations", ""),
+        (self.btnToggleLog, "ui.expand_log", ""),
+    ):
+        if isinstance(widget, (QtWidgets.QLineEdit, QtWidgets.QPlainTextEdit)) and key == "ui.search_symbol_placeholder":
+            bind_placeholder(widget, key, self.tr)
+        else:
+            bind_text(widget, key, self.tr, suffix=suffix)
+
+    bind_tooltip(self.btnResetView, "reset_view_hint", self.tr)
+    bind_placeholder(self.noteEdit, "ui.note_placeholder", self.tr)
+    bind_placeholder(self.takeProfitPctSpin, "none", self.tr)
+    bind_placeholder(self.stopLossPctSpin, "none", self.tr)
+    bind_plain_text(self.performanceText, "ui.performance_initial", self.tr)
+    bind_plain_text(self.datasetText, "ui.dataset_initial", self.tr)
+    bind_plain_text(self.detailText, "ui.no_details", self.tr)
+
+    for group, key in (
+        (data_box, "market_data"),
+        (replay_box, "replay_control"),
+        (trade_box, "trade_actions"),
+        (danger_box, "trade_data_management_title"),
+        (exec_box, "execution_cost_settings"),
+        (tag_box, "event_tags_notes"),
+        (export_box, "tools"),
+    ):
+        bind_group_title(group, key, self.tr)
+
+    for layout, field, key in (
+        (form, self.symbolBox, "symbol"),
+        (form, self.intervalBox, "ui.interval"),
+        (form, self.startDate, "ui.start"),
+        (form, self.endDate, "ui.end"),
+        (exec_form, self.fillModeBox, "ui.execution_mode"),
+        (exec_form, self.feeBpsSpin, "ui.fee_bps"),
+        (exec_form, self.slippageBpsSpin, "ui.slippage_bps"),
+        (exec_form, self.initialEquitySpin, "ui.initial_equity"),
+        (exec_form, self.takeProfitPctSpin, "ui.take_profit_pct"),
+        (exec_form, self.stopLossPctSpin, "ui.stop_loss_pct"),
+    ):
+        label = layout.labelForField(field)
+        if label is not None:
+            bind_text(label, key, self.tr)
+
+    for table, keys in (
+        (self.tradeManagementSessionTradeTable, (
+            "ui.trade", "symbol", "ui.side", "ui.entry_time", "ui.exit_time",
+            "ui.entry_price", "ui.exit_price", "ui.quantity", "ui.total_pnl", "ui.status",
+        )),
+        (self.openTradesTable, (
+            "ui.trade_id", "ui.side", "ui.entry_time", "ui.proxy_price", "ui.fill_price",
+            "ui.fees", "ui.notional", "ui.candle", "ui.status", "ui.execution_mode",
+        )),
+        (self.closedTradesTable, (
+            "ui.trade_id", "ui.side", "ui.entry_time", "ui.exit_time", "ui.entry_fill",
+            "ui.exit_fill", "ui.gross_return_pct", "ui.net_return_pct", "ui.fees",
+            "ui.net_pnl", "ui.holding_bars", "ui.status", "ui.execution_mode",
+        )),
+        (self.eventTable, (
+            "ui.event_id", "ui.trade_id", "ui.event", "ui.side", "ui.bar_time",
+            "ui.proxy_price", "ui.tags", "ui.note",
+        )),
+        (self.equityTable, (
+            "ui.sequence", "ui.candle_or_trade", "ui.realized", "ui.unrealized_pnl",
+            "ui.position_or_fees", "ui.equity", "ui.return_pct", "ui.drawdown_pct",
+        )),
+        (self.eventStudyTable, (
+            "ui.tags", "ui.event", "ui.side", "ui.sample_count", "ui.forward_1_mean",
+            "ui.forward_3_mean", "ui.forward_5_mean", "ui.forward_10_mean",
+            "ui.forward_1_win_rate",
+        )),
+        (self.openPositionsMiniTable, (
+            "ui.trade", "ui.side", "ui.entry", "ui.unrealized_pnl", "", "",
+        )),
+    ):
+        bind_table_headers(table, keys, self.tr)
+
+    for tab_widget, page, key in (
+        (trade_tabs, trade_tabs.widget(0), "current_positions"),
+        (trade_tabs, trade_tabs.widget(1), "ui.trade_history"),
+        (event_research_tabs, event_research_tabs.widget(0), "ui.event_statistics"),
+        (event_research_tabs, event_research_tabs.widget(1), "ui.event_list"),
+        (bottom_tabs, self.tradeResultsStack, "ui.positions_and_trades"),
+        (bottom_tabs, self.equityStack, "ui.account_returns"),
+        (bottom_tabs, self.performanceStack, "ui.performance_statistics"),
+        (bottom_tabs, self.eventResearchStack, "event_study"),
+        (bottom_tabs, self.datasetStack, "ui.sample_overview"),
+        (tabs, trade_scroll, "ui.trade"),
+        (tabs, overview_scroll, "ui.status"),
+        (tabs, annotation_scroll, "ui.annotate"),
+    ):
+        bind_tab(tab_widget, page, key, self.tr)
+
+    for empty_state, title_key, body_key in (
+        (self.tradePositionEmptyState, "ui.empty.no_position", "ui.empty.position_trade_body"),
+        (self.positionEmptyState, "ui.empty.no_position", "ui.empty.position_status_body"),
+        (self.recentEventsEmptyState, "ui.empty.no_events", "ui.empty.events_body"),
+        (self.emptyTradeResults, "ui.empty.no_trade_samples", "ui.empty.trade_samples_body"),
+        (self.emptyEventStudy, "ui.empty.no_event_study", "ui.empty.event_study_body"),
+        (self.equityStack.widget(0), "ui.empty.no_account_returns", "ui.empty.account_returns_body"),
+        (self.emptyPerformance, "ui.empty.no_performance", "ui.empty.performance_body"),
+        (self.emptyDataset, "ui.empty.no_sample_overview", "ui.empty.sample_overview_body"),
+    ):
+        _bind_empty_state(empty_state, title_key, body_key, self.tr)
+
+    for index, mode in enumerate(FILL_MODES):
+        bind_combo_item(self.fillModeBox, index, f"ui.fill_mode.{mode.lower()}", self.tr)
+    filter_bindings = (
+        (self.eventFilterTag, ("ui.all_tags", *(f"ui.event_tag.{key}" for key in event_tag_keys))),
+        (self.eventFilterSide, ("ui.all_sides", "ui.long", "ui.short")),
+        (self.eventFilterType, ("ui.all_events", "ui.open", "ui.close")),
+    )
+    for combo, keys in filter_bindings:
+        for index, key in enumerate(keys):
+            bind_combo_item(combo, index, key, self.tr)
 
     self._add_shortcut("Space", self.toggle_play)
     self._add_shortcut(QtCore.Qt.Key_Left, self.speed_down)

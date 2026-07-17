@@ -9,6 +9,7 @@ from typing import Any, Callable
 from PySide6 import QtCore, QtWidgets
 
 try:
+    from app_i18n import translate_for
     from app_logger import get_logger
     from market_data import bjt_now_iso, clamp
     from presenters.formatters import status_label
@@ -16,6 +17,7 @@ try:
     from services.trade_use_cases import TradeActionResult, TradeUseCase
     from tp_sl_engine import find_tp_sl_triggers
 except ImportError:  # pragma: no cover - package import path
+    from ..app_i18n import translate_for
     from ..app_logger import get_logger
     from ..market_data import bjt_now_iso, clamp
     from ..presenters.formatters import status_label
@@ -81,7 +83,11 @@ def current_bar(window):
 
 
 def current_tags_and_note(window):
-    tags = [checkbox.text() for checkbox in window.tag_checks if checkbox.isChecked()]
+    tags = [
+        str(checkbox.property("eventTagValue") or checkbox.text())
+        for checkbox in window.tag_checks
+        if checkbox.isChecked()
+    ]
     note = window.noteEdit.toPlainText().strip()
     return tags, note
 
@@ -115,9 +121,9 @@ def is_trade_recording_allowed(window) -> bool:
 
 
 def warn_trade_interval_mismatch(window) -> None:
-    message = window.tr("trade_disabled_due_to_display_interval")
+    message = translate_for(window, "trade_disabled_due_to_display_interval")
     window._log(message)
-    QtWidgets.QMessageBox.warning(window, window.tr("trade_actions"), message)
+    QtWidgets.QMessageBox.warning(window, translate_for(window, "trade_actions"), message)
 
 
 def start_new_session_for_current_display_interval(window) -> None:
@@ -275,13 +281,13 @@ def apply_tp_sl_triggers(window, from_bar_index: int, to_bar_index: int) -> int:
         if analysis is not None and hasattr(analysis, "schedule"):
             analysis.schedule()
         window._render_dirty = True
-        window._log(f"auto TP/SL closed {closed} trade(s)")
+        window._log(translate_for(window, "log.auto_tp_sl_closed").format(count=closed))
     return closed
 
 
 def request_open_trade(window, side: str) -> None:
     if getattr(window, "_trade_transaction_active", False):
-        window._log("trade transaction already in progress; ignored duplicate open request")
+        window._log(translate_for(window, "log.duplicate_open_ignored"))
         return
     if window.df.empty:
         return
@@ -289,14 +295,14 @@ def request_open_trade(window, side: str) -> None:
         window._warn_trade_interval_mismatch()
         return
     if side not in {"LONG", "SHORT"}:
-        window._log(f"忽略未知开仓方向：{side}")
+        window._log(translate_for(window, "log.unknown_open_side").format(side=side))
         return
     if not window.session_id:
         window.session_id = window._new_id("sess")
         window.persist_session_state()
     bar = window.current_bar()
     if bar is None or "bar_index" not in bar:
-        window._log("开仓失败：当前K线无效。")
+        window._log(translate_for(window, "log.invalid_open_bar"))
         return
     was_following = bool(getattr(window, "follow_latest", False))
     pause_replay_for_manual_trade(window)
@@ -341,7 +347,16 @@ def request_open_trade(window, side: str) -> None:
             _restore_follow_latest(window, was_following)
             window._render(force=True)
             _restore_follow_latest(window, was_following)
-            window._log(f"开{('多' if side == 'LONG' else '空')}：交易ID={result.trade_id}")
+            window._log(
+                translate_for(window, "log.trade_opened").format(
+                    side=(
+                        translate_for(window, "ui.long")
+                        if side == "LONG"
+                        else translate_for(window, "ui.short")
+                    ),
+                    trade_id=result.trade_id,
+                )
+            )
         finally:
             window._trade_transaction_active = False
             window._update_trade_buttons_enabled()
@@ -355,17 +370,17 @@ def request_open_trade(window, side: str) -> None:
         undo_open_trade_result(window, result)
         window._refresh_tables()
         window._render(force=True)
-        window._log(f"撤销开仓：交易ID={result.trade_id}")
+        window._log(translate_for(window, "log.trade_open_undone").format(trade_id=result.trade_id))
 
     window.execute_command(ActionCommand(name=f"open_{side.lower()}", do_fn=do, undo_fn=undo_action))
 
 
 def request_close_trade(window, expected_side: str) -> None:
     if getattr(window, "_trade_transaction_active", False):
-        window._log("trade transaction already in progress; ignored duplicate close request")
+        window._log(translate_for(window, "log.duplicate_close_ignored"))
         return
     if expected_side not in {"LONG", "SHORT"}:
-        window._log(f"忽略未知平仓方向：{expected_side}")
+        window._log(translate_for(window, "log.unknown_close_side").format(side=expected_side))
         return
     if not window._is_trade_recording_allowed():
         window._warn_trade_interval_mismatch()
@@ -374,17 +389,33 @@ def request_close_trade(window, expected_side: str) -> None:
     if not trade:
         trade = _auto_select_open_trade_if_needed(window, expected_side)
     if not trade:
-        QtWidgets.QMessageBox.warning(window, "无法平仓", "当前没有可平仓的持仓。请先开仓。")
+        QtWidgets.QMessageBox.warning(
+            window,
+            translate_for(window, "dialog.cannot_close_title"),
+            translate_for(window, "dialog.no_open_position"),
+        )
         return
     if trade.get("status") != "OPEN":
-        QtWidgets.QMessageBox.warning(window, "仓位状态错误", "当前选中的交易不是未平仓状态，请刷新或重新选择。")
-        window._log(f"平仓被拒绝：交易ID={trade.get('trade_id')} 状态={status_label(trade.get('status'))}")
+        QtWidgets.QMessageBox.warning(
+            window,
+            translate_for(window, "dialog.position_state_error_title"),
+            translate_for(window, "dialog.position_not_open"),
+        )
+        window._log(
+            translate_for(window, "log.trade_close_rejected").format(
+                trade_id=trade.get("trade_id"),
+                status=status_label(
+                    trade.get("status"),
+                    getattr(window, "current_language", "zh_CN"),
+                ),
+            )
+        )
         return
     if trade["side"] != expected_side:
         QtWidgets.QMessageBox.warning(
             window,
-            "方向不匹配",
-            f"当前选中仓位方向为 {trade['side']}，不能执行本次平仓。",
+            translate_for(window, "dialog.side_mismatch_title"),
+            translate_for(window, "dialog.side_mismatch_message").format(side=trade["side"]),
         )
         return
     bar = window.current_bar()
@@ -397,7 +428,11 @@ def request_close_trade(window, expected_side: str) -> None:
     bar_index = int(bar["bar_index"])
     entry_bar_index = int(trade["entry_bar_index"])
     if bar_index < entry_bar_index:
-        QtWidgets.QMessageBox.warning(window, "平仓位置错误", "平仓K线不能早于开仓K线。请先跳到开仓之后的位置。")
+        QtWidgets.QMessageBox.warning(
+            window,
+            translate_for(window, "dialog.close_position_error_title"),
+            translate_for(window, "dialog.close_before_open"),
+        )
         return
     result_holder: dict[str, TradeActionResult] = {}
 
@@ -432,7 +467,16 @@ def request_close_trade(window, expected_side: str) -> None:
             _restore_follow_latest(window, was_following)
             window._render(force=True)
             _restore_follow_latest(window, was_following)
-            window._log(f"平{('多' if trade['side'] == 'LONG' else '空')}：交易ID={trade['trade_id']}")
+            window._log(
+                translate_for(window, "log.trade_closed").format(
+                    side=(
+                        translate_for(window, "ui.long")
+                        if trade["side"] == "LONG"
+                        else translate_for(window, "ui.short")
+                    ),
+                    trade_id=trade["trade_id"],
+                )
+            )
         finally:
             window._trade_transaction_active = False
             window._update_trade_buttons_enabled()
@@ -447,7 +491,7 @@ def request_close_trade(window, expected_side: str) -> None:
         window._sync_equity_curve()
         window._refresh_tables()
         window._render(force=True)
-        window._log(f"撤销平仓：交易ID={trade['trade_id']}")
+        window._log(translate_for(window, "log.trade_close_undone").format(trade_id=trade["trade_id"]))
 
     window.execute_command(
         ActionCommand(name=f"close_{expected_side.lower()}", do_fn=do, undo_fn=undo_action)
@@ -504,24 +548,37 @@ def selected_open_trade(window, verify_db: bool = False):
         return None
     trade = window._trade_by_id.get(trade_id)
     if not trade:
-        window._log(f"选择的未平仓交易不在内存索引中：交易ID={trade_id}")
+        window._log(translate_for(window, "log.trade_missing_memory").format(trade_id=trade_id))
         return None
     if trade.get("status") != "OPEN":
-        window._log(f"选择的交易不是未平仓状态：交易ID={trade_id} 状态={status_label(trade.get('status'))}")
+        window._log(
+            translate_for(window, "log.trade_not_open").format(
+                trade_id=trade_id,
+                status=status_label(
+                    trade.get("status"),
+                    getattr(window, "current_language", "zh_CN"),
+                ),
+            )
+        )
         return None
     if verify_db:
         db_trade = window.trade_controller.fetch_trade(trade_id)
         if not db_trade:
-            window._log(f"SQLite 中找不到选中的交易：交易ID={trade_id}")
+            window._log(translate_for(window, "log.trade_missing_storage").format(trade_id=trade_id))
             return None
         if db_trade.get("status") != "OPEN":
             window._log(
-                f"SQLite 中选中交易不是未平仓：交易ID={trade_id} "
-                f"状态={status_label(db_trade.get('status'))}"
+                translate_for(window, "log.storage_trade_not_open").format(
+                    trade_id=trade_id,
+                    status=status_label(
+                        db_trade.get("status"),
+                        getattr(window, "current_language", "zh_CN"),
+                    ),
+                )
             )
             return None
         if db_trade.get("session_id") != window.session_id:
-            window._log(f"选中交易不属于当前会话：交易ID={trade_id}")
+            window._log(translate_for(window, "log.trade_wrong_session").format(trade_id=trade_id))
             return None
     return trade
 
@@ -530,7 +587,7 @@ def execute_command(window, command: ActionCommand) -> bool:
     try:
         command.do()
     except Exception as exc:
-        window._operation_error("操作失败", exc)
+        window._operation_error(translate_for(window, "dialog.operation_failed"), exc)
         return False
     window.undo_stack.append(command)
     window.redo_stack.clear()
@@ -544,7 +601,7 @@ def undo(window) -> None:
     try:
         command.undo()
     except Exception as exc:
-        window._operation_error("撤销失败", exc)
+        window._operation_error(translate_for(window, "dialog.undo_failed"), exc)
         return
     window.undo_stack.pop()
     window.redo_stack.append(command)
@@ -557,7 +614,7 @@ def redo(window) -> None:
     try:
         command.do()
     except Exception as exc:
-        window._operation_error("重做失败", exc)
+        window._operation_error(translate_for(window, "dialog.redo_failed"), exc)
         return
     window.redo_stack.pop()
     window.undo_stack.append(command)

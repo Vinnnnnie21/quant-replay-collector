@@ -94,13 +94,16 @@ def test_icon_generator_rebuilds_all_supported_sizes(tmp_path):
 def test_windows_build_bundles_runtime_icon_resource():
     source = (APP_DIR / "build_windows.bat").read_text(encoding="utf-8")
 
+    assert '--paths "%CD%"' in source
     assert "--icon=assets\\app_icon.ico" in source
     assert "--add-data=assets\\app_icon.ico;assets" in source
     assert "--add-data=assets\\app_logo.png;assets" in source
     assert "--add-data=assets\\app_logo_light.png;assets" in source
+    assert "verify_frozen_archive.py" in source
 
 
 def test_icon_generator_is_included_in_the_clean_release():
     from scripts.clean_release import ROOT_CONTENT
 
     assert "scripts/generate_app_icon.py" in ROOT_CONTENT
+    assert "scripts/verify_frozen_archive.py" in ROOT_CONTENT

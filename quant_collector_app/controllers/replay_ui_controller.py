@@ -7,9 +7,11 @@ import time
 from PySide6 import QtCore
 
 try:
+    from app_i18n import translate_for
     from app_logger import get_logger
     from render_state import RenderState
 except ImportError:  # pragma: no cover - package import path
+    from ..app_i18n import translate_for
     from ..app_logger import get_logger
     from ..render_state import RenderState
 
@@ -46,7 +48,9 @@ def _apply_tp_sl_if_forward(window, previous_cursor: int) -> None:
 
 
 def on_speed_changed(window, _value: int) -> None:
-    window.speedLabel.setText(f"速度: {window.current_speed():.1f}x")
+    window.speedLabel.setText(
+        window.tr("ui.speed_format").format(speed=window.current_speed())
+    )
 
 
 def current_speed(window) -> float:
@@ -102,7 +106,11 @@ def on_timer(window) -> None:
             window._mark_rendered()
     except Exception as exc:
         logger.exception("播放定时器异常")
-        window._log(f"timer异常：{type(exc).__name__}: {exc}")
+        window._log(
+            window.tr("log.replay_timer_failed").format(
+                error=f"{type(exc).__name__}: {exc}"
+            )
+        )
         window.playing = False
     finally:
         _log_slow(window, "on_timer", started)
@@ -128,7 +136,7 @@ def toggle_play(window) -> None:
         window._accum,
     )
     window.playing = window.replay_controller.toggle_play(len(window.df))
-    window._log("播放" if window.playing else "暂停")
+    window._log(window.tr("log.replay_playing") if window.playing else window.tr("log.replay_paused"))
     window._last_tick.restart()
     window._update_load_play_button()
     _render_state(window).mark_header_changed()
@@ -187,7 +195,11 @@ def toggle_follow(window) -> None:
         window._accum,
     )
     window.follow_latest = window.replay_controller.toggle_follow()
-    window._log(f"跟随最新：{'开启' if window.follow_latest else '关闭'}")
+    window._log(
+        translate_for(window, "log.follow_latest_enabled")
+        if window.follow_latest
+        else translate_for(window, "log.follow_latest_disabled")
+    )
     if window.follow_latest:
         window.user_view_lock = False
         reset_y = getattr(getattr(window, "vb_price", None), "reset_y_auto", None)
@@ -206,7 +218,7 @@ def on_user_interaction(window) -> None:
     window.last_user_interaction = QtCore.QDateTime.currentMSecsSinceEpoch() / 1000.0
     if window.follow_latest:
         window.follow_latest = False
-        window._log("检测到手动缩放/拖动，已自动退出跟随最新。")
+        window._log(window.tr("log.follow_latest_manual_exit"))
 
 
 def reset_view(window) -> None:

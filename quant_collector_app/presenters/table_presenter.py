@@ -53,6 +53,8 @@ def populate_trade_tables(
     open_table: QtWidgets.QTableWidget,
     closed_table: QtWidgets.QTableWidget,
     trades: list[dict[str, Any]],
+    *,
+    language: str = "zh_CN",
 ) -> None:
     open_trades = [trade for trade in trades if trade.get("status") == "OPEN"]
     closed_trades = [trade for trade in trades if trade.get("status") == "CLOSED"]
@@ -63,15 +65,15 @@ def populate_trade_tables(
     for row_index, trade in enumerate(open_trades):
         values = [
             trade["trade_id"],
-            side_label(trade.get("side")),
+            side_label(trade.get("side"), language),
             trade.get("entry_bar_time_bjt") or "",
             fmt_num(trade.get("entry_price_proxy")),
             fmt_num(trade.get("entry_fill_price") if trade.get("entry_fill_price") is not None else trade.get("entry_price_proxy")),
             fmt_num(trade.get("entry_fee_quote")),
             fmt_num(trade.get("notional_quote")),
             trade.get("entry_bar_index"),
-            status_label(trade.get("status")),
-            fill_mode_label(trade.get("fill_mode")),
+            status_label(trade.get("status"), language),
+            fill_mode_label(trade.get("fill_mode"), language),
         ]
         for col_index, value in enumerate(values):
             open_table.setItem(
@@ -91,7 +93,7 @@ def populate_trade_tables(
         net_return = trade.get("net_return_pct") if trade.get("net_return_pct") is not None else trade.get("final_return_pct")
         values = [
             trade["trade_id"],
-            side_label(trade.get("side")),
+            side_label(trade.get("side"), language),
             trade.get("entry_bar_time_bjt") or "",
             trade.get("exit_bar_time_bjt") or "",
             fmt_num(trade.get("entry_fill_price") if trade.get("entry_fill_price") is not None else trade.get("entry_price_proxy")),
@@ -101,8 +103,8 @@ def populate_trade_tables(
             fmt_num(total_fee),
             fmt_num(trade.get("net_pnl_quote")),
             trade.get("holding_bars"),
-            status_label(trade.get("status")),
-            fill_mode_label(trade.get("fill_mode")),
+            status_label(trade.get("status"), language),
+            fill_mode_label(trade.get("fill_mode"), language),
         ]
         for col_index, value in enumerate(values):
             closed_table.setItem(
@@ -125,6 +127,7 @@ def populate_event_table(
     selected_tag: str = "全部标签",
     selected_side: str = "",
     selected_type: str = "",
+    language: str = "zh_CN",
 ) -> None:
     visible_events = sorted(events, key=lambda row: row.get("created_at") or "")
     if selected_tag and selected_tag != "全部标签":
@@ -139,8 +142,8 @@ def populate_event_table(
         values = [
             event["event_id"],
             event["trade_id"],
-            event_type_label(event.get("event_type")),
-            side_label(event.get("side")),
+            event_type_label(event.get("event_type"), language),
+            side_label(event.get("side"), language),
             event.get("bar_open_time_bjt") or "",
             fmt_num(event.get("price_proxy")),
             ", ".join(event.get("label_tags", [])),
@@ -171,16 +174,21 @@ def _event_dot_color(event: dict[str, Any]) -> str:
     return COLORS["text_muted"]
 
 
-def _recent_event_title(event: dict[str, Any]) -> str:
+def _recent_event_title(event: dict[str, Any], language: str = "zh_CN") -> str:
     event_type = str(event.get("event_type") or "").upper()
     side = str(event.get("side") or "").upper()
     labels = {
-        ("OPEN", "LONG"): "开多",
-        ("CLOSE", "LONG"): "平多",
-        ("OPEN", "SHORT"): "开空",
-        ("CLOSE", "SHORT"): "平空",
+        ("OPEN", "LONG"): "open_long",
+        ("CLOSE", "LONG"): "close_long",
+        ("OPEN", "SHORT"): "open_short",
+        ("CLOSE", "SHORT"): "close_short",
     }
-    return labels.get((event_type, side), event_type_label(event.get("event_type")) or "事件")
+    key = labels.get((event_type, side))
+    if key:
+        from app_i18n import tr
+
+        return tr(key, language)
+    return event_type_label(event.get("event_type"), language) or str(event_type)
 
 
 def _recent_event_time(event: dict[str, Any]) -> str:
@@ -207,6 +215,8 @@ def populate_recent_event_list(
     empty_widget: QtWidgets.QWidget | None,
     events: list[dict[str, Any]],
     limit: int = 1,
+    *,
+    language: str = "zh_CN",
 ) -> None:
     layout = list_widget.layout()
     if layout is None:
@@ -229,7 +239,7 @@ def populate_recent_event_list(
         dot = QtWidgets.QLabel("●")
         dot.setStyleSheet(f"color: {_event_dot_color(event)}; background: transparent;")
         dot.setFixedWidth(12)
-        title = QtWidgets.QLabel(_recent_event_title(event))
+        title = QtWidgets.QLabel(_recent_event_title(event, language))
         title.setProperty("role", "statusValue")
         time_label = QtWidgets.QLabel(_recent_event_time(event))
         time_label.setProperty("role", "tiny")
@@ -248,7 +258,13 @@ def populate_recent_event_list(
     layout.addStretch(1)
 
 
-def populate_recent_event_table(table: QtWidgets.QTableWidget, events: list[dict[str, Any]], limit: int = 6) -> None:
+def populate_recent_event_table(
+    table: QtWidgets.QTableWidget,
+    events: list[dict[str, Any]],
+    limit: int = 6,
+    *,
+    language: str = "zh_CN",
+) -> None:
     visible_events = sorted(events, key=lambda row: row.get("created_at") or row.get("bar_open_time_bjt") or "")
     recent = list(reversed(visible_events[-max(0, int(limit)) :]))
     table.setRowCount(len(recent))
@@ -258,7 +274,7 @@ def populate_recent_event_table(table: QtWidgets.QTableWidget, events: list[dict
         items = [
             dot,
             make_table_item(event.get("bar_open_time_bjt") or event.get("created_at") or ""),
-            make_table_item(event_type_label(event.get("event_type"))),
+            make_table_item(event_type_label(event.get("event_type"), language)),
             make_table_item(fmt_num(event.get("price_proxy")), numeric=True),
         ]
         for col_index, item in enumerate(items):
@@ -306,13 +322,18 @@ def populate_equity_table(table: QtWidgets.QTableWidget, equity_rows: list[dict[
             )
 
 
-def populate_event_study_table(table: QtWidgets.QTableWidget, summary: pd.DataFrame) -> None:
+def populate_event_study_table(
+    table: QtWidgets.QTableWidget,
+    summary: pd.DataFrame,
+    *,
+    language: str = "zh_CN",
+) -> None:
     table.setRowCount(len(summary))
     for row_index, row in summary.iterrows():
         values = [
             row.get("label_tag") or "",
-            row.get("event_type") or "",
-            row.get("side") or "",
+            event_type_label(row.get("event_type"), language),
+            side_label(row.get("side"), language),
             int(row.get("sample_count") or 0),
             fmt_num(row.get("fwd_ret_1_mean")),
             fmt_num(row.get("fwd_ret_3_mean")),

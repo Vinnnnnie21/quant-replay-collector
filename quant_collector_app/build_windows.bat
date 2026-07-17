@@ -47,10 +47,20 @@ if exist "assets\app_icon.ico" set "ICON_ARG=--icon=assets\app_icon.ico --add-da
     --onefile ^
     --windowed ^
     --name QRC ^
+    --paths "%CD%" ^
+    --add-data=translations;translations ^
     %ICON_ARG% main_app.py >> "%LOG_FILE%" 2>&1
 
 if errorlevel 1 (
     echo Build failed.
+    echo See log: %LOG_FILE%
+    pause
+    exit /b 1
+)
+
+%PYTHON_CMD% "%~dp0..\scripts\verify_frozen_archive.py" "dist\QRC.exe" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    echo Build verification failed: required application modules are missing.
     echo See log: %LOG_FILE%
     pause
     exit /b 1

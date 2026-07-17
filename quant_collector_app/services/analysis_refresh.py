@@ -10,6 +10,11 @@ import time
 
 import pandas as pd
 
+try:
+    from app_i18n import tr
+except ImportError:  # pragma: no cover - package import path
+    from ..app_i18n import tr
+
 
 MAX_EQUITY_DISPLAY_ROWS = 2_000
 
@@ -32,6 +37,7 @@ class AnalysisRefreshRequest:
     market_cursor: int | None
     initial_equity: float
     trade_notional: float
+    language: str = "zh_CN"
     revision: int = 0
     ui_input_capture_seconds: float = 0.0
     ui_thread_id: int = 0
@@ -60,6 +66,7 @@ class AnalysisRefreshSnapshot:
     market_cursor: int | None = None
     session_id: str = ""
     trade_notional: float = 1000.0
+    language: str = "zh_CN"
     revision: int = 0
 
     def __post_init__(self) -> None:
@@ -196,6 +203,7 @@ def prepare_analysis_refresh_snapshot(
         market_cursor=request.market_cursor,
         session_id=request.session_id,
         trade_notional=request.trade_notional,
+        language=request.language,
         revision=request.revision,
     )
     preparation = AnalysisRefreshPreparation(
@@ -436,6 +444,7 @@ def build_event_study_summary_frame(
     features: pd.DataFrame | Iterable[dict[str, Any]],
     *,
     build_summary_fn: Callable[[pd.DataFrame, pd.DataFrame], pd.DataFrame] | None = None,
+    language: str = "zh_CN",
 ) -> tuple[pd.DataFrame, str | None]:
     if build_summary_fn is None:
         from event_study import build_event_study_summary
@@ -446,13 +455,16 @@ def build_event_study_summary_frame(
         feature_frame = features.copy() if isinstance(features, pd.DataFrame) else pd.DataFrame(list(features))
         return build_summary_fn(event_frame, feature_frame), None
     except Exception as exc:
-        return pd.DataFrame(), f"事件研究统计失败：{type(exc).__name__}: {exc}"
+        return pd.DataFrame(), tr("analysis.error.event_study", language).format(
+            error=f"{type(exc).__name__}: {exc}"
+        )
 
 
 def build_dataset_summary_text(
     features: pd.DataFrame | Iterable[dict[str, Any]],
     *,
     build_ml_datasets_fn: Callable[[pd.DataFrame], dict[str, pd.DataFrame]] | None = None,
+    language: str = "zh_CN",
 ) -> tuple[str, str | None]:
     if build_ml_datasets_fn is None:
         from dataset_builder import build_ml_datasets
@@ -464,19 +476,26 @@ def build_dataset_summary_text(
         ml_features = datasets["ml_features"]
         ml_labels = datasets["ml_labels"]
         sample_index = datasets["sample_index"]
-        blocked = ["未来收益字段", "事件后窗口字段", "最大有利/不利波动", "人工交易结果字段"]
+        blocked = [
+            tr("analysis.dataset.blocked.future_returns", language),
+            tr("analysis.dataset.blocked.post_event", language),
+            tr("analysis.dataset.blocked.excursions", language),
+            tr("analysis.dataset.blocked.manual_results", language),
+        ]
         text = "\n".join(
             [
-                f"当前会话事件特征行数: {len(feature_frame)}",
-                f"特征表行/列: {len(ml_features)} / {len(ml_features.columns)}",
-                f"标签表行/列: {len(ml_labels)} / {len(ml_labels.columns)}",
-                f"样本索引行/列: {len(sample_index)} / {len(sample_index.columns)}",
-                f"已隔离未来/结果字段: {', '.join(blocked)}",
+                tr("analysis.dataset.feature_rows", language).format(count=len(feature_frame)),
+                tr("analysis.dataset.feature_shape", language).format(rows=len(ml_features), columns=len(ml_features.columns)),
+                tr("analysis.dataset.label_shape", language).format(rows=len(ml_labels), columns=len(ml_labels.columns)),
+                tr("analysis.dataset.index_shape", language).format(rows=len(sample_index), columns=len(sample_index.columns)),
+                tr("analysis.dataset.blocked_fields", language).format(fields=", ".join(blocked)),
             ]
         )
         return text, None
     except Exception as exc:
-        text = f"机器学习样本摘要生成失败：{type(exc).__name__}: {exc}"
+        text = tr("analysis.error.dataset", language).format(
+            error=f"{type(exc).__name__}: {exc}"
+        )
         return text, text
 
 
@@ -487,7 +506,9 @@ def build_performance_summary_text(
     *,
     build_summary_fn: Callable[[list[dict[str, Any]], list[dict[str, Any]], float], dict[str, Any]] | None = None,
     format_report_fn: Callable[[dict[str, Any]], str] | None = None,
+    language: str = "zh_CN",
 ) -> tuple[str, str | None]:
+    use_default_formatter = format_report_fn is None
     if build_summary_fn is None or format_report_fn is None:
         from performance import build_performance_summary, format_performance_report
 
@@ -495,10 +516,13 @@ def build_performance_summary_text(
         format_report_fn = format_report_fn or format_performance_report
     try:
         summary = build_summary_fn([dict(t) for t in trades], [dict(r) for r in equity_rows], initial_equity)
+        if use_default_formatter:
+            return format_report_fn(summary, language=language), None
         return format_report_fn(summary), None
     except Exception as exc:
-        text = f"统计生成失败：{type(exc).__name__}: {exc}"
-        warning = f"交易绩效统计生成失败：{type(exc).__name__}: {exc}"
+        error = f"{type(exc).__name__}: {exc}"
+        text = tr("analysis.error.statistics", language).format(error=error)
+        warning = tr("analysis.error.performance", language).format(error=error)
         return text, warning
 
 
@@ -514,22 +538,24 @@ def build_analysis_refresh_result(
 ) -> AnalysisRefreshResult:
     _raise_if_cancelled(cancelled)
     if progress is not None:
-        progress("Preparing event study...")
+        progress(tr("analysis.progress.event_study", snapshot.language))
     event_study, event_warning = build_event_study_summary_frame(
         snapshot.events,
         snapshot.features,
         build_summary_fn=build_event_study_fn,
+        language=snapshot.language,
     )
     _raise_if_cancelled(cancelled)
     if progress is not None:
-        progress("Preparing research dataset...")
+        progress(tr("analysis.progress.dataset", snapshot.language))
     dataset_text, dataset_warning = build_dataset_summary_text(
         snapshot.features,
         build_ml_datasets_fn=build_ml_datasets_fn,
+        language=snapshot.language,
     )
     _raise_if_cancelled(cancelled)
     if progress is not None:
-        progress("Calculating performance statistics...")
+        progress(tr("analysis.progress.performance", snapshot.language))
     equity_rows = _market_equity_rows(snapshot, cancelled)
     if not isinstance(equity_rows, Sequence):
         equity_rows = tuple(equity_rows)
@@ -539,6 +565,7 @@ def build_analysis_refresh_result(
         snapshot.initial_equity,
         build_summary_fn=build_performance_summary_fn,
         format_report_fn=format_performance_report_fn,
+        language=snapshot.language,
     )
     _raise_if_cancelled(cancelled)
     warnings = tuple(w for w in (event_warning, dataset_warning, performance_warning) if w)

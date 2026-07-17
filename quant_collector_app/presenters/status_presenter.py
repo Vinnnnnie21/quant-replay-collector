@@ -14,14 +14,16 @@ try:
     from app_config import BJT, DEFAULT_INTERVAL, DEFAULT_SYMBOL
     from analytics.metrics import max_drawdown, payoff_ratio, profit_factor, sharpe_ratio
     from display_names import session_display_name, trade_display_name
+    from app_i18n import translate_for
     from market_data import clamp
-    from presenters.formatters import fmt_num, safe_float, short_id
+    from presenters.formatters import fmt_num, safe_float, short_id, side_label
 except ImportError:  # pragma: no cover - package import path
     from ..app_config import BJT, DEFAULT_INTERVAL, DEFAULT_SYMBOL
     from ..analytics.metrics import max_drawdown, payoff_ratio, profit_factor, sharpe_ratio
     from ..display_names import session_display_name, trade_display_name
+    from ..app_i18n import translate_for
     from ..market_data import clamp
-    from .formatters import fmt_num, safe_float, short_id
+    from .formatters import fmt_num, safe_float, short_id, side_label
 
 
 def _set_label_role(label, role: str) -> None:
@@ -39,6 +41,14 @@ def _set_text_if_present(window, attr: str, text: str) -> None:
     widget = getattr(window, attr, None)
     if widget is not None:
         widget.setText(text)
+
+
+def _window_language(window) -> str:
+    return str(getattr(window, "current_language", "zh_CN") or "zh_CN")
+
+
+def _window_tr(window, key: str) -> str:
+    return translate_for(window, key)
 
 
 def _format_bar_time(value) -> str:
@@ -182,8 +192,16 @@ def _update_account_overview_panel(window, row) -> None:
     role = "valuePositive" if pnl > 0 else "valueNegative" if pnl < 0 else "statusValue"
     _set_text_if_present(window, "accountEquityValue", _money(equity))
     _set_text_if_present(window, "accountReturnValue", _pct(total_return))
-    _set_text_if_present(window, "headerEquityValue", f"权益 {_money(equity)}")
-    _set_text_if_present(window, "headerReturnValue", f"收益 {_pct(total_return)}")
+    _set_text_if_present(
+        window,
+        "headerEquityValue",
+        _window_tr(window, "ui.header_equity").format(value=_money(equity)),
+    )
+    _set_text_if_present(
+        window,
+        "headerReturnValue",
+        _window_tr(window, "ui.header_return").format(value=_pct(total_return)),
+    )
     _set_text_if_present(window, "accountPnlValue", _money(pnl))
     _set_text_if_present(window, "accountWinRateValue", _pct(win_rate))
     _set_text_if_present(window, "accountSharpeValue", fmt_num(sharpe) if sharpe is not None else "-")
@@ -244,7 +262,7 @@ def _update_position_panel(window, row) -> None:
     if not open_trades or not math.isfinite(current_price) or current_price <= 0:
         show_position(False)
         _render_trade_position_cards(window, [], current_price)
-        set_both("positionSideValue", "无持仓")
+        set_both("positionSideValue", _window_tr(window, "ui.empty.no_position"))
         set_both("positionQtyValue", "-")
         set_both("positionEntryValue", "-")
         set_both("positionCurrentValue", fmt_num(current_price) if math.isfinite(current_price) else "-")
@@ -260,7 +278,11 @@ def _update_position_panel(window, row) -> None:
     show_position(True)
     _render_trade_position_cards(window, open_trades, current_price)
     sides = {str(trade.get("side") or "").upper() for trade in open_trades}
-    side_text = next(iter(sides)) if len(sides) == 1 else f"混合 {len(open_trades)}"
+    side_text = (
+        side_label(next(iter(sides)), _window_language(window))
+        if len(sides) == 1
+        else _window_tr(window, "ui.mixed_positions").format(count=len(open_trades))
+    )
     total_qty = 0.0
     weighted_entry = 0.0
     total_notional = 0.0
@@ -293,8 +315,12 @@ def _update_position_panel(window, row) -> None:
         for row_index, trade in enumerate(sorted(open_trades, key=lambda item: (item.get("entry_bar_index") or 0, item.get("created_at") or ""))):
             trade_pnl = _floating_pnl(trade, current_price, _trade_notional(trade, total_notional or 1_000.0))
             values = (
-                trade_display_name(trade, row_index + 1),
-                str(trade.get("side") or "-"),
+                trade_display_name(
+                    trade,
+                    row_index + 1,
+                    language=_window_language(window),
+                ),
+                side_label(trade.get("side"), _window_language(window)),
                 fmt_num(_entry_price(trade)),
                 f"{trade_pnl:.2f}",
                 fmt_num(trade.get("take_profit_price")),
@@ -358,19 +384,20 @@ def _render_trade_position_cards(window, open_trades: list[dict], current_price:
             card_l.setContentsMargins(8, 7, 8, 7)
             card_l.setSpacing(3)
             values = {}
-            for field, label_text in (
-                ("side", "方向"),
-                ("notional", "名义价值"),
-                ("pnl_pct", "盈亏率"),
-                ("pnl", "浮动盈亏"),
-                ("entry", "开仓均价"),
-                ("current", "当前价"),
+            for field, label_key in (
+                ("side", "ui.side"),
+                ("notional", "ui.notional_value"),
+                ("pnl_pct", "ui.pnl_pct"),
+                ("pnl", "ui.unrealized_pnl"),
+                ("entry", "ui.average_entry"),
+                ("current", "ui.current_price"),
             ):
                 row = QtWidgets.QWidget()
                 row_l = QtWidgets.QHBoxLayout(row)
                 row_l.setContentsMargins(0, 0, 0, 0)
                 row_l.setSpacing(6)
-                label = QtWidgets.QLabel(label_text)
+                label = QtWidgets.QLabel(_window_tr(window, label_key))
+                label.setProperty("i18nTextKey", label_key)
                 label.setProperty("role", "muted")
                 value = QtWidgets.QLabel()
                 value.setProperty("field", field)
@@ -387,7 +414,11 @@ def _render_trade_position_cards(window, open_trades: list[dict], current_price:
         card.setProperty("positionIndex", index)
         values = card._qrc_position_values
         for field, value_text, role in (
-            ("side", "做多" if is_long else "做空", direction_role),
+            (
+                "side",
+                _window_tr(window, "ui.long_position") if is_long else _window_tr(window, "ui.short_position"),
+                direction_role,
+            ),
             ("notional", card_number(notional) if notional > 0 else "-", "statusValue"),
             ("pnl_pct", f"{card_number(pnl_pct)}%", pnl_role),
             ("pnl", card_number(pnl), pnl_role),
@@ -402,7 +433,7 @@ def _render_trade_position_cards(window, open_trades: list[dict], current_price:
 
 
 def show_market_dirty_feedback(window) -> None:
-    message = window.tr("market_params_dirty_hint")
+    message = _window_tr(window, "market_params_dirty_hint")
     window.status.setText(message)
     hint = getattr(window, "marketDirtyHint", None)
     if hint is not None:
@@ -415,26 +446,26 @@ def update_load_play_button(window) -> None:
     if not hasattr(window, "btnLoadPlay"):
         return
     if window._loading_data:
-        window.btnLoadPlay.setText(window.tr("loading"))
+        window.btnLoadPlay.setText(_window_tr(window, "loading"))
         window.btnLoadPlay.setEnabled(False)
         return
     dirty = bool(getattr(window, "market_dirty", False) or window._is_market_params_dirty())
     if window.df.empty or dirty:
         if dirty:
             window.market_dirty = True
-        window.btnLoadPlay.setText(f"{window.tr('play')} (Space)")
+        window.btnLoadPlay.setText(f"{_window_tr(window, 'play')} (Space)")
         window.btnLoadPlay.setEnabled(False)
     elif window.playing:
-        window.btnLoadPlay.setText(f"{window.tr('pause')} (Space)")
+        window.btnLoadPlay.setText(f"{_window_tr(window, 'pause')} (Space)")
         window.btnLoadPlay.setEnabled(True)
     else:
-        window.btnLoadPlay.setText(f"{window.tr('play')} (Space)")
+        window.btnLoadPlay.setText(f"{_window_tr(window, 'play')} (Space)")
         window.btnLoadPlay.setEnabled(True)
 
 
 def update_trade_buttons_enabled(window) -> None:
     allowed = window._is_trade_recording_allowed() and not getattr(window, "_trade_transaction_active", False)
-    tooltip = "" if allowed else window.tr("trade_disabled_due_to_display_interval")
+    tooltip = "" if allowed else _window_tr(window, "trade_disabled_due_to_display_interval")
     for button_name in ("btnOpenLong", "btnOpenShort", "btnCloseLong", "btnCloseShort"):
         button = getattr(window, button_name, None)
         if button is not None:
@@ -466,14 +497,15 @@ def update_header(window) -> None:
             change_pct = (close_price / open_price - 1.0) * 100.0
             change_text = f"{change_pct:+.2f}%"
             change_role = "valuePositive" if change_pct > 0 else "valueNegative" if change_pct < 0 else "statusValue"
-    main_text = f"{symbol or '-'} · {display_interval or '-'} · sample {sample_interval or '-'}"
+    sample_text = f"{_window_tr(window, 'sample_interval')} {sample_interval or '-'}"
+    main_text = f"{symbol or '-'} · {display_interval or '-'} · {sample_text}"
     if hasattr(window, "headerMainLabel"):
         window.headerMainLabel.setText(main_text)
         _set_label_role(window.headerMainLabel, "marketSummary")
         for attr, text in (
             ("headerSymbolValue", symbol or "-"),
             ("headerIntervalValue", display_interval or "-"),
-            ("headerSampleIntervalValue", f"sample {sample_interval or '-'}"),
+            ("headerSampleIntervalValue", sample_text),
             ("headerOhlcValue", ohlc_text),
             ("headerTimeValue", time_text),
             ("headerDeltaValue", change_text),
@@ -483,7 +515,7 @@ def update_header(window) -> None:
         window.headerSymbolValue.setText(symbol or "-")
         window.headerIntervalValue.setText(display_interval or "-")
         if hasattr(window, "headerSampleIntervalValue"):
-            window.headerSampleIntervalValue.setText(f"sample {sample_interval or '-'}")
+            window.headerSampleIntervalValue.setText(sample_text)
         if hasattr(window, "headerOhlcValue"):
             window.headerOhlcValue.setText(ohlc_text)
         elif hasattr(window, "headerCloseValue"):
@@ -492,9 +524,13 @@ def update_header(window) -> None:
         if hasattr(window, "headerDeltaValue"):
             window.headerDeltaValue.setText(change_text)
             _set_label_role(window.headerDeltaValue, change_role)
-    window.headerPlayBadge.setText(f"● {window.tr('playing') if window.playing else window.tr('paused')}")
+    window.headerPlayBadge.setText(
+        f"● {_window_tr(window, 'playing') if window.playing else _window_tr(window, 'paused')}"
+    )
     window._set_widget_role(window.headerPlayBadge, "headerStateLive" if window.playing else "headerStatePaused")
-    window.headerViewBadge.setText(f"● {window.tr('follow_latest') if window.follow_latest else window.tr('free_view')}")
+    window.headerViewBadge.setText(
+        f"● {_window_tr(window, 'follow_latest') if window.follow_latest else _window_tr(window, 'free_view')}"
+    )
     window._set_widget_role(window.headerViewBadge, "headerStateLive" if window.follow_latest else "headerState")
     start = window.startDate.date().toString("yyyy-MM-dd") if hasattr(window, "startDate") else "-"
     end = window.endDate.date().toString("yyyy-MM-dd") if hasattr(window, "endDate") else "-"

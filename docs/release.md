@@ -1,5 +1,18 @@
 # Release Hygiene
 
+## v1.5.2 Release Notes
+
+`v1.5.2` is a language-consistency hotfix. Chinese mode now uses Chinese interface text and English mode uses English interface text throughout replay, analysis, settings and backtest views. Dynamic status, progress, validation, warning and table text is translated through the same resources, and English no longer falls back to Chinese for a missing key.
+
+The Windows executable now bundles `translations/zh_CN.json` and `translations/en_US.json`, preventing packaged builds from displaying raw keys such as `trading_replay` or `trade_actions`. Canonical technical identifiers such as symbols, intervals, API names and stored enum values remain unchanged. This release does not change trading, replay, accounting, SQLite data, saved sessions or research algorithms.
+
+Clean release commands:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.2-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.2-Clean
+```
+
 ## v1.5.1 Release Notes
 
 `v1.5.1` hardens the existing local research workflow. It adds cooperative safe shutdown, atomic settings, bounded daily and pre-migration backups, strict research data-quality gates, reproducible randomized statistics, resource budgets and measured 270,000-bar performance coverage. It does not add live trading or change simulated execution, fees, slippage, PnL, backtesting, research features or future-data isolation.
@@ -85,8 +98,8 @@ This is a replay and research application. It does not connect to Binance order 
 Run from PowerShell at the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.1-Clean
-.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.1-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.2-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.2-Clean
 ```
 
 The output contains the source package, public documentation, tests, requirements and launch scripts. It includes `clean_release_report.json` and `clean_release_report.md`. The default public reports omit local absolute paths and individual skipped file names.
@@ -109,8 +122,8 @@ PowerShell verification commands. Use the project virtual environment so release
 .\.venv\Scripts\python.exe -m compileall -q quant_collector_app tests
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m quant_collector_app.self_check --core
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.1-Clean
-.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.1-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.2-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.2-Clean
 ```
 
 Inspect local-only files before staging:
@@ -125,11 +138,11 @@ The second command must produce no tracked runtime data, archives, caches, logs,
 Publish through a branch:
 
 ```powershell
-git switch -c release/v1.5.1
+git switch -c release/v1.5.2
 git add .gitignore .github README.md CHANGELOG.md docs quant_collector_app requirements.txt requirements-lock.txt run_app.py run_app.pyw scripts start.bat tests
 git status --short
-git commit -m "Prepare v1.5.1 release"
-git push -u origin release/v1.5.1
+git commit -m "Prepare v1.5.2 release"
+git push -u origin release/v1.5.2
 ```
 
 Open a pull request to `main`. GitHub Actions will run compilation, tests, the core health check, build a downloadable clean artifact and reject contaminated output. Create a GitHub Release from the reviewed merge commit or a release tag, and upload the checked clean artifact rather than the development directory.
@@ -137,5 +150,5 @@ Open a pull request to `main`. GitHub Actions will run compilation, tests, the c
 For a manually uploaded archive, package only the checked output:
 
 ```powershell
-Compress-Archive -Path dist/QuantReplayCollector-v1.5.1-Clean/* -DestinationPath QuantReplayCollector-v1.5.1-Clean.zip -Force
+Compress-Archive -Path dist/QuantReplayCollector-v1.5.2-Clean/* -DestinationPath QuantReplayCollector-v1.5.2-Clean.zip -Force
 ```

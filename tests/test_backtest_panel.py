@@ -68,7 +68,9 @@ class _Service:
                 "rule_only_bars": [],
                 "overlap_ratio": 0.0,
             },
-            warnings=["research only"],
+            warnings=[
+                "Backtest result is for research only and does not represent live trading returns."
+            ],
             errors=[],
         )
 
@@ -87,14 +89,117 @@ class _Host(QtWidgets.QWidget):
         self._loaded_market_key = ("BTCUSDT", "5m", "2026-01-01", "2026-01-02")
 
 
+class _ChineseHost(_Host):
+    current_language = "zh_CN"
+
+
+def test_chinese_backtest_panel_has_no_english_action_labels_or_raw_field_keys():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _ChineseHost()
+    panel = BacktestPanel(host, controller=BacktestController(service=_Service()))
+    try:
+        visible_texts: list[str] = []
+        for widget in panel.findChildren(QtWidgets.QWidget):
+            if isinstance(widget, (QtWidgets.QLabel, QtWidgets.QAbstractButton)):
+                visible_texts.append(widget.text())
+            if isinstance(widget, QtWidgets.QTabWidget):
+                visible_texts.extend(
+                    widget.tabText(index) for index in range(widget.count())
+                )
+
+        forbidden = {
+            "Load default params",
+            "Apply params from analysis",
+            "Reset",
+            "Import candidate rule",
+            "Run backtest",
+            "Run parameter scan",
+            "Run walk-forward",
+            "Export backtest",
+            "Trades",
+            "Equity",
+            "Manual vs Rule",
+            "symbol",
+            "backtest_start",
+            "notional_per_trade",
+        }
+        assert forbidden.intersection(visible_texts) == set()
+    finally:
+        panel.close()
+        host.close()
+        app.processEvents()
+
+
+def test_chinese_backtest_result_summary_uses_chinese_labels():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _ChineseHost()
+    panel = BacktestPanel(host, controller=BacktestController(service=_Service()))
+    try:
+        panel.run_backtest()
+
+        result = panel.resultText.toPlainText()
+        assert "历史模拟只用于规则假设研究" in result
+        assert "所选时间段没有发生规则交易" in result
+        assert "Historical simulation" not in result
+        assert "Warning:" not in result
+    finally:
+        panel.close()
+        host.close()
+        app.processEvents()
+
+
+def test_chinese_backtest_result_tables_localize_enum_and_metric_values():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _ChineseHost()
+    panel = BacktestPanel(
+        host,
+        controller=BacktestController(service=_Service(with_trade=True)),
+    )
+    try:
+        panel.run_backtest()
+
+        assert panel.tradeResultTable.item(0, 6).text() == "多"
+        assert panel.tradeResultTable.item(0, 9).text() == "止盈"
+        assert panel.comparisonTable.item(0, 0).text() == "手动交易数"
+        assert "manual_trade_count" not in {
+            panel.comparisonTable.item(row, 0).text()
+            for row in range(panel.comparisonTable.rowCount())
+        }
+    finally:
+        panel.close()
+        host.close()
+        app.processEvents()
+
+
+def test_existing_backtest_result_is_retranslated_after_language_switch():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _Host()
+    panel = BacktestPanel(host, controller=BacktestController(service=_Service()))
+    try:
+        panel.run_backtest()
+        assert "Historical simulation" in panel.resultText.toPlainText()
+
+        host.current_language = "zh_CN"
+        panel.retranslate_ui()
+
+        result = panel.resultText.toPlainText()
+        assert "历史模拟" in result
+        assert "Historical simulation" not in result
+        assert "Backtest result is for research only" not in result
+    finally:
+        panel.close()
+        host.close()
+        app.processEvents()
+
+
 def test_backtest_panel_exposes_minimum_inputs_applies_analysis_and_displays_result():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     host = _Host()
     service = _Service()
     panel = BacktestPanel(host, controller=BacktestController(service=service))
 
-    assert panel.directionBox.currentText() == "long_only"
-    assert [panel.directionBox.itemText(i) for i in range(panel.directionBox.count())] == ["long_only"]
+    assert panel.directionBox.currentData() == "long_only"
+    assert [panel.directionBox.itemText(i) for i in range(panel.directionBox.count())] == ["Long Only"]
     assert panel.trendLookbackSpin.value() == 20
     assert panel.btnLoadDefaults.text()
     assert panel.btnApplyAnalysis.text()
@@ -124,7 +229,7 @@ def test_backtest_panel_shows_missing_analysis_error_and_trade_rows():
 
     panel.run_backtest()
     assert panel.tradeResultTable.rowCount() == 1
-    assert panel.tradeResultTable.item(0, 6).text() == "LONG"
+    assert panel.tradeResultTable.item(0, 6).text() == "Long"
     panel.close()
 
 
@@ -177,7 +282,7 @@ def test_backtest_panel_rejects_market_selection_that_does_not_match_loaded_data
     panel.run_backtest()
 
     assert service.calls == []
-    assert "currently loaded K-line data" in panel.resultText.toPlainText()
+    assert "does not match the loaded K-line data" in panel.resultText.toPlainText()
     panel.close()
 
 

@@ -303,3 +303,30 @@ def test_analysis_refresh_builds_workspace_performance_payload_from_full_result(
         payload.metrics["total_pnl"] = -1.0
     with pytest.raises(TypeError):
         payload.trades[0]["trade_id"] = "mutated"
+
+
+def test_analysis_refresh_progress_uses_snapshot_language():
+    progress_messages: list[str] = []
+    snapshot = AnalysisRefreshSnapshot(
+        events=[],
+        features=[],
+        trades=[],
+        equity_rows=[],
+        initial_equity=10_000.0,
+        language="zh_CN",
+    )
+
+    build_analysis_refresh_result(
+        snapshot,
+        build_event_study_fn=lambda _events, _features: pd.DataFrame(),
+        build_ml_datasets_fn=lambda _features: {
+            "ml_features": pd.DataFrame(),
+            "ml_labels": pd.DataFrame(),
+            "sample_index": pd.DataFrame(),
+        },
+        build_performance_summary_fn=lambda *_args: {},
+        format_performance_report_fn=lambda _summary: "",
+        progress=progress_messages.append,
+    )
+
+    assert progress_messages == ["正在准备事件研究…", "正在准备研究样本…", "正在计算绩效统计…"]

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 import pandas as pd
 import numpy as np
@@ -112,6 +115,81 @@ def test_analysis_workspace_numeric_inputs_do_not_change_on_wheel():
     assert workspace.equityCurvePlot.plotItem is None
     assert workspace.performanceHistogramPlot.plotItem is None
     assert workspace.shutdown() is True
+
+
+def test_chinese_analysis_workspace_has_no_raw_translation_keys():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = Host()
+    workspace = AnalysisWorkspace(host)
+    try:
+        texts: set[str] = set()
+        for widget in (workspace, *workspace.findChildren(QtWidgets.QWidget)):
+            if isinstance(widget, (QtWidgets.QLabel, QtWidgets.QAbstractButton)):
+                texts.add(widget.text().strip())
+            if isinstance(widget, QtWidgets.QGroupBox):
+                texts.add(widget.title().strip())
+            if isinstance(widget, QtWidgets.QTabWidget):
+                texts.update(
+                    widget.tabText(index).strip()
+                    for index in range(widget.count())
+                )
+            if isinstance(widget, QtWidgets.QComboBox):
+                texts.update(
+                    widget.itemText(index).strip()
+                    for index in range(widget.count())
+                )
+            if isinstance(widget, QtWidgets.QTableWidget):
+                texts.update(
+                    item.text().strip()
+                    for index in range(widget.columnCount())
+                    if (item := widget.horizontalHeaderItem(index)) is not None
+                )
+        translation_keys = set(
+            json.loads(
+                (
+                    Path(__file__).resolve().parents[1]
+                    / "quant_collector_app"
+                    / "translations"
+                    / "zh_CN.json"
+                ).read_text(encoding="utf-8")
+            )
+        )
+
+        assert sorted(texts.intersection(translation_keys)) == []
+    finally:
+        workspace.shutdown()
+        workspace.close()
+        host.close()
+        app.processEvents()
+
+
+def test_english_analysis_workspace_has_no_chinese_interface_text():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = Host()
+    host.current_language = "en_US"
+    workspace = AnalysisWorkspace(host)
+    try:
+        texts: list[str] = []
+        for widget in (workspace, *workspace.findChildren(QtWidgets.QWidget)):
+            if isinstance(widget, (QtWidgets.QLabel, QtWidgets.QAbstractButton)):
+                texts.append(widget.text())
+            if isinstance(widget, QtWidgets.QGroupBox):
+                texts.append(widget.title())
+            if isinstance(widget, QtWidgets.QTabWidget):
+                texts.extend(widget.tabText(index) for index in range(widget.count()))
+            if isinstance(widget, QtWidgets.QComboBox):
+                texts.extend(widget.itemText(index) for index in range(widget.count()))
+
+        assert [
+            text
+            for text in texts
+            if any("\u3400" <= char <= "\u9fff" for char in text)
+        ] == []
+    finally:
+        workspace.shutdown()
+        workspace.close()
+        host.close()
+        app.processEvents()
 
 
 def _worker_performance_payload(host: PerformanceHost):

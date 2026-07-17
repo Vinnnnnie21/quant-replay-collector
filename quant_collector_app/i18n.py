@@ -25,9 +25,6 @@ def tr(key: str, language: str = "zh_CN", default: str | None = None) -> str:
     table = load_translations(language)
     if key in table:
         return table[key]
-    fallback = load_translations("zh_CN")
-    if key in fallback:
-        return fallback[key]
     return default if default is not None else key
 
 

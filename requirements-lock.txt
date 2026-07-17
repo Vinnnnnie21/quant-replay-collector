@@ -1,4 +1,4 @@
-# Verified on Windows 11 x64 with CPython 3.13.3 for Quant Replay Collector v1.5.1.
+# Verified on Windows 11 x64 with CPython 3.13.3 for Quant Replay Collector v1.5.2.
 # Update deliberately and rerun the full release gate before changing these pins.
 altgraph==0.17.5
 annotated-doc==0.0.4

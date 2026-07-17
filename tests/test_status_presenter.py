@@ -244,8 +244,8 @@ def test_status_presenter_updates_combined_header_text():
     text = window.headerMainLabel.text()
     assert "BTCUSDT" in text
     assert "5m" in text
-    assert "sample 5m" in text
-    assert text == "BTCUSDT · 5m · sample 5m"
+    assert "样本周期 5m" in text
+    assert text == "BTCUSDT · 5m · 样本周期 5m"
     assert "2024-04-01 00:00" in window.headerTimeValue.text()
     assert "O 70446.20" in window.headerOhlcValue.text()
     assert "+0.13%" in window.headerDeltaValue.text()

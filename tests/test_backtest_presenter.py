@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from app_i18n import tr
 from presenters.backtest_presenter import (
     COMPARISON_COLUMNS,
     EQUITY_COLUMNS,
@@ -10,6 +11,7 @@ from presenters.backtest_presenter import (
     equity_rows,
     format_errors,
     format_summary,
+    localize_warnings,
     trade_rows,
 )
 
@@ -61,3 +63,47 @@ def test_presenter_formats_summary_tables_comparison_and_errors_without_qt():
     assert set(equity[0]) == set(EQUITY_COLUMNS)
     assert [row["metric"] for row in comparison] == list(COMPARISON_COLUMNS)
     assert "bad input" in format_errors(["bad input"])
+
+
+def test_presenter_localizes_known_engine_warnings_for_chinese_ui():
+    warning = "Backtest result is for research only and does not represent live trading returns."
+
+    text = format_summary(
+        {"total_trades": 1},
+        warnings=[warning],
+        translator=lambda key: tr(key, "zh_CN"),
+    )
+
+    assert warning not in text
+    assert "回测结果仅用于研究" in text
+
+
+def test_presenter_localizes_known_validation_errors_for_chinese_ui():
+    error = "No analysis candidate parameters are available."
+
+    text = format_errors(
+        [error],
+        translator=lambda key: tr(key, "zh_CN"),
+    )
+
+    assert error not in text
+    assert "没有可用的分析候选参数" in text
+
+
+def test_presenter_localizes_walk_forward_warnings_for_chinese_ui():
+    warnings = [
+        "sample size is small for train/validation/test split",
+        "Parameters are selected on validation only; test is evaluated once.",
+        "Parameter scan results are candidate hypotheses and may be overfit.",
+        "Best train params differ from selected validation params.",
+        "Test performance is materially weaker than validation; overfit risk is high.",
+        "parameter combinations truncated from 500 to 300",
+    ]
+
+    localized = localize_warnings(
+        warnings,
+        translator=lambda key: tr(key, "zh_CN"),
+    )
+
+    assert all(not any("a" <= char.lower() <= "z" for char in value) for value in localized)
+    assert localized[-1] == "参数组合已从 500 个截断为 300 个。"

@@ -558,4 +558,4 @@ def test_request_open_trade_ignores_reentrant_trade_transaction():
 
     MainWindow.request_open_trade(window, "LONG")
 
-    assert any("transaction" in message or "进行中" in message for message in calls)
+    assert calls == ["交易事务正在执行，已忽略重复开仓请求。"]

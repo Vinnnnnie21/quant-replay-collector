@@ -13,3 +13,4 @@ def test_display_names_hide_internal_identifiers_and_use_replay_time():
     assert "sess_random" not in session_display_name(session)
     trade = {"trade_id": "trd_random", "side": "LONG", "entry_bar_time_bjt": "2025-04-03T14:25:00+08:00"}
     assert trade_display_name(trade, 3) == "多 · 2025-04-03 14:25 · #03"
+    assert trade_display_name(trade, 3, language="en_US") == "Long · 2025-04-03 14:25 · #03"
