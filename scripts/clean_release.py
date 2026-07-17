@@ -27,6 +27,7 @@ ROOT_CONTENT = (
     "run_app.pyw",
     "scripts/create_desktop_shortcut.ps1",
     "scripts/generate_app_icon.py",
+    "scripts/verify_frozen_archive.py",
 )
 EXCLUDED_DIR_NAMES = {
     ".agents",
