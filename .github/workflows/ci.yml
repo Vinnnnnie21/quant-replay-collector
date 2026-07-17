@@ -22,7 +22,11 @@ jobs:
       - name: Compile application
         run: python -m compileall quant_collector_app scripts
       - name: Run tests
-        run: python -m pytest -q --junitxml=pytest-results.xml
+        run: >
+          python -m pytest -q
+          --basetemp "$env:RUNNER_TEMP\qrc-pytest-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          -o "cache_dir=$env:RUNNER_TEMP\qrc-pytest-cache-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          --junitxml=pytest-results.xml
       - name: Report test failures
         if: failure() && hashFiles('pytest-results.xml') != ''
         shell: pwsh
