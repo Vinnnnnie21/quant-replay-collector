@@ -140,10 +140,10 @@ Build the Windows executable, then create a current-user desktop shortcut named 
 cd quant_collector_app
 .\build_windows.bat
 cd ..
-.\scripts\create_desktop_shortcut.ps1 -TargetPath .\quant_collector_app\dist\QRC.exe
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\create_desktop_shortcut.ps1 -TargetPath .\quant_collector_app\dist\QRC.exe
 ```
 
-The shortcut installer does not require administrator access and does not write to the registry. Use `-DryRun` to inspect `TargetPath`, `WorkingDirectory`, shortcut path and icon selection without creating a file. The application window uses `quant_collector_app/assets/app_logo.png` on dark themes and the transparent `quant_collector_app/assets/app_logo_light.png` on light themes. The packaged executable and shortcut use the fixed multi-size Windows icon at `quant_collector_app/assets/app_icon.ico`, generated from the dark-theme logo.
+The explicit `ExecutionPolicy Bypass` applies only to this script process, so it works on systems that block direct `.ps1` execution without changing the user's policy. The shortcut installer does not require administrator access and does not write to the registry. Use `-DryRun` to inspect `TargetPath`, `WorkingDirectory`, shortcut path and icon selection without creating a file. The application window uses `quant_collector_app/assets/app_logo.png` on dark themes and the transparent `quant_collector_app/assets/app_logo_light.png` on light themes. The packaged executable and shortcut use the fixed multi-size Windows icon at `quant_collector_app/assets/app_icon.ico`, generated from the dark-theme logo.
 
 To replace the logos later, overwrite both PNG variants. Regenerate the Windows icon after changing the dark-theme logo:
 

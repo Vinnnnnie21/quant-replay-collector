@@ -22,10 +22,10 @@ Clean release commands:
 `quant_collector_app\build_windows.bat` produces `quant_collector_app\dist\QRC.exe`. From the release root, create the current user's `QRC.lnk` desktop shortcut with:
 
 ```powershell
-.\scripts\create_desktop_shortcut.ps1 -TargetPath .\quant_collector_app\dist\QRC.exe
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\create_desktop_shortcut.ps1 -TargetPath .\quant_collector_app\dist\QRC.exe
 ```
 
-Add `-DryRun` to print the resolved shortcut, target, working directory and icon without creating a `.lnk` file. The script needs no administrator rights, does not write the registry and accepts explicit `-TargetPath`, `-DesktopPath`, `-IconPath` and `-ShortcutName` parameters. The application window selects `quant_collector_app/assets/app_logo.png` for dark themes and `quant_collector_app/assets/app_logo_light.png` for light themes. `quant_collector_app/assets/app_icon.ico` is the fixed Windows executable and shortcut icon generated from the dark-theme logo. If the icon is removed, shortcut creation still falls back to the executable's default icon.
+The explicit `ExecutionPolicy Bypass` applies only to this script process and does not change the user's PowerShell policy. Add `-DryRun` to print the resolved shortcut, target, working directory and icon without creating a `.lnk` file. The script needs no administrator rights, does not write the registry and accepts explicit `-TargetPath`, `-DesktopPath`, `-IconPath` and `-ShortcutName` parameters. The application window selects `quant_collector_app/assets/app_logo.png` for dark themes and `quant_collector_app/assets/app_logo_light.png` for light themes. `quant_collector_app/assets/app_icon.ico` is the fixed Windows executable and shortcut icon generated from the dark-theme logo. If the icon is removed, shortcut creation still falls back to the executable's default icon.
 
 Regenerate the multi-size icon after replacing the PNG source:
 

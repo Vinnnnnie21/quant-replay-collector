@@ -141,3 +141,4 @@ def test_shortcut_is_in_clean_package_and_documented():
         assert "QRC.lnk" in text
         assert "quant_collector_app/assets/app_icon.ico" in text
         assert "create_desktop_shortcut.ps1" in text
+        assert "ExecutionPolicy Bypass" in text
