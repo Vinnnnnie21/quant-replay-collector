@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import pandas as pd
+import pytest
 
 from exporter import Exporter
 from storage import StorageManager
@@ -45,13 +46,9 @@ def test_time_series_report_includes_liquidity_proxy_diagnostics():
     }.issubset(diagnostics["summary"])
 
 
-def test_time_series_report_disables_liquidity_proxy_when_ohlcv_is_missing():
-    result = build_time_series_report(pd.DataFrame({"bar_index": [0], "open": [100.0]}))
-
-    diagnostics = result["liquidity_proxy_diagnostics"]
-    assert diagnostics["enabled"] is False
-    assert diagnostics["reason"]
-    assert "not order book liquidity" in diagnostics["disclaimer"]
+def test_time_series_report_rejects_missing_critical_ohlcv():
+    with pytest.raises(ValueError, match="statistical analysis.*missing critical price.*quality report"):
+        build_time_series_report(pd.DataFrame({"bar_index": [0], "open": [100.0]}))
 
 
 def test_time_series_report_survives_liquidity_proxy_summary_failure(monkeypatch):
@@ -114,3 +111,20 @@ def test_exporter_writes_time_series_outputs(tmp_path):
     assert "time_series_summary" in manifest["files"]
     assert manifest["files"]["time_series_summary"]["source"] == "event_windows_only"
     assert "limitations" in manifest["files"]["time_series_summary"]
+
+
+def test_exporter_rejects_invalid_event_windows_without_success_manifest(tmp_path):
+    storage = StorageManager(tmp_path / "export_invalid_ts.db")
+    insert_session(storage)
+    insert_complete_trade(storage)
+    with storage.connect() as connection:
+        connection.execute(
+            "UPDATE event_windows SET bar_index=? WHERE event_id=? AND offset=?",
+            (-10, "evt_open", -19),
+        )
+    export_root = tmp_path / "exports"
+
+    with pytest.raises(ValueError, match="statistical analysis.*duplicate bar_index.*quality report"):
+        Exporter(storage).export_session(SESSION_ID, export_root)
+
+    assert not (export_root / f"session_{SESSION_ID}" / "export_manifest.json").exists()

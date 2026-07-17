@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from quant_collector_app.research.kline_quality import (
     attach_candle_ids,
     build_candle_id,
     build_kline_quality_report,
     describe_multi_timeframe_anchor_rule,
+    validate_research_klines,
 )
 
 
@@ -23,6 +25,114 @@ def _problem_klines() -> pd.DataFrame:
             {"open_time": "2026-01-01T00:07:00Z", "open": 105, "high": 106, "low": 104, "close": 105, "volume": None},
         ]
     )
+
+
+def _valid_klines() -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {"open_time": "2026-01-01T00:00:00Z", "open": 100, "high": 101, "low": 99, "close": 100, "volume": 10},
+            {"open_time": "2026-01-01T00:01:00Z", "open": 100, "high": 102, "low": 99, "close": 101, "volume": 11},
+            {"open_time": "2026-01-01T00:02:00Z", "open": 101, "high": 103, "low": 100, "close": 102, "volume": 12},
+        ]
+    )
+
+
+def test_research_quality_gate_rejects_out_of_order_klines():
+    unordered = _valid_klines().iloc[[1, 0, 2]].reset_index(drop=True)
+
+    with pytest.raises(ValueError, match="out-of-order.*reload.*quality report"):
+        validate_research_klines(unordered, context="strategy research")
+
+
+def test_research_quality_gate_rejects_duplicate_klines():
+    duplicated = pd.concat([_valid_klines().iloc[:2], _valid_klines().iloc[[1]]], ignore_index=True)
+
+    with pytest.raises(ValueError, match="duplicate.*reload.*quality report"):
+        validate_research_klines(duplicated, context="statistical analysis")
+
+
+def test_research_quality_gate_rejects_missing_critical_price_column():
+    missing_close = _valid_klines().drop(columns=["close"])
+
+    with pytest.raises(ValueError, match="missing critical price columns: close.*reload.*quality report"):
+        validate_research_klines(missing_close, context="backtest")
+
+
+def test_research_quality_gate_rejects_nan_critical_price():
+    missing_price = _valid_klines()
+    missing_price.loc[1, "close"] = float("nan")
+
+    with pytest.raises(ValueError, match="missing critical price values.*close.*reload.*quality report"):
+        validate_research_klines(missing_price, context="backtest")
+
+
+def test_research_quality_gate_rejects_infinite_numeric_value():
+    non_finite = _valid_klines()
+    non_finite["volume"] = non_finite["volume"].astype(float)
+    non_finite.loc[1, "volume"] = float("inf")
+
+    with pytest.raises(ValueError, match="non-finite numeric values.*volume.*reload.*quality report"):
+        validate_research_klines(non_finite, context="statistical analysis")
+
+
+def test_research_quality_gate_rejects_missing_timestamp():
+    missing_time = _valid_klines()
+    missing_time.loc[1, "open_time"] = None
+
+    with pytest.raises(ValueError, match="missing or invalid K-line timestamps.*reload.*quality report"):
+        validate_research_klines(missing_time, context="strategy research")
+
+
+def test_research_quality_gate_rejects_positive_infinite_numeric_timestamp():
+    invalid_time = _valid_klines().assign(open_time_utc_ms=[1.0, 2.0, float("inf")])
+    original = invalid_time.copy(deep=True)
+
+    with pytest.raises(
+        ValueError,
+        match="strategy research.*invalid/non-finite K-line timestamps.*reload.*quality report",
+    ):
+        validate_research_klines(invalid_time, context="strategy research")
+    pd.testing.assert_frame_equal(invalid_time, original)
+
+
+@pytest.mark.parametrize("invalid_value", [float("-inf"), float("nan")])
+def test_research_quality_gate_rejects_other_non_finite_numeric_timestamps(invalid_value):
+    invalid_time = _valid_klines().assign(open_time_utc_ms=[1.0, 2.0, invalid_value])
+
+    with pytest.raises(ValueError, match="invalid/non-finite K-line timestamps.*quality report"):
+        validate_research_klines(invalid_time, context="backtest")
+
+
+def test_research_quality_gate_rejects_unparseable_string_timestamp():
+    invalid_time = _valid_klines()
+    invalid_time.loc[1, "open_time"] = "not-a-timestamp"
+
+    with pytest.raises(ValueError, match="invalid/non-finite K-line timestamps.*quality report"):
+        validate_research_klines(invalid_time, context="statistical analysis")
+
+
+def test_research_quality_gate_accepts_finite_utc_millisecond_timestamps():
+    valid = _valid_klines().assign(open_time_utc_ms=[1_767_225_600_000, 1_767_225_660_000, 1_767_225_720_000])
+
+    validate_research_klines(valid, context="backtest")
+
+
+def test_quality_report_marks_infinite_numeric_timestamp_invalid():
+    invalid_time = _valid_klines().assign(open_time_utc_ms=[1.0, 2.0, float("inf")])
+
+    report = build_kline_quality_report(invalid_time, symbol="BTCUSDT", interval="1m")
+
+    assert report["invalid_rows"] > 0
+    assert report["missing_time_rows"] > 0
+    assert report["quality_status"] == "FAIL"
+    assert "missing_time" in report["warnings"]
+
+
+def test_research_quality_gate_rejects_out_of_order_bar_index():
+    unordered = _valid_klines().assign(bar_index=[0, 2, 1])
+
+    with pytest.raises(ValueError, match="out-of-order bar_index.*reload.*quality report"):
+        validate_research_klines(unordered, context="backtest")
 
 
 def test_candle_id_is_stable_from_symbol_interval_open_time():

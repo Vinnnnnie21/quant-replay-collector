@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .data_versioning import attach_data_version_metadata, build_data_version
-from .kline_quality import build_candle_id
+from .kline_quality import build_candle_id, validate_research_klines
 
 
 REQUIRED_OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
@@ -71,6 +71,7 @@ def generate_entry_observation_universe(
         except ValueError:
             return empty
     _validate_input_columns(klines)
+    validate_research_klines(klines, context="strategy research")
     ordered = _ordered_klines(klines)
     data_version = build_data_version(ordered.drop(columns=_internal_columns(ordered), errors="ignore"), symbol=symbol, interval=interval)
     data_version_id = str(data_version["data_version"])
@@ -200,15 +201,15 @@ def _ordered_klines(klines: pd.DataFrame) -> pd.DataFrame:
         if bar_indexes.duplicated().any():
             raise ValueError("duplicate bar_index")
         ordered["_qrc_bar_index"] = bar_indexes.astype("int64")
-        return ordered.sort_values(["_qrc_bar_index", "_qrc_sort_time"], kind="stable").reset_index(drop=True)
+        return ordered.reset_index(drop=True)
 
     index_values = pd.Series(ordered.index, index=ordered.index)
     numeric_index = pd.to_numeric(index_values, errors="coerce")
     if numeric_index.notna().all() and not numeric_index.duplicated().any():
         ordered["_qrc_bar_index"] = numeric_index.astype("int64")
-        return ordered.sort_values(["_qrc_bar_index", "_qrc_sort_time"], kind="stable").reset_index(drop=True)
+        return ordered.reset_index(drop=True)
 
-    ordered = ordered.sort_values("_qrc_sort_time", kind="stable").reset_index(drop=True)
+    ordered = ordered.reset_index(drop=True)
     ordered["_qrc_bar_index"] = np.arange(len(ordered), dtype=int)
     return ordered
 

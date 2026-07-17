@@ -8,7 +8,7 @@ import pandas as pd
 from app_config import BJT
 from execution import ExecutionSettings, fill_price, trade_outcome
 from market_data.features import build_feature_row, build_window_rows, compute_price_proxy
-from tp_sl_engine import MANUAL, risk_prices_for_trade
+from tp_sl_engine import MANUAL, normalize_optional_percent, risk_prices_for_trade
 
 
 @dataclass(frozen=True)
@@ -124,6 +124,8 @@ class TradeController:
             raise ValueError(f"Unsupported open side: {side}")
         price_proxy = compute_price_proxy(bar)
         entry_raw_price, entry_fill_price = fill_price(bar, side, "OPEN", settings)
+        take_profit_pct = normalize_optional_percent(take_profit_pct)
+        stop_loss_pct = normalize_optional_percent(stop_loss_pct)
         risk_prices = risk_prices_for_trade(
             side,
             entry_fill_price,

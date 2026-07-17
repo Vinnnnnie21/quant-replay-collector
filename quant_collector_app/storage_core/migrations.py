@@ -323,6 +323,8 @@ def migrate_to_v3(conn) -> None:
             ON trades(session_id, symbol, interval);
         CREATE INDEX IF NOT EXISTS idx_trade_events_trade_time
             ON trade_events(trade_id, bar_open_time_bjt);
+        CREATE INDEX IF NOT EXISTS idx_trade_events_replay_time
+            ON trade_events(bar_open_time_bjt, event_type, trade_id);
         CREATE INDEX IF NOT EXISTS idx_trade_events_symbol_interval
             ON trade_events(symbol, interval);
         CREATE INDEX IF NOT EXISTS idx_event_windows_session_event

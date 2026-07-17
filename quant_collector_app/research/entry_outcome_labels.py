@@ -7,6 +7,7 @@ from typing import Any, Mapping
 import pandas as pd
 
 from .data_versioning import attach_kline_data_version
+from .kline_quality import validate_research_klines
 
 
 REQUIRED_OHLCV_COLUMNS = ["high", "low", "close"]
@@ -119,6 +120,7 @@ def build_entry_outcome_labels(
         return result
     _validate_columns(klines, REQUIRED_OHLCV_COLUMNS, "kline")
     _validate_columns(observations, REQUIRED_OBSERVATION_COLUMNS, "observation")
+    validate_research_klines(klines, context="strategy research")
     policy = spec.insufficient_horizon_policy
     ordered = _ordered_klines(klines)
     rows = []
@@ -299,7 +301,7 @@ def _ordered_klines(klines: pd.DataFrame) -> pd.DataFrame:
         ordered["_bar_index"] = pd.to_numeric(pd.Series(ordered.index, index=ordered.index), errors="coerce")
     if ordered["_bar_index"].isna().any():
         raise ValueError("kline bar_index must be numeric")
-    return ordered.sort_values("_bar_index", kind="stable").reset_index(drop=True)
+    return ordered.reset_index(drop=True)
 
 
 def _validate_columns(frame: pd.DataFrame, required: list[str], label: str) -> None:

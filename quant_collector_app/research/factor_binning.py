@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
@@ -23,6 +24,7 @@ def bin_factor(
     factor: str,
     label: str = "fwd_ret_10_side_adj",
     n_bins: int = 5,
+    cancelled: Callable[[], bool] | None = None,
 ) -> pd.DataFrame:
     if samples.empty or factor not in samples.columns or label not in samples.columns:
         return pd.DataFrame()
@@ -54,7 +56,7 @@ def bin_factor(
     means = []
     for bin_id, (interval, group) in enumerate(work.groupby("_bin", observed=True), start=1):
         values = group[label].dropna()
-        ci_result = bootstrap_mean_ci(values)
+        ci_result = bootstrap_mean_ci(values, cancelled=cancelled)
         mean_value = float(values.mean()) if len(values) else math.nan
         means.append(mean_value)
         rows.append(
@@ -90,11 +92,12 @@ def build_factor_binning_summary(
     label: str = "fwd_ret_10_side_adj",
     factors: list[str] | None = None,
     n_bins: int = 5,
+    cancelled: Callable[[], bool] | None = None,
 ) -> pd.DataFrame:
     if features.empty or labels.empty or "event_id" not in features.columns or "event_id" not in labels.columns:
         return pd.DataFrame()
     samples = features.merge(labels[["event_id", label]], on="event_id", how="inner") if label in labels.columns else pd.DataFrame()
     chosen = factors or [name for name in model_input_features() if name in samples.columns]
-    frames = [bin_factor(samples, factor, label, n_bins) for factor in chosen]
+    frames = [bin_factor(samples, factor, label, n_bins, cancelled) for factor in chosen]
     frames = [frame for frame in frames if not frame.empty]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()

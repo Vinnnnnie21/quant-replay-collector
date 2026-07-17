@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
+from app_config import APP_VERSION
 from research.matched_baseline import (
     MatchedBaselineSpec,
     bootstrap_effect_ci,
@@ -163,3 +164,62 @@ def test_effect_and_resampling_statistics_are_computed_after_matching_and_reprod
     assert permutation_test_effect(effects, n_permutations=100, random_seed=17) == permutation_test_effect(
         effects, n_permutations=100, random_seed=17
     )
+
+
+def test_permutation_test_is_reproducible_by_default_and_records_changed_seed():
+    effects = pd.DataFrame({"effect_size": [0.03, -0.01, 0.02, 0.04, -0.02]})
+
+    first = permutation_test_effect(effects, n_permutations=101)
+    repeated = permutation_test_effect(effects, n_permutations=101)
+    changed = permutation_test_effect(effects, n_permutations=101, random_seed=43)
+
+    assert first == repeated
+    assert first["random_seed"] == 42
+    assert first["simulation_count"] == 101
+    assert first["application_version"] == APP_VERSION
+    assert first["method_version"]
+    assert changed["random_seed"] == 43
+
+
+def test_matched_baseline_bootstrap_is_reproducible_and_records_settings():
+    effects = pd.DataFrame({"effect_size": [0.03, -0.01, 0.02, 0.04, -0.02]})
+
+    first = bootstrap_effect_ci(effects, n_bootstrap=101, confidence=0.9)
+    repeated = bootstrap_effect_ci(effects, n_bootstrap=101, confidence=0.9)
+
+    assert first == repeated
+    assert first["random_seed"] == 42
+    assert first["simulation_count"] == 101
+    assert first["confidence"] == 0.9
+    assert first["application_version"] == APP_VERSION
+    assert first["method_version"]
+
+
+def test_permutation_test_processes_large_samples_in_bounded_batches():
+    effects = pd.DataFrame({"effect_size": [float(value) for value in range(1, 2_001)]})
+
+    result = permutation_test_effect(effects, n_permutations=25, random_seed=17, batch_size=7)
+
+    assert result["batch_size"] == 7
+    assert result["batch_count"] == 4
+    assert result["work_items"] == 50_000
+
+
+def test_permutation_test_rejects_requests_above_resource_budget():
+    effects = pd.DataFrame({"effect_size": [float(value) for value in range(20)]})
+
+    with pytest.raises(ValueError, match="permutation resource limit.*requested 1020.*budget 1000"):
+        permutation_test_effect(
+            effects,
+            n_permutations=51,
+            max_work_items=1_000,
+        )
+
+
+def test_matched_randomized_statistics_reject_non_finite_effects():
+    effects = pd.DataFrame({"effect_size": [0.03, float("nan"), float("inf")]})
+
+    with pytest.raises(ValueError, match="statistical.*NaN or infinite.*quality report"):
+        bootstrap_effect_ci(effects)
+    with pytest.raises(ValueError, match="statistical.*NaN or infinite.*quality report"):
+        permutation_test_effect(effects)

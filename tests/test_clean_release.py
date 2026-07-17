@@ -7,6 +7,7 @@ from scripts.clean_release import ROOT_CONTENT, build_release, excluded_reason
 
 def test_clean_release_includes_the_windowed_root_launcher():
     assert "run_app.pyw" in ROOT_CONTENT
+    assert "requirements-lock.txt" in ROOT_CONTENT
 
 
 def test_excluded_runtime_paths():
@@ -16,6 +17,7 @@ def test_excluded_runtime_paths():
         "dist/previous/archive.zip",
         "performance_reports/startup_profile.json",
         ".pytest_cache/x",
+        ".test-artifacts/pytest-tmp/output.txt",
         "quant_collector_app/__pycache__/main.pyc",
         "quant_collector_app/data/cache/bars.csv",
         "quant_collector_app/data/quant_replay.db",

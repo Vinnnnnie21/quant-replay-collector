@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,6 +11,7 @@ import pandas as pd
 from accounting import build_equity_curve
 from app_config import APP_VERSION, BJT, DEFAULT_INITIAL_EQUITY, DEFAULT_TRADE_NOTIONAL, EXPORT_DIR
 from app_logger import get_logger
+from chunked_csv import DEFAULT_CSV_CHUNK_ROWS, write_dataframe_csv_atomic
 from analysis.binning import build_binning_report
 from analysis.data_audit import audit_export_tables, write_audit_report
 from analysis.feature_engineering import build_enhanced_event_features, feature_registry_frame
@@ -19,8 +20,11 @@ from analysis.report_writer import write_strategy_research_report
 from analysis.rule_mining import generate_candidate_rules
 from dataset_builder import build_ml_datasets
 from event_study import build_event_study_summary
+from export_publish import ExportDirectoryPublisher
 from performance import build_performance_summary, flatten_performance_summary
 from research.dataset import run_research_pack
+from research.cancellation import ResearchCancelled
+from research.kline_quality import validate_event_window_research_input
 from strategy_consistency.consistency import analyze_strategy_consistency
 from strategy_consistency.profile import StrategyProfile, strategy_profile_status
 from strategy_consistency.report import write_strategy_consistency_report
@@ -30,6 +34,24 @@ from time_series_analysis.returns import build_event_window_return_series, build
 
 
 logger = get_logger(__name__)
+
+
+CSV_EXPORT_CHUNK_ROWS = DEFAULT_CSV_CHUNK_ROWS
+
+
+class ExportCancelled(RuntimeError):
+    pass
+
+
+def _export_checkpoint(
+    cancelled: Callable[[], bool] | None,
+    progress: Callable[[str], None] | None,
+    message: str,
+) -> None:
+    if cancelled is not None and cancelled():
+        raise ExportCancelled("export cancelled at a safe stage boundary")
+    if progress is not None:
+        progress(message)
 
 LABEL_COLUMNS = [
     "fwd_ret_1",
@@ -232,16 +254,45 @@ class Exporter:
             wide = events.merge(wide, on="event_id", how="left")
         return wide.sort_values("event_id").reset_index(drop=True)
 
-    def _write_dataframes(self, export_dir: Path, tables: dict[str, pd.DataFrame]) -> dict:
+    def _write_dataframes(
+        self,
+        export_dir: Path,
+        tables: dict[str, pd.DataFrame],
+        *,
+        checkpoint: Callable[[str], None] | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        progress: Callable[[str], None] | None = None,
+    ) -> dict:
         files = {}
         for name, df in tables.items():
+            if checkpoint is not None:
+                checkpoint(f"Writing export table: {name}")
             csv_name = f"{name}.csv"
             parquet_name = f"{name}.parquet"
             csv_path = export_dir / csv_name
             parquet_path = export_dir / parquet_name
 
-            df.to_csv(csv_path, index=False)
+            write_dataframe_csv_atomic(
+                df,
+                csv_path,
+                checkpoint=lambda: _export_checkpoint(
+                    cancelled,
+                    None,
+                    "Checking CSV export cancellation...",
+                ),
+                on_chunk_written=(
+                    None
+                    if progress is None
+                    else lambda chunk_index, chunk_count: progress(
+                        f"Writing export table: {name} "
+                        f"(chunk {chunk_index}/{chunk_count})"
+                    )
+                ),
+                chunk_rows=CSV_EXPORT_CHUNK_ROWS,
+            )
             info = {"csv": csv_name, "parquet": parquet_name, "parquet_status": "ok"}
+            if checkpoint is not None:
+                checkpoint(f"Writing optional Parquet table: {name}")
             try:
                 df.to_parquet(parquet_path, index=False)
             except ImportError as e:
@@ -256,6 +307,8 @@ class Exporter:
                 info["parquet_status"] = "failed"
                 info["parquet_error"] = f"{type(e).__name__}: {e}"
                 info.pop("parquet", None)
+            if checkpoint is not None:
+                checkpoint(f"Finished export table: {name}")
             files[name] = info
         return files
 
@@ -411,94 +464,6 @@ class Exporter:
                 feature_cols.append(name)
         return feature_cols
 
-    def _entry_logic_report_fallback(
-        self,
-        tables: dict[str, pd.DataFrame],
-        session_row: dict,
-        split_summary: Any,
-        warnings: list[str],
-    ) -> dict:
-        annotations = tables.get("entry_annotations", pd.DataFrame())
-        overview = {"ENTRY": 0, "REJECT": 0, "UNCERTAIN": 0, "UNLABELED": 0}
-        if not annotations.empty and "human_decision" in annotations.columns:
-            counts = annotations["human_decision"].astype(str).str.upper().value_counts()
-            for decision in overview:
-                overview[decision] = int(counts.get(decision, 0))
-        scores = tables.get("entry_logic_scores", pd.DataFrame())
-        score_summary = {"n": 0}
-        if not scores.empty and "human_entry_similarity" in scores.columns:
-            clean = pd.to_numeric(scores["human_entry_similarity"], errors="coerce").dropna()
-            if not clean.empty:
-                score_summary = {
-                    "metric": "human_entry_similarity",
-                    "n": int(len(clean)),
-                    "min": float(clean.min()),
-                    "median": float(clean.median()),
-                    "max": float(clean.max()),
-                }
-        if all(df.empty for df in tables.values()):
-            warnings = [*warnings, "empty_input"]
-        return {
-            "title": "Entry Logic Research Report",
-            "research_goal": "学习用户开仓判断边界，不是预测未来收益。",
-            "annotation_overview": overview,
-            "sample_time_range": {
-                "symbol": session_row.get("symbol"),
-                "interval": session_row.get("interval"),
-            },
-            "similarity_score_summary": score_summary,
-            "split_summary": split_summary or {},
-            "leakage_check": {
-                "status": "PASS",
-                "forbidden_fields": ["future_return", "fwd_ret", "MFE", "MAE", "hit_tp", "hit_sl"],
-                "forbidden_input_columns_found": [],
-                "forbidden_signal_name_count": 0,
-            },
-            "risk_statements": [
-                "模型输出不是交易信号。",
-                "不构成投资建议。",
-                "样本内结果不代表未来收益。",
-            ],
-            "warnings": warnings,
-        }
-
-    def _render_entry_logic_report_fallback(self, report: dict) -> str:
-        overview = report.get("annotation_overview", {})
-        lines = [
-            "# Entry Logic Research Report",
-            "",
-            str(report.get("research_goal", "学习用户开仓判断边界，不是预测未来收益。")),
-            "",
-            "## Annotation Overview",
-            "",
-        ]
-        for decision in ("ENTRY", "REJECT", "UNCERTAIN", "UNLABELED"):
-            lines.append(f"- {decision}: {overview.get(decision, 0)}")
-        lines.extend(
-            [
-                "",
-                "## Similarity Score Summary",
-                "",
-                json.dumps(report.get("similarity_score_summary", {}), ensure_ascii=False, default=str),
-                "",
-                "## Split Summary",
-                "",
-                json.dumps(report.get("split_summary", {}), ensure_ascii=False, default=str),
-                "",
-                "## Leakage Check",
-                "",
-                json.dumps(report.get("leakage_check", {}), ensure_ascii=False, default=str),
-                "",
-                "## Risk Statements",
-                "",
-            ]
-        )
-        lines.extend(f"- {statement}" for statement in report.get("risk_statements", []))
-        if report.get("warnings"):
-            lines.extend(["", "## Warnings", ""])
-            lines.extend(f"- {warning}" for warning in report["warnings"])
-        return "\n".join(lines) + "\n"
-
     def _write_entry_logic_report(
         self,
         export_dir: Path,
@@ -512,40 +477,29 @@ class Exporter:
         feature_cols = self._entry_logic_feature_cols(features)
         report_path = export_dir / "entry_logic_report.md"
         json_path = export_dir / "entry_logic_report.json"
-        try:
-            from quant_collector_app.research.entry_logic_report import build_entry_logic_report, write_entry_logic_report
+        from quant_collector_app.research.entry_logic_report import build_entry_logic_report, write_entry_logic_report
 
-            report = build_entry_logic_report(
-                annotations_df=entry_tables.get("entry_annotations"),
-                features_df=features,
-                scores_df=entry_tables.get("entry_logic_scores"),
-                review_queue_df=entry_tables.get("entry_review_queue"),
-                split_summary=split_summary,
-                metadata={
-                    "symbol": session_row.get("symbol"),
-                    "interval": session_row.get("interval"),
-                    "data_start": session_row.get("start_date_bjt"),
-                    "data_end": session_row.get("end_date_bjt"),
-                },
-                feature_cols=feature_cols,
-            )
-            if warnings:
-                report.setdefault("warnings", []).extend(warnings)
-            write_entry_logic_report(report_path, json_path, report)
-        except Exception as e:
-            logger.warning("Entry logic report fell back to exporter-local writer: %s", e, exc_info=True)
-            report = self._entry_logic_report_fallback(
-                entry_tables,
-                session_row,
-                split_summary,
-                [*warnings, f"entry_logic_report_fallback: {type(e).__name__}: {e}"],
-            )
-            report_path.write_text(self._render_entry_logic_report_fallback(report), encoding="utf-8")
-            json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        report = build_entry_logic_report(
+            annotations_df=entry_tables.get("entry_annotations"),
+            features_df=features,
+            scores_df=entry_tables.get("entry_logic_scores"),
+            review_queue_df=entry_tables.get("entry_review_queue"),
+            split_summary=split_summary,
+            metadata={
+                "symbol": session_row.get("symbol"),
+                "interval": session_row.get("interval"),
+                "data_start": session_row.get("start_date_bjt"),
+                "data_end": session_row.get("end_date_bjt"),
+            },
+            feature_cols=feature_cols,
+        )
+        if warnings:
+            report.setdefault("warnings", []).extend(warnings)
+        write_entry_logic_report(report_path, json_path, report)
         files["entry_logic_report"] = {
             "markdown": report_path.name,
             "json": json_path.name,
-            "source": "optional_entry_logic_export",
+            "source": "formal_entry_logic_writer",
         }
 
     def _kline_from_event_windows(self, windows: pd.DataFrame) -> pd.DataFrame:
@@ -718,21 +672,61 @@ class Exporter:
         language: str = "zh_CN",
         selected_label: str = "fwd_ret_10_side_adj",
         strategy_profile: StrategyProfile | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        progress: Callable[[str], None] | None = None,
     ):
         export_root = Path(export_root or EXPORT_DIR)
-        export_dir = export_root / f"session_{session_id}"
+        publisher = ExportDirectoryPublisher(export_root, f"session_{session_id}")
+        staging_dir = publisher.prepare()
+        try:
+            self._export_session_to_directory(
+                session_id,
+                staging_dir,
+                language=language,
+                selected_label=selected_label,
+                strategy_profile=strategy_profile,
+                cancelled=cancelled,
+                progress=progress,
+            )
+            _export_checkpoint(cancelled, progress, "Preparing to publish export results...")
+            _export_checkpoint(cancelled, None, "Checking pre-publish cancellation...")
+            if progress is not None:
+                progress("正在安全发布导出结果")
+            published_dir = publisher.publish()
+            if publisher.has_deferred_cleanup and progress is not None:
+                progress("导出已完成，旧临时目录稍后清理")
+            return published_dir
+        except Exception:
+            publisher.abort()
+            raise
+
+    def _export_session_to_directory(
+        self,
+        session_id: str,
+        export_dir: Path,
+        language: str = "zh_CN",
+        selected_label: str = "fwd_ret_10_side_adj",
+        strategy_profile: StrategyProfile | None = None,
+        cancelled: Callable[[], bool] | None = None,
+        progress: Callable[[str], None] | None = None,
+    ) -> Path:
+        checkpoint = lambda message: _export_checkpoint(cancelled, progress, message)
+        checkpoint("Reading export source data...")
         export_dir.mkdir(parents=True, exist_ok=True)
         logger.info("开始导出 session=%s 到 %s", session_id, export_dir)
 
         trades = self._to_df(self.storage.fetch_table("trades", "session_id=?", (session_id,)))
         events = self._to_df(self.storage.fetch_table("trade_events", "session_id=?", (session_id,)))
-        windows = self._to_df(self.storage.fetch_table("event_windows", "session_id=?", (session_id,)))
+        windows = self._to_df(self.storage.fetch_event_windows_for_session(session_id))
+        if not windows.empty:
+            validate_event_window_research_input(windows)
         features = self._to_df(self.storage.fetch_table("event_features", "session_id=?", (session_id,)))
         sessions = self._to_df(self.storage.fetch_table("sessions", "session_id=?", (session_id,)))
         equity = self._to_df(self.storage.fetch_table("account_equity", "session_id=?", (session_id,)))
         premium = self._to_df(self.storage.fetch_table("usdt_premium_history"))
         context_features = self._to_df(self.storage.fetch_table("event_context_features", "session_id=?", (session_id,)))
         outcome_labels = self._to_df(self.storage.fetch_table("research_outcome_labels", "session_id=?", (session_id,)))
+        checkpoint("Validating and preparing export data...")
 
         raw_tables = {
             "trades": trades,
@@ -747,6 +741,7 @@ class Exporter:
         }
         for name, df in raw_tables.items():
             raw_tables[name] = self._sort_df(name, df)
+        checkpoint("Building research tables...")
 
         trades = raw_tables["trades"]
         events = raw_tables["trade_events"]
@@ -770,7 +765,10 @@ class Exporter:
         if equity.empty:
             equity_rows = build_equity_curve(trades.to_dict("records"), session_id, initial_equity, trade_notional)
             equity = pd.DataFrame(equity_rows)
-        event_study = build_event_study_summary(events, features)
+        try:
+            event_study = build_event_study_summary(events, features, cancelled=cancelled)
+        except ResearchCancelled as e:
+            raise ExportCancelled(str(e)) from e
         ml_tables = build_ml_datasets(features)
         enhanced_features = self._safe_analysis_df(
             "enhanced_event_features",
@@ -890,7 +888,15 @@ class Exporter:
         for name, df in list(tables.items()):
             tables[name] = self._sort_df(name, df)
 
-        files = self._write_dataframes(export_dir, tables)
+        checkpoint("Writing export files...")
+        files = self._write_dataframes(
+            export_dir,
+            tables,
+            checkpoint=checkpoint,
+            cancelled=cancelled,
+            progress=progress,
+        )
+        checkpoint("Generating export reports...")
         self._write_records_json(export_dir, files, "feature_binning_summary", tables["feature_binning_summary"])
         self._write_records_json(export_dir, files, "candidate_rules", tables["candidate_rules"])
         (export_dir / "performance_summary.json").write_text(
@@ -952,6 +958,7 @@ class Exporter:
                 "source": "skipped",
                 "skipped_reason": f"{type(e).__name__}: {e}",
             }
+        checkpoint("Generating reproducible research pack...")
         try:
             research_result = run_research_pack(
                 export_dir / "research",
@@ -961,6 +968,8 @@ class Exporter:
                 premium,
                 selected_label=selected_label,
                 language=language,
+                cancelled=cancelled,
+                progress=progress,
             )
             files["research_pack"] = {
                 "directory": "research",
@@ -969,6 +978,8 @@ class Exporter:
                 "experiment_id": research_result["manifest"]["experiment_id"],
                 "dataset_hash": research_result["manifest"]["dataset_hash"],
             }
+        except ResearchCancelled as e:
+            raise ExportCancelled(str(e)) from e
         except Exception as e:
             logger.warning("研究流水线生成失败：%s", e, exc_info=True)
             files["research_pack"] = {
@@ -976,6 +987,7 @@ class Exporter:
                 "status": "failed",
                 "error": f"{type(e).__name__}: {e}",
             }
+        checkpoint("Finalizing export manifest...")
         self._write_entry_logic_report(
             export_dir,
             files,
@@ -986,6 +998,7 @@ class Exporter:
         )
         self._write_data_dictionary(export_dir, tables)
         self._append_data_dictionary_notes(export_dir)
+        checkpoint("Writing success manifest...")
         self._write_manifest(export_dir, session_id, sessions, tables, files)
         logger.info("导出完成 session=%s 目录=%s", session_id, export_dir)
 

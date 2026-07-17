@@ -3,7 +3,7 @@
 ## Current state
 
 `quant_collector_app/main_app.py` is still the application shell. In the current
-worktree it is below 1,200 lines and `MainWindow` retains initialization,
+V1.5.1 worktree the file is 1,442 lines; `MainWindow` retains initialization,
 public slot wrappers, dialogs, table refresh triggers, result application and
 session/export feedback. Static layout, market loading, replay orchestration,
 chart rendering and manual trade actions now live in focused modules.
@@ -32,6 +32,12 @@ This is not an unrecoverable codebase. The first seams already exist:
   through explicit queued slots.
 - `controllers/analysis_controller.py` owns analysis debounce, playback
   deferral, worker lifecycle and coalescing of refresh requests.
+- `controllers/historical_performance_controller.py` and
+  `workers/historical_performance_worker.py` own revisioned, cancellable
+  historical-session performance reads without passing a live SQLite
+  connection across threads.
+- `views/performance_trade_table.py` owns the bounded 200-row performance table
+  model and page navigation; the workspace supplies immutable payload rows.
 - `services/session_service.py`, `services/export_service.py` and
   `storage_core/` hold focused state, request and SQL responsibilities behind
   compatible public entry points.
@@ -52,10 +58,11 @@ This is not an unrecoverable codebase. The first seams already exist:
 The remaining risk is that these seams are still shallow in places. MainWindow
 continues to know too many implementation details behind them.
 
-Stages 0 through 8 of this decomposition plan have been implemented as small
-tested slices. The stage target of fewer than 1,200 lines has been reached.
-Further work toward the optional roughly 800-line ideal should happen only
-after profiling identifies a concrete stability or maintenance problem.
+The focused stage slices below are implemented, but the old numerical line
+target is not met and is not a release claim. Stage 6 import convergence has
+started with the self-check/export path; the package-level compatibility shim
+and other top-level imports remain. Further extraction should follow a measured
+stability or maintenance problem, not a repository-wide rewrite.
 
 ## Responsibility map
 
@@ -219,6 +226,8 @@ Current state:
 - Shared Chinese labels and table output are covered by UTF-8 presenter tests.
 - MainWindow still decides when tables refresh and still owns selection
   restoration and signal blocking.
+- The performance workspace uses a `QAbstractTableModel` with 200-row pages;
+  filtering and sorting no longer instantiate an item for every trade.
 
 ### Analysis refresh
 
@@ -242,14 +251,19 @@ Current good behavior to preserve:
   widgets.
 - Refresh requests arriving while a worker is active are coalesced into one
   follow-up refresh.
+- Success, failure, cancellation, progress and warning delivery is revisioned;
+  stale worker events cannot overwrite a newer request.
+- Historical-session performance uses a separate worker with the same
+  `PerformanceWorkspacePayload` consumed by the current-session view.
 - Worker deletion follows QThread completion, and controller tests drain queued
   callbacks between cases so the full suite does not inherit stale Qt events.
 
 Remaining risk:
 
-- Snapshot construction and final Qt table/text application still run on the
-  main thread. Very large sessions can still cause a short pause at those
-  boundaries and should be profiled before further extraction.
+- Current-session snapshot construction and final Qt text/plot application
+  still begin on the main thread. The private snapshot keeps only required
+  market columns and the UI receives at most 2,000 equity points, but this
+  handoff remains a boundary to profile on slower Windows machines.
 
 ### Export and premium
 
@@ -408,8 +422,12 @@ Scope: scheduling of heavy analysis refresh.
 
 Files:
 
-- `quant_collector_app/services/analysis_refresh_service.py`
-- optional `quant_collector_app/workers/analysis_worker.py`
+- `quant_collector_app/services/analysis_refresh.py`
+- `quant_collector_app/workers/analysis_refresh_worker.py`
+- `quant_collector_app/controllers/analysis_controller.py`
+- `quant_collector_app/controllers/historical_performance_controller.py`
+- `quant_collector_app/workers/historical_performance_worker.py`
+- `quant_collector_app/views/performance_trade_table.py`
 - `quant_collector_app/main_app.py`
 - new analysis refresh tests
 
@@ -582,7 +600,8 @@ Stop the current stage and report before continuing if any of these happen:
 
 ## Next action
 
-Stop structural extraction for this hotfix. Profile real large-session replay
-and analysis snapshot construction before choosing another slice. Do not
-combine later decomposition with trading semantics, storage schema or research
-schema changes.
+Finish V1.5.1 release verification, including the explicit performance marker
+and a visible Windows desktop smoke record. Later import work should remove the
+package `sys.path` compatibility shim one module group at a time while keeping
+both self-check entry modes green. Do not combine that work with trading
+semantics, storage schema or research schema changes.

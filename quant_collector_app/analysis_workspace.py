@@ -15,22 +15,59 @@ from app_config import EXPORT_DIR
 from app_i18n import tr
 from app_logger import get_logger
 from analytics.metrics import max_drawdown, payoff_ratio, profit_factor, sharpe_ratio
-from accounting import build_continuous_equity_curve
 from performance_analysis import (
     build_performance_snapshot,
-    performance_curve_end,
     smooth_curve_values,
     split_signed_curve,
 )
 from ui_style import COLORS, SPACING, normalize_theme_settings
 from controllers.entry_annotation_controller import EntryAnnotationController
-from display_names import session_display_name
+from controllers.historical_performance_controller import HistoricalPerformanceController
 from services.entry_research_service import EntryResearchService
+from services.analysis_refresh import PerformanceWorkspacePayload
+from services.session_service import list_performance_session_options
+from views.performance_trade_table import (
+    PerformanceTradeRow,
+    PerformanceTradeTableModel,
+    PerformanceTradeTableView,
+)
+from views.plot_lifecycle import (
+    close_parent_owned_graphics_view,
+    prepare_plot_for_shutdown,
+)
+from views.wheel_guard import install_no_wheel_on_value_inputs
 
 
 logger = get_logger(__name__)
 
 BJT = timezone(timedelta(hours=8))
+
+
+class _ManagedAnalysisPlotWidget(pg.PlotWidget):
+    """Make explicit pyqtgraph shutdown safe under later Qt parent teardown."""
+
+    def __init__(self, parent=None, **kwargs) -> None:
+        super().__init__(parent=parent, **kwargs)
+        menu = self.plotItem.ctrlMenu
+        menu.setParent(self)
+        menu.hide()
+
+    def shutdown(self) -> None:
+        plot = self.plotItem
+        if plot is None:
+            return
+        menu = plot.ctrlMenu
+        if menu is not None:
+            menu.hide()
+        prepare_plot_for_shutdown(plot)
+        plot.close()
+        self.plotItem = None
+        close_parent_owned_graphics_view(self)
+
+    def close(self) -> bool:
+        if self.plotItem is None:
+            return bool(QtWidgets.QWidget.close(self))
+        return bool(super().close())
 
 
 def _curve_timestamp(row: dict, fallback: int) -> float:
@@ -181,7 +218,31 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.last_entry_logic_report_text = ""
         self._candidate_rule_rows: list[dict] = []
         self._localized_placeholders: list[tuple[QtWidgets.QPlainTextEdit, str, bool]] = []
+        self._performance_payload = getattr(app_window, "_analysis_performance_payload", None)
+        self._historical_performance_payloads: dict[str, PerformanceWorkspacePayload] = {}
+        self._historical_performance_empty_states: dict[str, str] = {}
+        self._historical_performance_requested_session_id: str | None = None
+        self._performance_trade_rows: tuple[dict, ...] = ()
+        storage = getattr(app_window, "storage", None)
+        db_path = getattr(storage, "db_path", None)
+        self.historical_performance_controller = (
+            HistoricalPerformanceController(
+                db_path=db_path,
+                lifecycle=getattr(app_window, "task_lifecycle", None),
+                parent=self,
+            )
+            if db_path
+            else None
+        )
+        if self.historical_performance_controller is not None:
+            self.historical_performance_controller.resultReady.connect(
+                self._on_historical_performance_result
+            )
+            self.historical_performance_controller.failed.connect(
+                self._on_historical_performance_failed
+            )
         self._build_ui()
+        install_no_wheel_on_value_inputs(self)
         self.retranslate_ui()
         self._apply_button_theme()
         self._apply_plot_theme()
@@ -201,6 +262,9 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.equityCurve.setPen(pg.mkPen(theme["success"], width=2))
         self.performanceBaseline.setPen(
             pg.mkPen(theme["text_tertiary"], style=QtCore.Qt.DashLine)
+        )
+        self.performanceCurveStateLabel.setStyleSheet(
+            f"color: {theme['text_secondary']}; background: transparent;"
         )
 
     def _apply_button_theme(self) -> None:
@@ -342,15 +406,29 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             summary_l.addLayout(row_layout)
         layout.addWidget(summary)
 
-        self.equityCurvePlot = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem(orientation="bottom")})
+        self.equityCurvePlot = _ManagedAnalysisPlotWidget(
+            axisItems={"bottom": pg.DateAxisItem(orientation="bottom")}
+        )
         self.equityCurvePlot.setMinimumHeight(280)
         self.equityCurvePlot.showGrid(x=True, y=True, alpha=0.16)
         self.equityCurvePlot.setMouseEnabled(x=True, y=True)
         self.equityCurvePlot.setAntialiasing(True)
+        self.performanceCurveStateLabel = QtWidgets.QLabel(self.equityCurvePlot)
+        self.performanceCurveStateLabel.setProperty("role", "muted")
+        self.performanceCurveStateLabel.setAlignment(QtCore.Qt.AlignCenter)
+        self.performanceCurveStateLabel.setWordWrap(True)
+        self.performanceCurveStateLabel.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+        self.performanceCurveStateLabel.setStyleSheet("background: transparent;")
+        self.performanceCurveStateLabel.setGeometry(self.equityCurvePlot.rect())
+        self.performanceCurveStateLabel.hide()
+        self.equityCurvePlot.installEventFilter(self)
         self.equityCurve = self.equityCurvePlot.plot([], [], pen=pg.mkPen(COLORS["accent"], width=2))
         self.performanceCurveItems: list[pg.PlotDataItem] = []
         self.performanceBaseline = pg.InfiniteLine(angle=0, pen=pg.mkPen(COLORS["text_tertiary"], style=QtCore.Qt.DashLine))
         self.equityCurvePlot.addItem(self.performanceBaseline)
+        self.performanceSinglePoint = pg.ScatterPlotItem(size=10, pxMode=True)
+        self.performanceSinglePoint.setZValue(5)
+        self.equityCurvePlot.addItem(self.performanceSinglePoint)
         self.performanceTradeMarkers = pg.ScatterPlotItem(size=11, pxMode=True)
         self.performanceTradeMarkers.sigClicked.connect(self._on_performance_trade_marker_clicked)
         self.equityCurvePlot.addItem(self.performanceTradeMarkers)
@@ -369,21 +447,23 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.performanceSideFilter = QtWidgets.QComboBox()
         for key in ("all", "long", "short"):
             self.performanceSideFilter.addItem(self._tr(f"performance.side.{key}"), key.upper())
-        self.performanceTradeFilter.currentIndexChanged.connect(self._refresh_performance_workspace)
-        self.performanceSideFilter.currentIndexChanged.connect(self._refresh_performance_workspace)
+        self.performanceTradeFilter.currentIndexChanged.connect(self._refresh_performance_trade_table)
+        self.performanceSideFilter.currentIndexChanged.connect(self._refresh_performance_trade_table)
         filter_row.addWidget(self.performanceTradeFilter)
         filter_row.addWidget(self.performanceSideFilter)
         filter_row.addStretch(1)
         layout.addLayout(filter_row)
 
-        self.tradePnlTable = QtWidgets.QTableWidget()
-        self.tradePnlTable.setColumnCount(13)
-        self.tradePnlTable.setHorizontalHeaderLabels(
-            [self._tr(f"performance.trade.{key}") for key in (
-                "side", "entry_time", "exit_time", "entry_price", "exit_price", "notional",
-                "fees", "pnl", "return", "holding", "take_profit", "stop_loss", "exit_reason",
-            )]
+        trade_headers = [self._tr(f"performance.trade.{key}") for key in (
+            "trade_number", "side", "entry_time", "exit_time", "entry_price", "exit_price", "notional",
+            "fees", "pnl", "return", "holding", "take_profit", "stop_loss", "exit_reason",
+        )]
+        self.tradePnlTable = PerformanceTradeTableView()
+        self.performanceTradeModel = PerformanceTradeTableModel(
+            trade_headers,
+            parent=self.tradePnlTable,
         )
+        self.tradePnlTable.setModel(self.performanceTradeModel)
         self.tradePnlTable.verticalHeader().setVisible(False)
         self.tradePnlTable.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self.tradePnlTable.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
@@ -392,6 +472,18 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.tradePnlTable.setMinimumHeight(260)
         self.tradePnlTable.horizontalHeader().setStretchLastSection(True)
         layout.addWidget(self.tradePnlTable, stretch=2)
+        page_row = QtWidgets.QHBoxLayout()
+        page_row.addStretch(1)
+        self.performanceTradePrevious = QtWidgets.QPushButton("‹")
+        self.performanceTradeNext = QtWidgets.QPushButton("›")
+        self.performanceTradePageLabel = QtWidgets.QLabel("1 / 1")
+        self.performanceTradePrevious.clicked.connect(self.performanceTradeModel.previous_page)
+        self.performanceTradeNext.clicked.connect(self.performanceTradeModel.next_page)
+        self.performanceTradeModel.pageChanged.connect(self._on_performance_trade_page_changed)
+        page_row.addWidget(self.performanceTradePrevious)
+        page_row.addWidget(self.performanceTradePageLabel)
+        page_row.addWidget(self.performanceTradeNext)
+        layout.addLayout(page_row)
 
         distribution = QtWidgets.QFrame()
         distribution.setProperty("role", "statusBlock")
@@ -409,18 +501,21 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             block = QtWidgets.QFrame()
             block.setProperty("role", "metricBlock")
             block_l = QtWidgets.QVBoxLayout(block)
-            block_l.setContentsMargins(SPACING["sm"], SPACING["sm"], SPACING["sm"], SPACING["sm"])
-            block_l.setSpacing(SPACING["xs"])
+            block_l.setContentsMargins(SPACING["lg"], SPACING["md"], SPACING["lg"], SPACING["md"])
+            block_l.setSpacing(SPACING["sm"])
             name = QtWidgets.QLabel(self._tr(f"performance.distribution.{key}"))
-            name.setProperty("role", "muted")
+            name.setProperty("role", "distributionLabel")
             name.setAlignment(QtCore.Qt.AlignCenter)
+            name.setWordWrap(True)
+            name.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
             value = QtWidgets.QLabel("-")
-            value.setProperty("role", "statusValue")
+            value.setProperty("role", "distributionValue")
             value.setAlignment(QtCore.Qt.AlignCenter)
+            value.setSizePolicy(QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Expanding)
             self.performanceDistributionLabels[key] = value
             self.performanceDistributionCards[key] = block
-            block_l.addWidget(name)
-            block_l.addWidget(value)
+            block_l.addWidget(name, 3)
+            block_l.addWidget(value, 4)
             stats.addWidget(block, index // 3, index % 3)
         distribution_l.addLayout(stats, 1)
         histogram_panel = QtWidgets.QWidget()
@@ -438,7 +533,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.performanceHistogramDefinition.setWordWrap(True)
         histogram_l.addWidget(self.performanceHistogramTitle)
         histogram_l.addWidget(self.performanceHistogramDefinition)
-        self.performanceHistogramPlot = pg.PlotWidget()
+        self.performanceHistogramPlot = _ManagedAnalysisPlotWidget()
         self.performanceHistogramPlot.setMinimumHeight(170)
         self.performanceHistogramPlot.showGrid(x=False, y=True, alpha=0.12)
         self.performanceHistogram = pg.BarGraphItem(x=[], height=[], width=0.75)
@@ -459,42 +554,86 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         interval_box = getattr(self.app_window, "intervalBox", None)
         start_edit = getattr(self.app_window, "startDate", None)
         end_edit = getattr(self.app_window, "endDate", None)
-        current_label = session_display_name(
-            symbol=symbol_box.currentText() if symbol_box is not None else "-",
-            interval=interval_box.currentText() if interval_box is not None else "-",
-            start=start_edit.date().toString("yyyy-MM-dd") if start_edit is not None else "-",
-            end=end_edit.date().toString("yyyy-MM-dd") if end_edit is not None else "-",
-        )
+        current_session = {
+            "session_id": current_id,
+            "symbol": symbol_box.currentText() if symbol_box is not None else "-",
+            "interval": interval_box.currentText() if interval_box is not None else "-",
+            "start_date_bjt": (
+                start_edit.date().toString("yyyy-MM-dd") if start_edit is not None else "-"
+            ),
+            "end_date_bjt": (
+                end_edit.date().toString("yyyy-MM-dd") if end_edit is not None else "-"
+            ),
+        }
         self.performanceSessionBox.blockSignals(True)
         self.performanceSessionBox.clear()
-        self.performanceSessionBox.addItem(current_label, current_id)
-        label_counts = {current_label: 1}
         storage = getattr(self.app_window, "storage", None)
-        if storage is not None and hasattr(storage, "fetch_table"):
-            try:
-                sessions = storage.fetch_table("sessions")
-            except Exception:
-                sessions = []
-            for session in sorted(sessions, key=lambda row: str(row.get("last_saved_at") or ""), reverse=True):
-                session_id = str(session.get("session_id") or "")
-                if not session_id or session_id == current_id:
-                    continue
-                base_label = session_display_name(session)
-                label_counts[base_label] = label_counts.get(base_label, 0) + 1
-                label = base_label if label_counts[base_label] == 1 else f"{base_label} · #{label_counts[base_label]}"
-                self.performanceSessionBox.addItem(label, session_id)
+        try:
+            options = list_performance_session_options(
+                storage,
+                current_session=current_session if current_id else None,
+            )
+        except Exception:
+            logger.exception("Failed to load performance-session catalog")
+            options = ()
+        for option in options:
+            self.performanceSessionBox.addItem(option.display_name, option.session_id)
         self.performanceSessionBox.blockSignals(False)
 
     def _on_performance_trade_marker_clicked(self, _item, points, _event=None) -> None:
         if not points:
             return
         trade_id = str(points[0].data() or "")
+        model = getattr(self, "performanceTradeModel", None)
+        if model is not None:
+            row = model.show_trade(trade_id)
+            if row is not None:
+                self.tradePnlTable.selectRow(row)
+                self.tradePnlTable.scrollTo(model.index(row, 0))
+            return
         for row in range(self.tradePnlTable.rowCount()):
             item = self.tradePnlTable.item(row, 0)
             if item is not None and str(item.data(QtCore.Qt.UserRole) or "") == trade_id:
                 self.tradePnlTable.selectRow(row)
                 self.tradePnlTable.scrollToItem(item)
                 return
+
+    @QtCore.Slot(int, int)
+    def _on_performance_trade_page_changed(self, page: int, page_count: int) -> None:
+        self.performanceTradePageLabel.setText(f"{page + 1} / {page_count}")
+        self.performanceTradePrevious.setEnabled(page > 0)
+        self.performanceTradeNext.setEnabled(page + 1 < page_count)
+
+    def eventFilter(self, watched, event):
+        if (
+            watched is getattr(self, "equityCurvePlot", None)
+            and event.type() == QtCore.QEvent.Resize
+        ):
+            self.performanceCurveStateLabel.setGeometry(self.equityCurvePlot.rect())
+        return super().eventFilter(watched, event)
+
+    def _set_performance_curve_state(self, translation_key: str | None) -> None:
+        if translation_key is None:
+            self.performanceCurveStateLabel.hide()
+            return
+        self.performanceCurveStateLabel.setText(self._tr(translation_key))
+        self.performanceCurveStateLabel.show()
+        self.performanceCurveStateLabel.raise_()
+
+    def _set_performance_curve_message(self, message: str) -> None:
+        self.performanceCurveStateLabel.setText(str(message))
+        self.performanceCurveStateLabel.show()
+        self.performanceCurveStateLabel.raise_()
+
+    def _clear_performance_curve_visuals(self) -> None:
+        self.equityCurve.setData([], [])
+        self.performanceSinglePoint.setData([])
+        self.performanceTradeMarkers.setData([])
+        for item in self.performanceCurveItems:
+            self.equityCurvePlot.removeItem(item)
+        self.performanceCurveItems.clear()
+        self.equityCurveData = []
+        self._performanceCurveX = []
 
     @staticmethod
     def _set_performance_value_tone(label: QtWidgets.QLabel, number: float, *, zero_is_negative: bool = False) -> None:
@@ -562,7 +701,12 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         return _safe_float(widget.value(), float(default))
 
     def _trade_notional(self, trade: dict) -> float:
-        default_notional = self._spin_value("tradeNotionalSpin", 1_000.0)
+        default_notional = _safe_float(
+            getattr(self, "_performanceDefaultNotional", float("nan")),
+            float("nan"),
+        )
+        if not math.isfinite(default_notional) or default_notional <= 0:
+            default_notional = self._spin_value("tradeNotionalSpin", 1_000.0)
         notional = _safe_float(trade.get("notional_quote"), default_notional)
         return notional if notional > 0 else default_notional
 
@@ -580,66 +724,118 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         notional = self._trade_notional(trade)
         return self._trade_pnl(trade) / notional * 100.0 if notional > 0 else 0.0
 
-    def _performance_equity_rows(self) -> list[dict]:
-        trades = [dict(trade) for trade in getattr(self.app_window, "trades", []) or []]
-        frame = getattr(self.app_window, "df", None)
-        initial = self._spin_value("initialEquitySpin", 10_000.0)
-        notional = self._spin_value("tradeNotionalSpin", 1_000.0)
-        if frame is not None and hasattr(frame, "empty") and not frame.empty:
-            try:
-                raw_cursor = getattr(self.app_window, "cursor", len(frame) - 1)
-                replay_cursor = raw_cursor if isinstance(raw_cursor, (int, float)) else len(frame) - 1
-                end = performance_curve_end(
-                    trades,
-                    cursor=int(replay_cursor),
-                    row_count=len(frame),
-                )
-                return build_continuous_equity_curve(
-                    frame.iloc[:end].to_dict("records"),
-                    trades,
-                    str(getattr(self.app_window, "session_id", "") or ""),
-                    initial,
-                    notional,
-                )
-            except Exception:
-                logger.exception("Failed to build continuous equity curve for analysis workspace")
-        current_rows = getattr(self.app_window, "_current_equity_rows", None)
-        if callable(current_rows):
-            try:
-                return [dict(row) for row in current_rows()]
-            except Exception:
-                logger.exception("Failed to read current equity rows")
-        return []
+    def apply_performance_payload(self, payload: PerformanceWorkspacePayload) -> None:
+        """Render a worker-produced current-session payload on the Qt thread."""
+
+        self._performance_payload = payload
+        self._refresh_performance_workspace()
+
+    def invalidate_performance_sessions(self, session_ids) -> None:
+        """Discard rendered payloads affected by committed trade-sample deletion."""
+
+        affected = {str(value) for value in session_ids if str(value)}
+        if not affected:
+            return
+        current_id = str(getattr(self.app_window, "session_id", "") or "")
+        if current_id in affected:
+            self._performance_payload = None
+        for session_id in affected:
+            self._historical_performance_payloads.pop(session_id, None)
+            self._historical_performance_empty_states.pop(session_id, None)
+        if self._historical_performance_requested_session_id in affected:
+            self._historical_performance_requested_session_id = None
+        selected_id = str(self.performanceSessionBox.currentData() or "")
+        if not selected_id or selected_id in affected:
+            self._refresh_performance_workspace()
+
+    @QtCore.Slot(object)
+    def _on_historical_performance_result(self, result) -> None:
+        session_id = str(result.session_id)
+        if result.payload is None:
+            self._historical_performance_payloads.pop(session_id, None)
+            self._historical_performance_empty_states[session_id] = str(
+                result.empty_reason or "performance.curve_empty"
+            )
+        else:
+            self._historical_performance_payloads[session_id] = result.payload
+            self._historical_performance_empty_states.pop(session_id, None)
+        if self._historical_performance_requested_session_id == session_id:
+            self._historical_performance_requested_session_id = None
+        if str(self.performanceSessionBox.currentData() or "") == session_id:
+            self._refresh_performance_workspace()
+
+    @QtCore.Slot(str)
+    def _on_historical_performance_failed(self, error: str) -> None:
+        logger.error("Historical performance refresh failed: %s", error)
+        requested_session_id = self._historical_performance_requested_session_id
+        self._historical_performance_requested_session_id = None
+        selected_id = str(self.performanceSessionBox.currentData() or "")
+        if requested_session_id and selected_id == requested_session_id:
+            self._clear_performance_curve_visuals()
+            self._set_performance_curve_message(
+                self._tr("performance.curve_load_failed").format(error=error)
+            )
 
     def _refresh_performance_workspace(self) -> None:
         selected_id = str(self.performanceSessionBox.currentData() or "")
         current_id = str(getattr(self.app_window, "session_id", "") or "")
         initial = self._spin_value("initialEquitySpin", 10_000.0)
         notional = self._spin_value("tradeNotionalSpin", 1_000.0)
-        if not selected_id or selected_id == current_id:
-            trades = [dict(trade) for trade in getattr(self.app_window, "trades", []) or []]
-            equity_rows = self._performance_equity_rows()
-        else:
-            storage = getattr(self.app_window, "storage", None)
-            session = None
-            trades = []
-            equity_rows = []
-            if storage is not None:
-                try:
-                    session, trades, _events = storage.load_session_snapshot(selected_id)
-                    equity_rows = storage.fetch_table("account_equity", "session_id=?", (selected_id,))
-                except Exception:
-                    logger.exception("Failed to load historical performance session")
-            if session:
-                initial = _safe_float(session.get("initial_equity"), initial)
-                notional = _safe_float(session.get("trade_notional"), notional)
-
-        snapshot = build_performance_snapshot(
-            equity_rows=equity_rows,
-            trades=trades,
-            initial_equity=initial,
-            default_notional=notional,
+        snapshot = None
+        is_current_session = not selected_id or selected_id == current_id
+        payload = (
+            getattr(self, "_performance_payload", None)
+            if is_current_session
+            else self._historical_performance_payloads.get(selected_id)
         )
+        if payload is not None:
+            trades = [dict(trade) for trade in payload.trades]
+            equity_rows = [dict(row) for row in payload.equity_rows]
+            initial = float(payload.initial_equity)
+            notional = float(payload.default_notional)
+            snapshot = {
+                "metrics": dict(payload.metrics),
+                "distribution": dict(payload.distribution),
+                "equity_values": list(payload.equity_values),
+                "pnl_values": list(payload.pnl_values),
+                "trades": trades,
+                "closed_pnls": list(payload.closed_pnls),
+                "markers": payload.markers,
+            }
+        elif is_current_session:
+            self._clear_performance_curve_visuals()
+            state_key = (
+                "performance.curve_pause_to_update"
+                if bool(getattr(self.app_window, "playing", False))
+                else "performance.curve_empty"
+            )
+            self._set_performance_curve_state(state_key)
+            return
+        else:
+            empty_state = self._historical_performance_empty_states.get(selected_id)
+            if empty_state is not None:
+                self._clear_performance_curve_visuals()
+                self._set_performance_curve_state(empty_state)
+                return
+            self._clear_performance_curve_visuals()
+            self._set_performance_curve_state("performance.curve_loading")
+            controller = self.historical_performance_controller
+            if (
+                controller is not None
+                and self._historical_performance_requested_session_id != selected_id
+            ):
+                self._historical_performance_requested_session_id = selected_id
+                controller.request(selected_id)
+            return
+
+        if snapshot is None:
+            snapshot = build_performance_snapshot(
+                equity_rows=equity_rows,
+                trades=trades,
+                initial_equity=initial,
+                default_notional=notional,
+            )
+        self._performanceDefaultNotional = float(notional)
         self._performanceHoverRows = list(equity_rows)
         self._performanceInitialEquity = initial
         raw_metrics = snapshot["metrics"]
@@ -683,54 +879,86 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             else:
                 label.setStyleSheet("")
 
+        self._clear_performance_curve_visuals()
         self.equityCurveData = list(snapshot["equity_values"])
-        self.equityCurve.setData([], [])
-        for item in self.performanceCurveItems:
-            self.equityCurvePlot.removeItem(item)
-        self.performanceCurveItems.clear()
         curve_mode = str(self.performanceCurveMode.currentData() or "equity")
         curve_values = snapshot["pnl_values"] if curve_mode == "pnl" else snapshot["equity_values"]
         display_curve_values = smooth_curve_values(curve_values, window=5)
+        self._set_performance_curve_state(
+            None if display_curve_values else "performance.curve_empty"
+        )
         curve_x = [_curve_timestamp(row, index) for index, row in enumerate(equity_rows)]
         self._performanceCurveX = curve_x
         baseline = 0.0 if curve_mode == "pnl" else initial
         self.performanceBaseline.setValue(baseline)
+        single_point_spots = []
         for side, points in split_signed_curve(display_curve_values, baseline):
+            color = COLORS["success"] if side == "positive" else COLORS["danger"]
+            if len(points) == 1:
+                point = points[0]
+                single_point_spots.append(
+                    {
+                        "pos": (float(curve_x[int(point[0])]), float(point[1])),
+                        "brush": pg.mkBrush(color),
+                        "pen": pg.mkPen(color),
+                    }
+                )
+                continue
             item = self.equityCurvePlot.plot(
                 [curve_x[int(point[0])] for point in points],
                 [point[1] for point in points],
-                pen=pg.mkPen(COLORS["success"] if side == "positive" else COLORS["danger"], width=2),
+                pen=pg.mkPen(color, width=2),
                 antialias=True,
             )
             item.setDownsampling(auto=True, method="mean")
             item.setClipToView(True)
             self.performanceCurveItems.append(item)
-        bar_positions = {
-            int(row.get("bar_index", index)): index
-            for index, row in enumerate(equity_rows)
-            if row.get("bar_index", index) is not None
-        }
+        self.performanceSinglePoint.setData(single_point_spots)
         marker_spots = []
-        for trade in snapshot["trades"]:
-            trade_id = str(trade.get("trade_id") or "")
-            for index_key, symbol, color in (
-                ("entry_bar_index", "t1", COLORS["chart_up"]),
-                ("exit_bar_index", "x", COLORS["chart_down"]),
-            ):
-                try:
-                    curve_index = bar_positions[int(trade.get(index_key))]
-                    y_value = display_curve_values[curve_index]
-                except (KeyError, TypeError, ValueError, IndexError):
-                    continue
+        explicit_markers = snapshot.get("markers")
+        if explicit_markers is not None:
+            for marker in explicit_markers:
+                is_entry = marker.kind == "entry"
+                color = COLORS["chart_up"] if is_entry else COLORS["chart_down"]
+                y_value = marker.pnl_value if curve_mode == "pnl" else marker.equity_value
                 marker_spots.append(
                     {
-                        "pos": (float(curve_x[curve_index]), float(y_value)),
-                        "data": trade_id,
-                        "symbol": symbol,
+                        "pos": (
+                            _curve_timestamp({"time": marker.curve_time}, marker.bar_index),
+                            float(y_value),
+                        ),
+                        "data": marker.trade_id,
+                        "symbol": "t1" if is_entry else "x",
                         "brush": pg.mkBrush(color),
                         "pen": pg.mkPen(color),
                     }
                 )
+        else:
+            bar_positions = {
+                int(row.get("bar_index", index)): index
+                for index, row in enumerate(equity_rows)
+                if row.get("bar_index", index) is not None
+            }
+            for trade in snapshot["trades"]:
+                trade_id = str(trade.get("trade_id") or "")
+                for index_key, symbol, color in (
+                    ("entry_bar_index", "t1", COLORS["chart_up"]),
+                    ("exit_bar_index", "x", COLORS["chart_down"]),
+                ):
+                    try:
+                        curve_index = bar_positions[int(trade.get(index_key))]
+                        y_value = display_curve_values[curve_index]
+                    except (KeyError, TypeError, ValueError, IndexError):
+                        continue
+                    marker_spots.append(
+                        {
+                            "pos": (float(curve_x[curve_index]), float(y_value)),
+                            "data": trade_id,
+                            "symbol": symbol,
+                            "brush": pg.mkBrush(color),
+                            "pen": pg.mkPen(color),
+                        }
+                    )
         self.performanceTradeMarkers.setData(marker_spots)
 
         distribution = snapshot["distribution"]
@@ -769,10 +997,33 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             self.performanceHistogram.setOpts(x=[], height=[], width=0.75)
             self.performanceHistogramPlot.getAxis("bottom").setTicks([])
 
+        self._performance_trade_rows = tuple(dict(trade) for trade in snapshot["trades"])
+        self._render_performance_trade_table(self._performance_trade_rows)
+
+    def _refresh_performance_trade_table(self, *_args) -> None:
+        if not self._performance_trade_rows:
+            return
+        self._render_performance_trade_table(self._performance_trade_rows)
+
+    def _render_performance_trade_table(self, trades) -> None:
+        trade_rows = [dict(trade) for trade in trades]
+        closed_trade_numbers: dict[str, int] = {}
+        closed_fallback_numbers: dict[int, int] = {}
+        next_trade_number = 1
+        for trade in trade_rows:
+            if str(trade.get("status") or "").upper() != "CLOSED":
+                continue
+            trade_id = str(trade.get("trade_id") or "")
+            if trade_id:
+                closed_trade_numbers[trade_id] = next_trade_number
+            else:
+                closed_fallback_numbers[id(trade)] = next_trade_number
+            next_trade_number += 1
+
         trade_filter = str(self.performanceTradeFilter.currentData() or "all")
         side_filter = str(self.performanceSideFilter.currentData() or "ALL")
         filtered = []
-        for trade in snapshot["trades"]:
+        for trade in trade_rows:
             status = str(trade.get("status") or "").upper()
             pnl = self._trade_pnl(trade)
             if side_filter != "ALL" and str(trade.get("side") or "").upper() != side_filter:
@@ -789,13 +1040,18 @@ class AnalysisWorkspace(QtWidgets.QDialog):
                 continue
             filtered.append(trade)
         filtered.sort(key=lambda trade: str(trade.get("exit_bar_time_bjt") or trade.get("entry_bar_time_bjt") or ""), reverse=True)
-        self.tradePnlTable.setSortingEnabled(False)
-        self.tradePnlTable.setRowCount(len(filtered))
-        for row, trade in enumerate(filtered):
+        model_rows: list[PerformanceTradeRow] = []
+        for trade in filtered:
             fees = _safe_float(trade.get("entry_fee_quote")) + _safe_float(trade.get("exit_fee_quote"))
             trade_pnl = self._trade_pnl(trade)
             trade_return = self._trade_return_pct(trade)
+            trade_number = "-"
+            if str(trade.get("status") or "").upper() == "CLOSED":
+                trade_id = str(trade.get("trade_id") or "")
+                mapped = closed_trade_numbers.get(trade_id) if trade_id else closed_fallback_numbers.get(id(trade))
+                trade_number = str(mapped) if mapped is not None else "-"
             values = (
+                trade_number,
                 str(trade.get("side") or "-"),
                 str(trade.get("entry_bar_time_bjt") or "-"),
                 str(trade.get("exit_bar_time_bjt") or "-"),
@@ -810,21 +1066,40 @@ class AnalysisWorkspace(QtWidgets.QDialog):
                 _fmt_money(_safe_float(trade.get("stop_loss_price"), float("nan"))),
                 str(trade.get("exit_reason") or "-"),
             )
-            for col, value in enumerate(values):
-                item = SortableTableItem(value)
-                if col in {7, 8}:
-                    signed_value = trade_pnl if col == 7 else trade_return
-                    color = (
-                        COLORS["success"]
-                        if signed_value > 0
-                        else COLORS["danger"]
-                        if signed_value < 0
-                        else COLORS["text_secondary"]
-                    )
-                    item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
-                self.tradePnlTable.setItem(row, col, item)
-            self.tradePnlTable.item(row, 0).setData(QtCore.Qt.UserRole, str(trade.get("trade_id") or ""))
-        self.tradePnlTable.setSortingEnabled(True)
+            colors: list[str | None] = [None] * len(values)
+            for column, signed_value in ((8, trade_pnl), (9, trade_return)):
+                colors[column] = (
+                    COLORS["success"]
+                    if signed_value > 0
+                    else COLORS["danger"]
+                    if signed_value < 0
+                    else COLORS["text_secondary"]
+                )
+            sort_values = (
+                int(trade_number) if trade_number != "-" else -1,
+                str(trade.get("side") or ""),
+                str(trade.get("entry_bar_time_bjt") or ""),
+                str(trade.get("exit_bar_time_bjt") or ""),
+                _safe_float(trade.get("entry_fill_price"), float("-inf")),
+                _safe_float(trade.get("exit_fill_price"), float("-inf")),
+                self._trade_notional(trade),
+                fees,
+                trade_pnl,
+                trade_return,
+                _safe_float(trade.get("holding_bars"), -1.0),
+                _safe_float(trade.get("take_profit_price"), float("-inf")),
+                _safe_float(trade.get("stop_loss_price"), float("-inf")),
+                str(trade.get("exit_reason") or ""),
+            )
+            model_rows.append(
+                PerformanceTradeRow(
+                    values=tuple(values),
+                    trade_id=str(trade.get("trade_id") or ""),
+                    sort_values=sort_values,
+                    colors=tuple(colors),
+                )
+            )
+        self.performanceTradeModel.set_rows(model_rows)
 
     def _is_main_trading_tab_widget(self, widget: QtWidgets.QWidget) -> bool:
         owning_tabs = [
@@ -1689,15 +1964,39 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         if bool(getattr(self.app_window, "playing", False)):
             session_text = f"{session_text} · {'实时更新中' if self._language() == 'zh_CN' else 'Live'}"
         self.sessionLabel.setText(session_text)
-        for method_name in ("_refresh_tables", "_refresh_performance_summary", "_refresh_premium_plot"):
-            method = getattr(self.app_window, method_name, None)
-            if callable(method):
-                try:
-                    method()
-                except Exception:
-                    logger.exception("Analysis workspace refresh failed: %s", method_name)
+        refresh_tables = getattr(self.app_window, "_refresh_tables", None)
+        if callable(refresh_tables):
+            try:
+                refresh_tables(include_heavy=False)
+            except Exception:
+                logger.exception("Analysis workspace refresh failed: _refresh_tables")
+        refresh_premium = getattr(self.app_window, "_refresh_premium_plot", None)
+        if callable(refresh_premium):
+            try:
+                refresh_premium()
+            except Exception:
+                logger.exception("Analysis workspace refresh failed: _refresh_premium_plot")
+        controller = getattr(self.app_window, "analysis_refresh_controller", None)
+        if controller is not None:
+            controller.schedule()
         self._refresh_performance_workspace()
 
     def closeEvent(self, event):
         event.ignore()
         self.hide()
+
+    def shutdown(self) -> bool:
+        """Release worker and pyqtgraph ownership only during app shutdown."""
+
+        controller = self.historical_performance_controller
+        if controller is not None and controller.shutdown() is False:
+            return False
+        if bool(getattr(self, "_graphics_shutdown", False)):
+            return True
+        for plot_widget in (
+            self.equityCurvePlot,
+            self.performanceHistogramPlot,
+        ):
+            plot_widget.shutdown()
+        self._graphics_shutdown = True
+        return True

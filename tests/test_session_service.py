@@ -1,14 +1,66 @@
 from __future__ import annotations
 
 from services.session_service import (
+    PerformanceSessionOption,
     SessionSaveInput,
     SessionStateInput,
     build_session_restore_plan,
     build_session_state,
     load_session_snapshot_state,
+    list_performance_session_options,
     save_session_state,
     should_autosave,
 )
+
+
+def test_performance_session_options_are_shared_readable_and_stably_ordered():
+    class Storage:
+        def list_performance_sessions(self):
+            return [
+                {
+                    "session_id": "sess_history_b",
+                    "symbol": "BTCUSDT",
+                    "interval": "5m",
+                    "start_date_bjt": "2026-04-01",
+                    "end_date_bjt": "2026-05-01",
+                    "last_saved_at": "2026-07-02T00:00:00+08:00",
+                },
+                {
+                    "session_id": "sess_history_a",
+                    "symbol": "BTCUSDT",
+                    "interval": "5m",
+                    "start_date_bjt": "2026-04-01",
+                    "end_date_bjt": "2026-05-01",
+                    "last_saved_at": "2026-07-01T00:00:00+08:00",
+                },
+            ]
+
+    options = list_performance_session_options(
+        Storage(),
+        current_session={
+            "session_id": "sess_current",
+            "symbol": "ETHUSDT",
+            "interval": "1m",
+            "start_date_bjt": "2026-06-01",
+            "end_date_bjt": "2026-06-02",
+        },
+    )
+
+    assert all(isinstance(option, PerformanceSessionOption) for option in options)
+    assert [option.session_id for option in options] == [
+        "sess_current",
+        "sess_history_b",
+        "sess_history_a",
+    ]
+    assert options[0].display_name == "ETHUSDT · 1m · 2026-06-01—2026-06-02"
+    assert options[1].display_name == "BTCUSDT · 5m · 2026-04-01—2026-05-01"
+    assert options[2].display_name == "BTCUSDT · 5m · 2026-04-01—2026-05-01 · #2"
+    assert (
+        options[1].symbol,
+        options[1].interval,
+        options[1].start_date_bjt,
+        options[1].end_date_bjt,
+    ) == ("BTCUSDT", "5m", "2026-04-01", "2026-05-01")
 
 
 def test_build_session_state_uses_current_market_when_no_trade_samples():
@@ -42,6 +94,8 @@ def test_build_session_state_uses_current_market_when_no_trade_samples():
     assert result.row["cursor_bar_index"] == 42
     assert result.row["last_opened_at"] == "2026-06-03T12:00:00+08:00"
     assert result.row["follow_latest"] == 1
+    assert result.row["take_profit_pct"] is None
+    assert result.row["stop_loss_pct"] is None
 
 
 def test_build_session_state_preserves_sample_interval_cursor_when_display_interval_differs():
@@ -131,10 +185,14 @@ def test_load_session_snapshot_state_builds_memory_indexes_and_cursor_restore():
     class Storage:
         def load_session_snapshot(self, session_id):
             assert session_id == "sess_1"
-            return {"session_id": "sess_1"}, [trade], [event]
+            return {
+                "session_id": "sess_1",
+                "cursor_bar_index": 42,
+                "follow_latest": 1,
+            }, [trade], [event]
 
         def get_latest_session(self):
-            return {"session_id": "sess_1", "cursor_bar_index": 42, "follow_latest": 1}
+            raise AssertionError("selected-session restore must not query the latest session")
 
     state = load_session_snapshot_state(Storage(), "sess_1")
 
@@ -152,7 +210,7 @@ def test_load_session_snapshot_state_ignores_latest_cursor_for_other_session():
             return {}, [], []
 
         def get_latest_session(self):
-            return {"session_id": "other", "cursor_bar_index": 99, "follow_latest": 1}
+            raise AssertionError("selected-session restore must not query the latest session")
 
     state = load_session_snapshot_state(Storage(), "sess_1")
 
@@ -238,8 +296,8 @@ def test_build_session_restore_plan_uses_defaults_for_missing_or_invalid_values(
             "fee_bps": "bad",
             "slippage_bps": None,
             "fill_mode": "",
-            "take_profit_pct": "",
-            "stop_loss_pct": None,
+            "take_profit_pct": 0,
+            "stop_loss_pct": "nan",
         },
         default_initial_equity=10_000,
         default_trade_notional=1_000,

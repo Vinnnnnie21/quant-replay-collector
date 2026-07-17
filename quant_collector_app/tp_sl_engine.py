@@ -18,6 +18,20 @@ def _num(value: Any) -> float | None:
     return out if math.isfinite(out) else None
 
 
+def normalize_optional_percent(value: Any) -> float | None:
+    """Normalize an optional TP/SL percent and reject invalid nonempty input."""
+
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    try:
+        percent = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("percentage must be a number") from exc
+    if not math.isfinite(percent) or percent < 0.0 or percent > 100.0:
+        raise ValueError("percentage must be between 0 and 100")
+    return percent if percent > 0.0 else None
+
+
 def risk_prices_for_trade(
     side: str,
     entry_price: float,
@@ -29,8 +43,8 @@ def risk_prices_for_trade(
     if entry is None or entry <= 0:
         return {"take_profit_price": None, "stop_loss_price": None}
     side = str(side or "").upper()
-    tp = _num(take_profit_pct)
-    sl = _num(stop_loss_pct)
+    tp = normalize_optional_percent(take_profit_pct)
+    sl = normalize_optional_percent(stop_loss_pct)
     if side == "LONG":
         return {
             "take_profit_price": entry * (1.0 + tp / 100.0) if tp and tp > 0 else None,
@@ -140,5 +154,6 @@ __all__ = [
     "STOP_LOSS",
     "TAKE_PROFIT",
     "find_tp_sl_triggers",
+    "normalize_optional_percent",
     "risk_prices_for_trade",
 ]

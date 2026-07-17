@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 
 import pandas as pd
 
-from .bootstrap import bootstrap_mean_ci
+from .bootstrap import MAX_RESAMPLE_WORK_ITEMS, bootstrap_mean_ci
 
 
 def _tags(value) -> list[str]:
@@ -20,9 +21,18 @@ def _tags(value) -> list[str]:
     return [str(item) for item in parsed] or ["UNTAGGED"]
 
 
-def _stats(values: pd.Series) -> dict:
+def _stats(
+    values: pd.Series,
+    *,
+    max_work_items: int,
+    cancelled: Callable[[], bool] | None,
+) -> dict:
     numeric = pd.to_numeric(values, errors="coerce").dropna()
-    ci = bootstrap_mean_ci(numeric)
+    ci = bootstrap_mean_ci(
+        numeric,
+        max_work_items=max_work_items,
+        cancelled=cancelled,
+    )
     positive = numeric[numeric > 0]
     negative = numeric[numeric < 0]
     ratio = (
@@ -43,6 +53,16 @@ def _stats(values: pd.Series) -> dict:
         "profit_loss_ratio": ratio,
         "bootstrap_ci_low": ci["ci_low"],
         "bootstrap_ci_high": ci["ci_high"],
+        "bootstrap_random_seed": ci["random_seed"],
+        "bootstrap_simulation_count": ci["simulation_count"],
+        "bootstrap_confidence": ci["confidence"],
+        "bootstrap_application_version": ci["application_version"],
+        "bootstrap_method_version": ci["method_version"],
+        "bootstrap_batch_size": ci["batch_size"],
+        "bootstrap_batch_count": ci["batch_count"],
+        "bootstrap_work_items": ci["work_items"],
+        "bootstrap_resource_budget": ci["resource_budget"],
+        "bootstrap_max_batch_work_items": ci["max_batch_work_items"],
         "small_sample_warning": (
             "severe: n < 30; no strong conclusion"
             if len(numeric) < 30
@@ -56,6 +76,9 @@ def build_event_study(
     labels: pd.DataFrame,
     events: pd.DataFrame | None = None,
     label: str = "fwd_ret_10_side_adj",
+    *,
+    max_work_items: int = MAX_RESAMPLE_WORK_ITEMS,
+    cancelled: Callable[[], bool] | None = None,
 ) -> pd.DataFrame:
     if features.empty or labels.empty or label not in labels.columns:
         return pd.DataFrame()
@@ -88,7 +111,11 @@ def build_event_study(
                 "group_by": " + ".join(grouping),
                 "label": label,
                 **{column: value for column, value in zip(grouping, keys)},
-                **_stats(group[label]),
+                **_stats(
+                    group[label],
+                    max_work_items=max_work_items,
+                    cancelled=cancelled,
+                ),
             }
             rows.append(row)
     return pd.DataFrame(rows)

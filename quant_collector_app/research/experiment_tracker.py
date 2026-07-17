@@ -2,14 +2,61 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
+try:
+    from app_config import APP_VERSION
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import APP_VERSION
 from .feature_registry import FEATURE_VERSION
 from .label_registry import LABEL_VERSION
+
+
+_RANDOMIZED_STATISTIC_FIELDS = {
+    "calculation",
+    "random_seed",
+    "simulation_count",
+    "confidence",
+    "method_version",
+    "application_version",
+    "batch_size",
+    "batch_count",
+    "work_items",
+    "resource_budget",
+    "max_batch_work_items",
+}
+
+
+def _json_scalar(value: Any) -> Any:
+    if value is None or isinstance(value, (str, bool, int)):
+        return value
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("randomized statistics must not contain NaN or Infinity")
+        return value
+    if isinstance(value, dict):
+        return {str(key): _json_scalar(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_scalar(item) for item in value]
+    raise TypeError(f"randomized statistics value is not JSON-safe: {type(value).__name__}")
+
+
+def _normalize_randomized_statistics(items: list[dict] | None) -> list[dict]:
+    normalized = []
+    for item in items or []:
+        missing = sorted(_RANDOMIZED_STATISTIC_FIELDS - set(item))
+        if missing:
+            raise ValueError(f"randomized statistics missing fields: {', '.join(missing)}")
+        normalized.append(_json_scalar(item))
+    return normalized
 
 
 def dataset_hash(samples: pd.DataFrame) -> str:
@@ -32,6 +79,7 @@ def create_manifest(
     profile_version: str | None = None,
     baseline_spec: dict | str | None = None,
     split_spec: dict | str | None = None,
+    randomized_statistics: list[dict] | None = None,
 ) -> dict:
     time_values = pd.to_datetime(samples.get("event_time_bjt"), errors="coerce") if "event_time_bjt" in samples.columns else pd.Series(dtype="datetime64[ns]")
     baseline_spec_json = (
@@ -49,6 +97,8 @@ def create_manifest(
         "dataset_hash": dataset_hash(samples),
         "feature_version": FEATURE_VERSION,
         "label_version": LABEL_VERSION,
+        "application_version": APP_VERSION,
+        "randomized_statistics": _normalize_randomized_statistics(randomized_statistics),
         "profile_id": profile_id,
         "profile_version": profile_version,
         "baseline_spec_json": baseline_spec_json,
@@ -76,6 +126,7 @@ def write_manifest(
     profile_version: str | None = None,
     baseline_spec: dict | str | None = None,
     split_spec: dict | str | None = None,
+    randomized_statistics: list[dict] | None = None,
 ) -> dict:
     manifest = create_manifest(
         samples,
@@ -85,6 +136,7 @@ def write_manifest(
         profile_version=profile_version,
         baseline_spec=baseline_spec,
         split_spec=split_spec,
+        randomized_statistics=randomized_statistics,
     )
     (Path(output_dir) / "research_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2),

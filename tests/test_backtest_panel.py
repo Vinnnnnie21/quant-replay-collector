@@ -6,10 +6,27 @@ from types import SimpleNamespace
 
 
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+QtCore = pytest.importorskip("PySide6.QtCore")
+QtGui = pytest.importorskip("PySide6.QtGui")
 
 from backtest_panel import BacktestPanel
 from controllers.backtest_controller import BacktestController
 from services.backtest_service import BacktestServiceResult
+
+
+def _send_wheel(widget: QtWidgets.QWidget) -> None:
+    local = QtCore.QPointF(widget.rect().center())
+    event = QtGui.QWheelEvent(
+        local,
+        QtCore.QPointF(widget.mapToGlobal(local.toPoint())),
+        QtCore.QPoint(),
+        QtCore.QPoint(0, -120),
+        QtCore.Qt.NoButton,
+        QtCore.Qt.NoModifier,
+        QtCore.Qt.ScrollUpdate,
+        False,
+    )
+    QtWidgets.QApplication.sendEvent(widget, event)
 
 
 class _Service:
@@ -162,3 +179,26 @@ def test_backtest_panel_rejects_market_selection_that_does_not_match_loaded_data
     assert service.calls == []
     assert "currently loaded K-line data" in panel.resultText.toPlainText()
     panel.close()
+
+
+def test_backtest_value_inputs_do_not_change_on_wheel():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _Host()
+    panel = BacktestPanel(host, controller=BacktestController(service=_Service()))
+    controls = (
+        (panel.backtestStartEdit, panel.backtestStartEdit.dateTime),
+        (panel.backtestEndEdit, panel.backtestEndEdit.dateTime),
+        (panel.trendLookbackSpin, panel.trendLookbackSpin.value),
+        (panel.minDropSpin, panel.minDropSpin.value),
+        (panel.fastSpin, panel.fastSpin.value),
+        (panel.stopSpin, panel.stopSpin.value),
+    )
+
+    before = [getter() for _widget, getter in controls]
+    for widget, _getter in controls:
+        _send_wheel(widget)
+
+    assert [getter() for _widget, getter in controls] == before
+    panel.close()
+    host.close()
+    app.processEvents()

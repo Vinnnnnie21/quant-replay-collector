@@ -53,3 +53,41 @@ def test_loader_worker_exposes_lifecycle_signals():
     from market_data import LoaderWorker
 
     assert all(hasattr(LoaderWorker, name) for name in ("started", "progress", "finished", "failed", "cancelled"))
+
+
+def test_premium_worker_honors_stop_before_starting_network_work():
+    pytest.importorskip("PySide6")
+    from premium_monitor import PremiumWorker
+
+    worker = PremiumWorker()
+    cancelled: list[bool] = []
+    finished: list[dict] = []
+    worker.cancelled.connect(lambda: cancelled.append(True))
+    worker.finished.connect(finished.append)
+
+    worker.request_stop()
+    worker.fetch_once()
+
+    assert cancelled == [True]
+    assert finished == []
+
+
+def test_loader_worker_honors_stop_queued_before_load_starts():
+    pytest.importorskip("PySide6")
+    from workers.loader_worker import LoaderWorker
+
+    loads: list[object] = []
+    worker = LoaderWorker()
+    worker.kline_loader = type(
+        "Loader",
+        (),
+        {"load": lambda _self, request, **_kwargs: loads.append(request)},
+    )()
+    cancelled: list[bool] = []
+    worker.cancelled.connect(lambda: cancelled.append(True))
+
+    worker.abort()
+    worker.load(object())
+
+    assert loads == []
+    assert cancelled == [True]

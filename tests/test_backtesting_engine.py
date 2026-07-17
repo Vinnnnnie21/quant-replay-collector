@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from backtesting.engine import run_backtest
 from backtesting.strategies import BaseStrategy, FeatureRuleLongStrategy, MovingAverageCrossStrategy
@@ -71,6 +72,20 @@ def test_empty_df_safe():
     result = run_backtest(pd.DataFrame(), BaseStrategy(), BacktestConfig(), "BTCUSDT", "1m")
     assert result.trades.empty
     assert result.metrics["basis"] == "backtest_records"
+
+
+def test_backtest_rejects_out_of_order_market_data_before_strategy_runs():
+    unordered = _df(10).iloc[[1, 0, *range(2, 10)]].reset_index(drop=True)
+
+    with pytest.raises(ValueError, match="backtest.*out-of-order.*quality report"):
+        run_backtest(unordered, BaseStrategy(), BacktestConfig(), "BTCUSDT", "1m")
+
+
+def test_backtest_missing_critical_price_points_to_quality_report():
+    missing_close = _df(10).drop(columns=["close"])
+
+    with pytest.raises(ValueError, match="backtest.*missing critical price columns: close.*quality report"):
+        run_backtest(missing_close, BaseStrategy(), BacktestConfig(), "BTCUSDT", "1m")
 
 
 def test_feature_rule_produces_trade_and_forced_close():

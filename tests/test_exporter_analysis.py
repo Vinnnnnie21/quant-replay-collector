@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta
 
 import pandas as pd
 
@@ -62,6 +63,7 @@ def _insert_trade_with_labels(storage):
         }
     )
     windows = []
+    event_time = datetime.fromisoformat(NOW)
     for offset in range(-20, 11):
         base = 100.0 + offset * 0.2
         windows.append(
@@ -69,7 +71,7 @@ def _insert_trade_with_labels(storage):
                 "offset": offset,
                 "is_event_bar": 1 if offset == 0 else 0,
                 "bar_index": 100 + offset,
-                "bar_open_time_bjt": NOW,
+                "bar_open_time_bjt": (event_time + timedelta(minutes=offset)).isoformat(),
                 "open": base,
                 "high": base + 1.0,
                 "low": base - 1.0,

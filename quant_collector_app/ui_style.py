@@ -67,6 +67,10 @@ COLORS = {
     "btn_hover": "#31312F",
     "btn_pressed": "#181816",
     "btn_border": "#4A4742",
+    "scrollbar_track": "#242422",
+    "scrollbar_handle": "#55524D",
+    "scrollbar_handle_hover": "#6B6863",
+    "scrollbar_handle_pressed": "#7A7772",
 }
 COLORS.update(
     {
@@ -175,6 +179,7 @@ FONT_SIZES = {
     "normal": 13,
     "medium": 14,
     "large": 18,
+    "xlarge": 24,
 }
 
 EXCHANGE_DARK_THEME = {
@@ -292,6 +297,10 @@ OKX_DARK_THEME = {
     "btn_hover": "#2A2A30",
     "btn_pressed": "#161619",
     "btn_border": "#3A3A40",
+    "scrollbar_track": "#111114",
+    "scrollbar_handle": "#3A3A40",
+    "scrollbar_handle_hover": "#505058",
+    "scrollbar_handle_pressed": "#66666F",
     # Chart layer (green up / red down).
     "chart_bg": "#000000",
     "chart_up": "#2EBD85",
@@ -365,6 +374,10 @@ LIGHT_THEME = {
     "btn_hover": "#E9E9E9",
     "btn_pressed": "#DEDEDE",
     "btn_border": "#DEDEDE",
+    "scrollbar_track": "#ECEFF1",
+    "scrollbar_handle": "#A8ADB4",
+    "scrollbar_handle_hover": "#858B94",
+    "scrollbar_handle_pressed": "#666C75",
     "chart_bg": "#FFFFFF",
     "chart_up": "#2EBD85",
     "chart_down": "#EC5B5B",
@@ -500,6 +513,15 @@ def normalize_theme_settings(theme: dict | None) -> dict:
     normalized["crosshair_alpha"] = _clamp_int(
         normalized.get("crosshair_alpha"), 95, 80, 110
     )
+    if normalized.get("name") == LIGHT_THEME.get("name"):
+        for key in (
+            "scrollbar_track",
+            "scrollbar_handle",
+            "scrollbar_handle_hover",
+            "scrollbar_handle_pressed",
+        ):
+            if not _is_hex_color(incoming.get(key)):
+                normalized[key] = LIGHT_THEME[key]
     for key in _THEME_COLOR_KEYS:
         if not _is_hex_color(normalized.get(key)):
             normalized[key] = COLORS.get(key, _base_theme_tokens().get(key, COLORS["text_primary"]))
@@ -666,12 +688,6 @@ def build_app_qss(theme: dict | None = None) -> str:
             font-weight: 700;
         }}
 
-        QLabel[role="headerMark"] {{
-            color: {t['brand']};
-            font-size: {FONT_SIZES['small']}px;
-            font-weight: 800;
-        }}
-
         QLabel[role="headerValue"] {{
             color: {t['text']};
             font-size: {FONT_SIZES['medium']}px;
@@ -739,6 +755,20 @@ def build_app_qss(theme: dict | None = None) -> str:
             color: {t['text']};
             font-size: {FONT_SIZES['medium']}px;
             font-weight: 650;
+        }}
+
+        QLabel[role="distributionLabel"] {{
+            color: {t['text_muted']};
+            font-size: {FONT_SIZES['large']}px;
+            font-weight: 600;
+            min-height: 42px;
+        }}
+
+        QLabel[role="distributionValue"] {{
+            color: {t['text']};
+            font-size: {FONT_SIZES['xlarge']}px;
+            font-weight: 750;
+            min-height: 76px;
         }}
 
         QLabel[role="valuePositive"] {{
@@ -1474,24 +1504,44 @@ def build_app_qss(theme: dict | None = None) -> str:
             height: 4px;
         }}
 
-        QScrollBar:vertical,
-        QScrollBar:horizontal {{
-            background: {t['input_bg']};
+        QScrollBar:vertical {{
+            background: {t['scrollbar_track']};
             border: none;
-            width: 10px;
-            height: 10px;
+            border-radius: 6px;
+            width: 13px;
+            margin: 0;
         }}
 
-        QScrollBar::handle:vertical,
-        QScrollBar::handle:horizontal {{
-            background: {t['border_default']};
-            border-radius: 5px;
+        QScrollBar:horizontal {{
+            background: {t['scrollbar_track']};
+            border: none;
+            border-radius: 6px;
+            height: 13px;
+            margin: 0;
+        }}
+
+        QScrollBar::handle:vertical {{
+            background: {t['scrollbar_handle']};
+            border-radius: 6px;
             min-height: 24px;
-            min-width: 24px;
+            margin: 2px;
         }}
 
-        QScrollBar::handle:hover {{
-            background: {t['border_strong']};
+        QScrollBar::handle:horizontal {{
+            background: {t['scrollbar_handle']};
+            border-radius: 6px;
+            min-width: 24px;
+            margin: 2px;
+        }}
+
+        QScrollBar::handle:vertical:hover,
+        QScrollBar::handle:horizontal:hover {{
+            background: {t['scrollbar_handle_hover']};
+        }}
+
+        QScrollBar::handle:vertical:pressed,
+        QScrollBar::handle:horizontal:pressed {{
+            background: {t['scrollbar_handle_pressed']};
         }}
 
         QScrollBar::add-line,
@@ -1766,9 +1816,9 @@ def themed_input_qss(kind: str, theme: dict | None = None) -> str:
     if kind == "date":
         return dedent(
             f"""
-            QDateEdit {{ {base} }}
-            QDateEdit:hover {{ border-color: {t['accent']}; }}
-            QDateEdit::drop-down {{ border: none; width: 18px; }}
+            QDateTimeEdit, QDateEdit {{ {base} }}
+            QDateTimeEdit:hover, QDateEdit:hover {{ border-color: {t['accent']}; }}
+            QDateTimeEdit::drop-down, QDateEdit::drop-down {{ border: none; width: 18px; }}
             QCalendarWidget QWidget {{ background-color: {t['bg_card']}; color: {t['text_primary']}; }}
             QCalendarWidget QToolButton {{
                 background-color: transparent; color: {t['text_primary']}; border: none;

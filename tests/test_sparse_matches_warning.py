@@ -53,7 +53,12 @@ def test_no_matching_control_returns_warning_without_significance_claim():
     assert result["match_counts"] == {"user_1": 0}
     assert result["effect_size"] is None
     assert result["bootstrap_ci"]["warning"] == "insufficient_sample_for_bootstrap"
+    assert result["bootstrap_ci"]["random_seed"] == 11
+    assert result["bootstrap_ci"]["simulation_count"] == 50
+    assert result["bootstrap_ci"]["confidence"] == 0.95
     assert result["permutation_test"]["p_value"] is None
+    assert result["permutation_test"]["random_seed"] == 11
+    assert result["permutation_test"]["simulation_count"] == 50
     assert result["conclusion_strength"] == "insufficient_evidence"
     assert result["not_trading_signal"] is True
 

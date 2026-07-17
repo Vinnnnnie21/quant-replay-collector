@@ -13,7 +13,9 @@ except ImportError:  # pragma: no cover - package import path
 
 
 REQUIRED_KLINE_COLUMNS = ("open", "high", "low", "close", "volume")
+CRITICAL_PRICE_COLUMNS = ("open", "high", "low", "close")
 TIME_COLUMNS = ("open_time_utc_ms", "open_time_ms", "open_time", "timestamp", "open_time_bjt")
+EVENT_WINDOW_TIME_COLUMNS = ("open_time_bjt", "bar_open_time_bjt", *TIME_COLUMNS[:-1])
 CANDLE_ID_ALGORITHM = "sha256(symbol|interval|normalized_open_time)[:32]"
 
 
@@ -64,7 +66,7 @@ def build_kline_quality_report(
     resolved_time_col = _resolve_time_column(frame, time_col)
     missing_required = [column for column in REQUIRED_KLINE_COLUMNS if column not in frame.columns]
 
-    open_time_ms = _open_time_ms(frame[resolved_time_col]) if resolved_time_col else pd.Series([np.nan] * row_count)
+    open_time_ms = parse_kline_time_ms(frame[resolved_time_col]) if resolved_time_col else pd.Series([np.nan] * row_count)
     valid_open_time_ms = pd.to_numeric(open_time_ms, errors="coerce").dropna().astype("int64")
     unique_open_time_ms = valid_open_time_ms.drop_duplicates().sort_values(kind="stable")
     step_ms = interval_to_ms(interval)
@@ -130,6 +132,127 @@ def build_kline_quality_report(
     }
 
 
+def validate_research_klines(
+    klines: pd.DataFrame,
+    *,
+    context: str = "research",
+    time_col: str | None = None,
+) -> None:
+    """Reject K-line input that would make a research result untrustworthy."""
+    if not isinstance(klines, pd.DataFrame):
+        raise ValueError(f"{context} data quality gate requires a pandas DataFrame")
+    missing_prices = [column for column in CRITICAL_PRICE_COLUMNS if column not in klines.columns]
+    if missing_prices:
+        raise ValueError(
+            _gate_message(context, f"missing critical price columns: {', '.join(missing_prices)}")
+        )
+    missing_price_values = [column for column in CRITICAL_PRICE_COLUMNS if klines[column].isna().any()]
+    if missing_price_values:
+        raise ValueError(
+            _gate_message(context, f"missing critical price values in: {', '.join(missing_price_values)}")
+        )
+    numeric_columns = [column for column in (*REQUIRED_KLINE_COLUMNS, "bar_index") if column in klines.columns]
+    non_finite_columns = []
+    for column in numeric_columns:
+        values = pd.to_numeric(klines[column], errors="coerce").to_numpy(dtype=float)
+        if not np.isfinite(values).all():
+            non_finite_columns.append(column)
+    if non_finite_columns:
+        raise ValueError(
+            _gate_message(context, f"non-finite numeric values in: {', '.join(non_finite_columns)}")
+        )
+    if "bar_index" in klines.columns:
+        bar_indexes = pd.to_numeric(klines["bar_index"], errors="coerce")
+        if bar_indexes.duplicated().any():
+            raise ValueError(_gate_message(context, "duplicate bar_index K-line identifiers"))
+        if (bar_indexes.diff().dropna() < 0).any():
+            raise ValueError(_gate_message(context, "out-of-order bar_index K-line identifiers"))
+    resolved_time_col = _resolve_time_column(klines, time_col)
+    if resolved_time_col is None:
+        raise ValueError(_gate_message(context, "missing K-line time column"))
+    open_time_ms = parse_kline_time_ms(klines[resolved_time_col])
+    if open_time_ms.isna().any():
+        raise ValueError(
+            _gate_message(
+                context,
+                "missing or invalid K-line timestamps (invalid/non-finite K-line timestamps)",
+            )
+        )
+    if open_time_ms.duplicated().any():
+        raise ValueError(_gate_message(context, f"duplicate {resolved_time_col} K-line timestamps"))
+    if (open_time_ms.diff().dropna() < 0).any():
+        raise ValueError(_gate_message(context, "out-of-order K-line timestamps"))
+
+
+def validate_event_window_research_input(windows: pd.DataFrame) -> None:
+    """Reject event-window input that would distort statistical analysis."""
+    if not isinstance(windows, pd.DataFrame):
+        raise ValueError(_event_window_gate_message("input must be a pandas DataFrame"))
+    frame = windows.reset_index(drop=True)
+    required = ("bar_index", *REQUIRED_KLINE_COLUMNS)
+    missing = [column for column in required if column not in frame.columns]
+    if missing:
+        raise ValueError(
+            _event_window_gate_message(f"missing required columns: {', '.join(missing)}")
+        )
+    time_column = next(
+        (column for column in EVENT_WINDOW_TIME_COLUMNS if column in frame.columns),
+        None,
+    )
+    if time_column is None:
+        raise ValueError(_event_window_gate_message("missing event-window timestamp column"))
+    numeric_columns = list(required)
+    if "offset" in frame.columns:
+        numeric_columns.append("offset")
+    numeric_values: dict[str, pd.Series] = {}
+    for column in numeric_columns:
+        values = pd.to_numeric(frame[column], errors="coerce").astype("float64")
+        if not np.isfinite(values).all():
+            raise ValueError(_event_window_gate_message(f"non-finite {column} values"))
+        numeric_values[column] = values
+    timestamps = parse_kline_time_ms(frame[time_column])
+    if timestamps.isna().any():
+        raise ValueError(_event_window_gate_message(f"invalid timestamp values in {time_column}"))
+    # Overlapping event windows may legitimately reference the same bar; uniqueness
+    # and ordering therefore apply inside each event, never across the whole table.
+    groups = (
+        frame.groupby("event_id", sort=False, dropna=False)
+        if "event_id" in frame.columns
+        else [(None, frame)]
+    )
+    for _event_id, group in groups:
+        bar_indexes = numeric_values["bar_index"].loc[group.index]
+        if bar_indexes.duplicated().any():
+            raise ValueError(_event_window_gate_message("duplicate bar_index within an event window"))
+        if "offset" in group.columns:
+            offsets = numeric_values["offset"].loc[group.index]
+            if offsets.duplicated().any():
+                raise ValueError(_event_window_gate_message("duplicate offset within an event window"))
+            if (offsets.diff().dropna() < 0).any():
+                raise ValueError(_event_window_gate_message("out-of-order offset within an event window"))
+        if (bar_indexes.diff().dropna() < 0).any():
+            raise ValueError(_event_window_gate_message("out-of-order bar_index within an event window"))
+        group_timestamps = timestamps.loc[group.index]
+        if group_timestamps.duplicated().any():
+            raise ValueError(_event_window_gate_message("duplicate timestamp within an event window"))
+        if (group_timestamps.diff().dropna() < 0).any():
+            raise ValueError(_event_window_gate_message("out-of-order timestamp within an event window"))
+
+
+def _gate_message(context: str, condition: str) -> str:
+    return (
+        f"{context} data quality gate rejected input: {condition}; "
+        "reload market data or inspect the data quality report"
+    )
+
+
+def _event_window_gate_message(condition: str) -> str:
+    return (
+        f"statistical analysis data quality gate rejected event-window input: {condition}; "
+        "reload source data or inspect the data quality report"
+    )
+
+
 def describe_multi_timeframe_anchor_rule(primary_interval: str, higher_interval: str) -> dict[str, Any]:
     """Describe the no-future anchor rule used by replay and research features."""
     return {
@@ -152,7 +275,7 @@ def _resolve_time_column(frame: pd.DataFrame, requested: str | None) -> str | No
 
 
 def _normalized_open_time_values(values: pd.Series) -> list[str | None]:
-    ms = _open_time_ms(values)
+    ms = parse_kline_time_ms(values)
     result: list[str | None] = []
     for value in ms:
         if pd.isna(value):
@@ -178,11 +301,13 @@ def _open_time_key(value: Any) -> str:
     return timestamp.isoformat()
 
 
-def _open_time_ms(values: pd.Series) -> pd.Series:
+def parse_kline_time_ms(values: pd.Series) -> pd.Series:
+    """Parse supported K-line timestamps as finite UTC epoch milliseconds."""
     if values.empty:
         return pd.Series(dtype="float64")
     if pd.api.types.is_numeric_dtype(values) or values.dropna().map(_looks_numeric).all():
-        return pd.to_numeric(values, errors="coerce")
+        numeric = pd.to_numeric(values, errors="coerce").astype("float64")
+        return numeric.where(np.isfinite(numeric), np.nan)
     parsed = pd.to_datetime(values, errors="coerce", utc=True)
     result = pd.Series(np.nan, index=values.index, dtype="float64")
     valid = parsed.notna()
@@ -302,10 +427,15 @@ def _iso_from_ms(value: Any) -> str:
 
 __all__ = [
     "CANDLE_ID_ALGORITHM",
+    "CRITICAL_PRICE_COLUMNS",
+    "EVENT_WINDOW_TIME_COLUMNS",
     "REQUIRED_KLINE_COLUMNS",
     "TIME_COLUMNS",
     "attach_candle_ids",
     "build_candle_id",
     "build_kline_quality_report",
     "describe_multi_timeframe_anchor_rule",
+    "parse_kline_time_ms",
+    "validate_event_window_research_input",
+    "validate_research_klines",
 ]

@@ -1,10 +1,27 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from typing import Any
+
+try:
+    from display_names import session_display_name
+except ImportError:  # pragma: no cover - package import path
+    from ..display_names import session_display_name
 
 
 MarketKey = tuple[str, str, str, str]
+
+
+@dataclass(frozen=True)
+class PerformanceSessionOption:
+    session_id: str
+    display_name: str
+    symbol: str
+    interval: str
+    start_date_bjt: str
+    end_date_bjt: str
+    is_current: bool = False
 
 
 @dataclass(frozen=True)
@@ -104,6 +121,8 @@ def _optional_float(value: Any) -> float | None:
         out = float(value)
     except (TypeError, ValueError):
         return None
+    if not math.isfinite(out) or out <= 0.0 or out > 100.0:
+        return None
     return out
 
 
@@ -111,6 +130,49 @@ def _speed_slider_value(speed: Any) -> int:
     stops = (0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0)
     value = _float_or_default(speed, 1.0)
     return min(range(len(stops)), key=lambda index: abs(stops[index] - value))
+
+
+def list_performance_session_options(
+    storage: Any,
+    *,
+    current_session: dict[str, Any] | None = None,
+) -> tuple[PerformanceSessionOption, ...]:
+    """Return the shared, presentation-ready performance-session catalog."""
+
+    reader = getattr(storage, "list_performance_sessions", None)
+    if callable(reader):
+        source_rows = reader()
+    else:
+        legacy_reader = getattr(storage, "fetch_table", None)
+        source_rows = legacy_reader("sessions") if callable(legacy_reader) else []
+    rows = [dict(row) for row in source_rows]
+    current = dict(current_session or {})
+    current_id = str(current.get("session_id") or "")
+    if current_id:
+        rows = [row for row in rows if str(row.get("session_id") or "") != current_id]
+        rows.insert(0, current)
+    label_counts: dict[str, int] = {}
+    options: list[PerformanceSessionOption] = []
+    for row in rows:
+        session_id = str(row.get("session_id") or "")
+        if not session_id:
+            continue
+        base_label = session_display_name(row)
+        sequence = label_counts.get(base_label, 0) + 1
+        label_counts[base_label] = sequence
+        display_name = base_label if sequence == 1 else f"{base_label} · #{sequence}"
+        options.append(
+            PerformanceSessionOption(
+                session_id=session_id,
+                display_name=display_name,
+                symbol=str(row.get("symbol") or "").upper(),
+                interval=str(row.get("interval") or ""),
+                start_date_bjt=str(row.get("start_date_bjt") or ""),
+                end_date_bjt=str(row.get("end_date_bjt") or ""),
+                is_current=session_id == current_id,
+            )
+        )
+    return tuple(options)
 
 
 def build_session_restore_plan(
@@ -211,15 +273,19 @@ def save_session_state(storage: Any, input: SessionSaveInput) -> SessionStateRes
 
 
 def load_session_snapshot_state(storage: Any, session_id: str) -> SessionSnapshotState:
-    _session, trades, events = storage.load_session_snapshot(session_id)
+    session, trades, events = storage.load_session_snapshot(session_id)
     trade_by_id = {trade["trade_id"]: trade for trade in trades}
     event_by_id = {event["event_id"]: event for event in events}
-    latest_session = storage.get_latest_session()
     cursor_bar_index: int | None = None
     follow_latest: bool | None = None
-    if latest_session and latest_session.get("session_id") == session_id:
-        cursor_bar_index = int(latest_session.get("cursor_bar_index") or 0)
-        follow_latest = bool(latest_session.get("follow_latest") or 0)
+    if session:
+        raw_cursor = session.get("cursor_bar_index")
+        try:
+            cursor_bar_index = int(raw_cursor) if raw_cursor is not None else None
+        except (TypeError, ValueError):
+            cursor_bar_index = None
+        if "follow_latest" in session and session.get("follow_latest") is not None:
+            follow_latest = bool(session.get("follow_latest"))
     return SessionSnapshotState(
         trades=trades,
         events=events,
@@ -247,6 +313,7 @@ def should_autosave(
 
 __all__ = [
     "MarketKey",
+    "PerformanceSessionOption",
     "SessionRestorePlan",
     "SessionSaveInput",
     "SessionSnapshotState",
@@ -255,6 +322,7 @@ __all__ = [
     "build_session_restore_plan",
     "build_session_state",
     "load_session_snapshot_state",
+    "list_performance_session_options",
     "save_session_state",
     "should_autosave",
 ]

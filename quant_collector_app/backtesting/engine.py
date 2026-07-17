@@ -10,9 +10,11 @@ try:
     from analytics.trade_analysis import analyze_trades
     from backtesting.types import BacktestConfig, BacktestResult, Signal
     from execution import ExecutionSettings, apply_slippage, fill_price, order_action, trade_outcome
+    from research.kline_quality import validate_research_klines
 except ImportError:  # pragma: no cover - package import path
     from ..analytics.trade_analysis import analyze_trades
     from ..execution import ExecutionSettings, apply_slippage, fill_price, order_action, trade_outcome
+    from ..research.kline_quality import validate_research_klines
     from .types import BacktestConfig, BacktestResult, Signal
 
 
@@ -168,6 +170,7 @@ def run_backtest(
     if data.empty:
         warnings.append("input dataframe is empty")
         return _empty_result(config, strategy_name, warnings, interval)
+    validate_research_klines(data, context="backtest")
     missing = sorted(REQUIRED_COLUMNS - set(data.columns))
     if missing:
         raise ValueError(f"Backtest dataframe missing columns: {', '.join(missing)}")

@@ -14,10 +14,13 @@ import pytest
 pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 from main_app import MainWindow
-from multi_timeframe_panel import MultiTimeframePanel
+from cancellation import CancellationToken
+from multi_timeframe_panel import MultiTimeframeLoadWorker, MultiTimeframePanel
+from safe_shutdown import SafeShutdownCoordinator
+from task_lifecycle import BackgroundTaskLifecycle, TaskState
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -290,3 +293,501 @@ def test_dirty_primary_parameters_mark_old_context_stale_without_touching_sample
     assert calls == ["stale"]
     assert window.trades == [{"trade_id": "t1"}]
     assert window.events == [{"event_id": "e1"}]
+
+
+def test_context_load_reports_shared_background_task_lifecycle(qapp) -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    panel = MultiTimeframePanel(
+        language="zh_CN",
+        start_worker=False,
+        lifecycle=lifecycle,
+    )
+    emitted: list[dict] = []
+    panel._worker = SimpleNamespace(request_stop=lambda: None)
+    panel.requestLoad.connect(emitted.append)
+
+    panel.request_context_load(
+        "BTCUSDT",
+        "1m",
+        dt.datetime(2026, 5, 26, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+        dt.datetime(2026, 5, 27, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+    )
+    assert lifecycle.state("multi_timeframe_load") is TaskState.RUNNING
+
+    panel._on_loaded(panel._active_request_id, {"5m": _htf_frame()}, {})
+    assert lifecycle.state("multi_timeframe_load") is TaskState.COMPLETED
+    panel._worker = None
+    panel.shutdown()
+
+
+class _ControlledWorker(QtCore.QObject):
+    finished = QtCore.Signal(str, object, object)
+    cancelled = QtCore.Signal(str)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.loads: list[dict] = []
+        self.stop_calls = 0
+        self.cancellation_token = CancellationToken()
+
+    @QtCore.Slot(object)
+    def load(self, payload: dict) -> None:
+        self.loads.append(payload)
+
+    def request_stop(self) -> None:
+        self.stop_calls += 1
+
+
+def _controlled_panel(lifecycle: BackgroundTaskLifecycle) -> tuple[MultiTimeframePanel, _ControlledWorker]:
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=False, lifecycle=lifecycle)
+    worker = _ControlledWorker()
+    panel._worker = worker
+    panel._cancellation_token = worker.cancellation_token
+    panel.requestLoad.connect(worker.load)
+    worker.finished.connect(panel._on_loaded)
+    worker.cancelled.connect(panel._on_cancelled)
+    return panel, worker
+
+
+def test_multi_timeframe_worker_honors_stop_before_loading_requests() -> None:
+    loads: list[object] = []
+    loader = SimpleNamespace(load=lambda request, **_kwargs: loads.append(request))
+    worker = MultiTimeframeLoadWorker(loader=loader)
+    cancelled: list[str] = []
+    worker.cancelled.connect(cancelled.append)
+
+    worker.request_stop()
+    worker.load({"request_id": "req_1", "requests": [object(), object()]})
+
+    assert loads == []
+    assert cancelled == ["req_1"]
+
+
+def test_multi_timeframe_shutdown_requests_token_without_waiting_on_gui_thread(qapp):
+    class RunningThread:
+        def __init__(self) -> None:
+            self.quit_calls = 0
+            self.running = True
+
+        def isRunning(self) -> bool:
+            return self.running
+
+        def quit(self) -> None:
+            self.quit_calls += 1
+
+        def wait(self, *_args):
+            raise AssertionError("GUI shutdown must not wait for a QThread")
+
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=False)
+    token = CancellationToken()
+    thread = RunningThread()
+    panel._worker_thread = thread
+    panel._worker = SimpleNamespace(cancellation_token=token)
+    panel._cancellation_token = token
+    panel._pending_request = {"request_id": "stale"}
+
+    assert panel.shutdown() is False
+    assert token.is_requested() is True
+    assert panel._pending_request is None
+    assert thread.quit_calls == 1
+
+
+def test_multi_timeframe_panel_captures_token_before_worker_moves_threads(
+    qapp, monkeypatch
+):
+    invalid_ui_wrapper_reads: list[bool] = []
+
+    def get_token(worker):
+        if (
+            QtCore.QThread.currentThread() is qapp.thread()
+            and worker.thread() is not qapp.thread()
+        ):
+            invalid_ui_wrapper_reads.append(True)
+        return worker._plain_token
+
+    def set_token(worker, token) -> None:
+        worker._plain_token = token
+
+    monkeypatch.setattr(
+        MultiTimeframeLoadWorker,
+        "cancellation_token",
+        property(get_token, set_token),
+        raising=False,
+    )
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=True)
+
+    assert panel.shutdown() is False
+    loop = QtCore.QEventLoop()
+    poll = QtCore.QTimer()
+    poll.setInterval(0)
+    poll.timeout.connect(lambda: panel.shutdown() and loop.quit())
+    poll.start()
+    QtCore.QTimer.singleShot(2_000, loop.quit)
+    loop.exec()
+    poll.stop()
+
+    assert panel.shutdown() is True
+    assert invalid_ui_wrapper_reads == []
+
+
+def test_multi_timeframe_shutdown_treats_not_yet_running_thread_as_pending(qapp):
+    class StartingThread:
+        def isRunning(self) -> bool:
+            return False
+
+        def quit(self) -> None:
+            raise AssertionError("quit is not useful before the event loop starts")
+
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=False)
+    panel._worker_thread = StartingThread()
+    token = CancellationToken()
+    panel._worker = SimpleNamespace(cancellation_token=token)
+    panel._cancellation_token = token
+
+    assert panel.shutdown() is False
+
+    panel._on_worker_thread_finished()
+    assert panel.shutdown() is True
+
+
+def test_multi_timeframe_worker_and_thread_are_deleted_on_qthread_finished(qapp):
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=True)
+    thread = panel._worker_thread
+    worker = panel._worker
+    destroyed: list[str] = []
+    finished: list[bool] = []
+    thread_destroyed_after_panel_cleanup: list[bool] = []
+    references_at_thread_finished: list[bool] = []
+    worker.destroyed.connect(lambda: destroyed.append("worker"))
+    thread.destroyed.connect(
+        lambda: (
+            destroyed.append("thread"),
+            thread_destroyed_after_panel_cleanup.append(panel._worker_thread is None),
+        )
+    )
+    thread.finished.connect(lambda: finished.append(True))
+    thread.finished.connect(
+        lambda: references_at_thread_finished.append(
+            panel._worker is worker and panel._worker_thread is thread
+        )
+    )
+
+    assert panel.shutdown() is False
+    loop = QtCore.QEventLoop()
+    thread.finished.connect(loop.quit)
+    QtCore.QTimer.singleShot(2_000, loop.quit)
+    loop.exec()
+    qapp.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+    qapp.processEvents()
+
+    assert finished == [True]
+    assert references_at_thread_finished == [True]
+    assert panel._worker is None
+    assert panel._worker_thread is None
+    assert destroyed == ["worker", "thread"]
+    assert thread_destroyed_after_panel_cleanup == [True]
+
+
+def test_multi_timeframe_thread_deletion_is_wired_directly_to_finished(
+    qapp, monkeypatch
+):
+    monkeypatch.setattr(
+        MultiTimeframePanel,
+        "_on_worker_thread_finished",
+        lambda _self: None,
+    )
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=True)
+    thread = panel._worker_thread
+    destroyed: list[bool] = []
+    thread.destroyed.connect(lambda: destroyed.append(True))
+
+    assert panel.shutdown() is False
+    loop = QtCore.QEventLoop()
+    thread.destroyed.connect(loop.quit)
+    QtCore.QTimer.singleShot(2_000, loop.quit)
+    loop.exec()
+
+    assert destroyed == [True]
+    assert panel._worker_thread is None
+
+
+def test_multi_timeframe_thread_is_not_owned_by_the_widget_tree(qapp):
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=True)
+    thread = panel._worker_thread
+
+    assert thread.parent() is None
+
+    panel.shutdown()
+    loop = QtCore.QEventLoop()
+    thread.destroyed.connect(loop.quit)
+    QtCore.QTimer.singleShot(2_000, loop.quit)
+    loop.exec()
+    assert panel._worker_thread is None
+
+
+def test_multi_timeframe_shutdown_completes_lifecycle_only_after_thread_finished(qapp):
+    lifecycle = BackgroundTaskLifecycle()
+    panel = MultiTimeframePanel(
+        language="zh_CN",
+        start_worker=True,
+        lifecycle=lifecycle,
+    )
+    thread = panel._worker_thread
+    panel._active_request_id = "req_shutdown"
+    assert lifecycle.start(
+        "multi_timeframe_load",
+        request_stop=panel.request_stop,
+    )
+
+    lifecycle.request_stop_all()
+    panel._on_cancelled("req_shutdown")
+
+    assert lifecycle.state("multi_timeframe_load") is TaskState.STOP_REQUESTED
+    assert panel.shutdown() is False
+    loop = QtCore.QEventLoop()
+    thread.finished.connect(loop.quit)
+    QtCore.QTimer.singleShot(2_000, loop.quit)
+    if thread.isRunning():
+        loop.exec()
+    qapp.processEvents()
+
+    assert lifecycle.state("multi_timeframe_load") is TaskState.COMPLETED
+
+
+def test_cancelled_context_load_releases_shared_background_task(qapp) -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=False, lifecycle=lifecycle)
+    panel._worker = SimpleNamespace(request_stop=lambda: None)
+    panel.request_context_load(
+        "BTCUSDT",
+        "1m",
+        dt.datetime(2026, 5, 26, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+        dt.datetime(2026, 5, 27, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+    )
+    request_id = panel._active_request_id
+    lifecycle.request_stop_all()
+
+    panel._on_cancelled(request_id)
+
+    assert lifecycle.state("multi_timeframe_load") is TaskState.COMPLETED
+    panel._worker = None
+    panel.shutdown()
+
+
+def test_context_load_after_shutdown_does_not_change_ui_or_emit_request(qapp) -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    lifecycle.begin_shutdown()
+    panel = MultiTimeframePanel(language="zh_CN", start_worker=False, lifecycle=lifecycle)
+    panel._worker = SimpleNamespace(request_stop=lambda: None)
+    panel.set_context_frames({"5m": _htf_frame()})
+    previous_text = panel.summaryText.toPlainText()
+    emitted: list[dict] = []
+    panel.requestLoad.connect(emitted.append)
+
+    panel.request_context_load(
+        "BTCUSDT",
+        "1m",
+        dt.datetime(2026, 5, 26, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+        dt.datetime(2026, 5, 27, tzinfo=dt.timezone(dt.timedelta(hours=8))),
+    )
+
+    assert panel.summaryText.toPlainText() == previous_text
+    assert panel.refresh_for_primary_row(
+        {"open_time_bjt": pd.Timestamp("2026-05-27 10:42:00", tz="Asia/Shanghai")}
+    )
+    assert emitted == []
+    assert lifecycle.state("multi_timeframe_load") is None
+    panel._worker = None
+    panel.shutdown()
+
+
+def test_context_load_single_flight_runs_only_first_and_latest_request(qapp) -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    panel, worker = _controlled_panel(lifecycle)
+    start = dt.datetime(2026, 5, 26, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    end = dt.datetime(2026, 5, 27, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+
+    panel.request_context_load("AUSDT", "1m", start, end)
+    panel.request_context_load("BUSDT", "1m", start, end)
+    panel.request_context_load("CUSDT", "1m", start, end)
+
+    assert [payload["requests"][0].symbol for payload in worker.loads] == ["AUSDT"]
+    first_request_id = worker.loads[0]["request_id"]
+    worker.finished.emit(first_request_id, {"5m": _htf_frame()}, {})
+
+    assert [payload["requests"][0].symbol for payload in worker.loads] == ["AUSDT", "CUSDT"]
+    assert lifecycle.state("multi_timeframe_load") is TaskState.RUNNING
+
+    latest_request_id = worker.loads[-1]["request_id"]
+    worker.finished.emit(latest_request_id, {"5m": _htf_frame()}, {})
+
+    assert lifecycle.state("multi_timeframe_load") is TaskState.COMPLETED
+    panel._worker = None
+    panel.shutdown()
+
+
+def test_safe_shutdown_discards_pending_context_load_and_completes_after_cancel(qapp) -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    panel, worker = _controlled_panel(lifecycle)
+    start = dt.datetime(2026, 5, 26, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    end = dt.datetime(2026, 5, 27, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    panel.request_context_load("AUSDT", "1m", start, end)
+    panel.request_context_load("BUSDT", "1m", start, end)
+    panel.request_context_load("CUSDT", "1m", start, end)
+    scheduled: list[object] = []
+    coordinator = SafeShutdownCoordinator(
+        lifecycle=lifecycle,
+        save=lambda: None,
+        show_status=lambda _message: None,
+        schedule_poll=scheduled.append,
+        finalize=lambda: True,
+    )
+
+    assert coordinator.request_close() is False
+    assert worker.stop_calls == 0
+    assert worker.cancellation_token.is_requested() is True
+    assert panel._pending_request is None
+    assert lifecycle.state("multi_timeframe_load") is TaskState.STOP_REQUESTED
+
+    current_request_id = worker.loads[0]["request_id"]
+    worker.cancelled.emit(current_request_id)
+
+    assert [payload["requests"][0].symbol for payload in worker.loads] == ["AUSDT"]
+    assert lifecycle.state("multi_timeframe_load") is TaskState.COMPLETED
+    scheduled.pop(0)()
+    assert coordinator.request_close() is True
+    panel._worker = None
+    panel.shutdown()
+
+
+def test_stale_context_signals_do_not_update_latest_ui_or_complete_lifecycle(qapp) -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    panel, worker = _controlled_panel(lifecycle)
+    start = dt.datetime(2026, 5, 26, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    end = dt.datetime(2026, 5, 27, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    failures: list[tuple[str, str]] = []
+    panel.loadFailed.connect(lambda interval, error: failures.append((interval, error)))
+    panel.request_context_load("AUSDT", "1m", start, end)
+    panel.request_context_load("CUSDT", "1m", start, end)
+    first_request_id = worker.loads[0]["request_id"]
+
+    worker.finished.emit(first_request_id, {"5m": _htf_frame()}, {})
+    latest_request_id = worker.loads[-1]["request_id"]
+    latest_loading_text = panel.summaryText.toPlainText()
+    worker.finished.emit(first_request_id, {}, {"5m": "stale failure"})
+    worker.cancelled.emit(first_request_id)
+
+    assert panel.summaryText.toPlainText() == latest_loading_text
+    assert failures == []
+    assert lifecycle.state("multi_timeframe_load") is TaskState.RUNNING
+
+    worker.finished.emit(latest_request_id, {"5m": _htf_frame()}, {})
+    assert lifecycle.state("multi_timeframe_load") is TaskState.COMPLETED
+    panel._worker = None
+    panel.shutdown()
+
+
+def test_mark_stale_discards_pending_request_and_completes_running_load(qapp) -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    panel, worker = _controlled_panel(lifecycle)
+    start = dt.datetime(2026, 5, 26, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    end = dt.datetime(2026, 5, 27, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    panel.request_context_load("AUSDT", "1m", start, end)
+    panel.request_context_load("BUSDT", "1m", start, end)
+    first_request_id = worker.loads[0]["request_id"]
+
+    panel.mark_stale()
+    stale_text = panel.summaryText.toPlainText()
+    worker.finished.emit(first_request_id, {"5m": _htf_frame()}, {})
+
+    assert [payload["requests"][0].symbol for payload in worker.loads] == ["AUSDT"]
+    assert panel.summaryText.toPlainText() == stale_text
+    assert lifecycle.state("multi_timeframe_load") is TaskState.COMPLETED
+    assert panel._pending_request is None
+    panel._worker = None
+    panel.shutdown()
+
+
+def test_request_after_mark_stale_replaces_discarded_pending_request(qapp) -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    panel, worker = _controlled_panel(lifecycle)
+    start = dt.datetime(2026, 5, 26, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    end = dt.datetime(2026, 5, 27, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    panel.request_context_load("AUSDT", "1m", start, end)
+    panel.request_context_load("BUSDT", "1m", start, end)
+    first_request_id = worker.loads[0]["request_id"]
+
+    panel.mark_stale()
+    panel.request_context_load("CUSDT", "1m", start, end)
+    worker.finished.emit(first_request_id, {"5m": _htf_frame()}, {})
+
+    assert [payload["requests"][0].symbol for payload in worker.loads] == ["AUSDT", "CUSDT"]
+    assert lifecycle.state("multi_timeframe_load") is TaskState.RUNNING
+
+    latest_request_id = worker.loads[-1]["request_id"]
+    worker.finished.emit(latest_request_id, {"5m": _htf_frame()}, {})
+
+    assert lifecycle.state("multi_timeframe_load") is TaskState.COMPLETED
+    assert panel._pending_request is None
+    panel._worker = None
+    panel.shutdown()
+
+
+def test_marking_running_context_stale_keeps_latest_reload_in_single_flight(qapp) -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    panel, worker = _controlled_panel(lifecycle)
+    start = dt.datetime(2026, 5, 26, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    end = dt.datetime(2026, 5, 27, tzinfo=dt.timezone(dt.timedelta(hours=8)))
+    panel.request_context_load("AUSDT", "1m", start, end)
+    first_request_id = worker.loads[0]["request_id"]
+
+    panel.mark_stale()
+    panel.request_context_load("CUSDT", "1m", start, end)
+
+    assert [payload["requests"][0].symbol for payload in worker.loads] == ["AUSDT"]
+    worker.finished.emit(first_request_id, {"5m": _htf_frame()}, {})
+    assert [payload["requests"][0].symbol for payload in worker.loads] == ["AUSDT", "CUSDT"]
+    assert lifecycle.state("multi_timeframe_load") is TaskState.RUNNING
+
+    latest_request_id = worker.loads[-1]["request_id"]
+    worker.finished.emit(latest_request_id, {"5m": _htf_frame()}, {})
+    assert lifecycle.state("multi_timeframe_load") is TaskState.COMPLETED
+    panel._worker = None
+    panel.shutdown()
+
+
+def test_multi_timeframe_worker_stops_between_context_requests() -> None:
+    loads: list[object] = []
+    holder = SimpleNamespace(worker=None)
+
+    def load(request, **_kwargs):
+        loads.append(request)
+        holder.worker.request_stop()
+        return pd.DataFrame(), "Loading cancelled."
+
+    worker = MultiTimeframeLoadWorker(loader=SimpleNamespace(load=load))
+    holder.worker = worker
+    cancelled: list[str] = []
+    worker.cancelled.connect(cancelled.append)
+
+    worker.load({"request_id": "req_2", "requests": [object(), object()]})
+
+    assert len(loads) == 1
+    assert cancelled == ["req_2"]
+
+
+def test_multi_timeframe_worker_normalizes_context_frame_before_emitting_result() -> None:
+    raw_frame = _htf_frame().drop(columns=["close_time_bjt"])
+    request = SimpleNamespace(interval="5m", symbol="BTCUSDT")
+    worker = MultiTimeframeLoadWorker(
+        loader=SimpleNamespace(load=lambda _request, **_kwargs: (raw_frame, "Loaded cache."))
+    )
+    completed: list[dict[str, pd.DataFrame]] = []
+    worker.finished.connect(lambda _request_id, frames, _failures: completed.append(frames))
+
+    worker.load({"request_id": "req_normalize", "requests": [request]})
+
+    normalized = completed[0]["5m"]
+    assert "_open_time" in normalized.columns
+    assert "_close_time" in normalized.columns
+    assert normalized.attrs["_qrc_htf_interval"] == "5m"

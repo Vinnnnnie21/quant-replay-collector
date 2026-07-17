@@ -6,6 +6,12 @@ import self_check
 from storage import StorageManager
 
 
+def test_core_self_check_fixture_passes_the_research_quality_gate():
+    result = self_check._run_core_check()
+
+    assert result["status"] == "ok"
+
+
 def test_self_check_reports_database_integrity(monkeypatch, tmp_path):
     storage = StorageManager(tmp_path / "healthy.db")
     monkeypatch.setattr(self_check, "_run_core_check", lambda: {"status": "ok", "warnings": []})

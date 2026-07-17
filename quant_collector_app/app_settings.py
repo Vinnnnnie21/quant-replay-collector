@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import warnings
 from datetime import datetime
@@ -9,8 +10,10 @@ from typing import Any
 
 try:
     from app_config import DATA_DIR
+    from atomic_write import atomic_write_text
 except ImportError:  # pragma: no cover - package import path
     from .app_config import DATA_DIR
+    from .atomic_write import atomic_write_text
 
 
 APP_SETTINGS_PATH = DATA_DIR / "app_settings.json"
@@ -120,4 +123,5 @@ def save_app_settings(settings: dict[str, Any], path: Path | None = None) -> Non
     target = path or APP_SETTINGS_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = sanitize_app_settings(settings)
-    target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    text = json.dumps(payload, ensure_ascii=False, indent=2)
+    atomic_write_text(target, text, replace_fn=os.replace)

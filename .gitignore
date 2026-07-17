@@ -5,6 +5,7 @@ tests/__pycache__/
 *.py[cod]
 *$py.class
 .pytest_cache/
+.test-artifacts/
 .mypy_cache/
 .ruff_cache/
 .env

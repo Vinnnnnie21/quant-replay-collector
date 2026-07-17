@@ -12,6 +12,7 @@ pytest.importorskip("pyqtgraph")
 from PySide6 import QtCore
 
 from main_app import MainWindow
+from task_lifecycle import BackgroundTaskLifecycle, TaskState
 
 
 def _bars(freq: str = "1min", periods: int = 80) -> pd.DataFrame:
@@ -235,3 +236,57 @@ def test_dynamic_switch_failure_preserves_old_frame_and_cursor(monkeypatch):
     assert window.cursor == 37
     assert window.playing is False
     assert window.trades == [{"trade_id": "trade_1", "interval": "1m"}]
+
+
+def test_successful_dynamic_load_finishes_shared_background_task() -> None:
+    window = _loaded_window(False)
+    window.task_lifecycle = BackgroundTaskLifecycle()
+    window.task_lifecycle.start("market_data_load")
+
+    MainWindow.on_loaded(window, _bars("5min", 20), "Loaded cache.")
+
+    assert window.task_lifecycle.state("market_data_load") is TaskState.COMPLETED
+
+
+def test_initial_large_load_does_not_run_heavy_analysis_table_refresh_on_ui_thread() -> None:
+    window = _loaded_window(False)
+    window._timeframe_switch_pending = False
+    window.restore_snapshot_pending = False
+    refresh_modes: list[bool] = []
+    cleared: list[bool] = []
+    window._refresh_tables = lambda include_heavy=True: refresh_modes.append(include_heavy)
+    window._clear_analysis_views = lambda: cleared.append(True)
+
+    MainWindow.on_loaded(window, _bars("1min", 270), "Loaded cache.")
+
+    assert refresh_modes == [False]
+    assert cleared == [True]
+
+
+def test_restored_session_defers_heavy_analysis_refresh_to_worker(monkeypatch) -> None:
+    window = _loaded_window(False)
+    window._timeframe_switch_pending = False
+    window.restore_snapshot_pending = True
+    window.session_id = "sess_restore"
+    window.storage = object()
+    window._sync_equity_curve = lambda: None
+    refresh_modes: list[bool] = []
+    scheduled: list[bool] = []
+    window._refresh_tables = lambda include_heavy=True: refresh_modes.append(include_heavy)
+    window.analysis_refresh_controller = SimpleNamespace(schedule=lambda: scheduled.append(True))
+    monkeypatch.setattr(
+        "controllers.market_data_controller.load_session_snapshot_state",
+        lambda _storage, _session_id: SimpleNamespace(
+            trades=[{"trade_id": "trade_restore"}],
+            events=[{"event_id": "event_restore"}],
+            trade_by_id={"trade_restore": {}},
+            event_by_id={"event_restore": {}},
+            cursor_bar_index=10,
+            follow_latest=False,
+        ),
+    )
+
+    MainWindow.on_loaded(window, _bars("1min", 270), "Loaded cache.")
+
+    assert refresh_modes == [False]
+    assert scheduled == [True]

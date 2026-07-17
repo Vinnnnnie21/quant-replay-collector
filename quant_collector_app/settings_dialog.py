@@ -19,6 +19,7 @@ from app_settings import load_app_settings, save_app_settings
 from app_settings import build_app_settings_update
 from execution import FILL_MODES
 from ui_style import SPACING
+from views.wheel_guard import install_no_wheel_on_value_inputs
 
 
 class SettingsDialog(QtWidgets.QDialog):
@@ -31,6 +32,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.resize(560, 520)
         self._color_edits: dict[str, QtWidgets.QLineEdit] = {}
         self._build_ui()
+        install_no_wheel_on_value_inputs(self)
         self._load_from_app()
         self.retranslate_ui()
 

@@ -3,11 +3,20 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Callable
 
 import numpy as np
 import pandas as pd
 
+try:
+    from app_config import APP_VERSION
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import APP_VERSION
+from .bootstrap import MAX_RESAMPLE_WORK_ITEMS, validate_resampling_request
+from .cancellation import raise_if_research_cancelled
 from .feature_registry import model_input_features
+
+BLOCK_BOOTSTRAP_METHOD_VERSION = "block_bootstrap_ic_v1"
 
 try:
     from scipy import stats as scipy_stats
@@ -60,6 +69,7 @@ def _block_bootstrap_ic_ci(
     block_size: int,
     n_bootstrap: int,
     random_seed: int | None,
+    cancelled: Callable[[], bool] | None,
 ) -> tuple[float, float, int]:
     if len(samples) < 3 or n_bootstrap <= 0:
         return math.nan, math.nan, 0
@@ -67,6 +77,7 @@ def _block_bootstrap_ic_ci(
     rng = np.random.default_rng(random_seed)
     values: list[float] = []
     starts = np.arange(0, len(samples))
+    raise_if_research_cancelled(cancelled)
     for _ in range(int(n_bootstrap)):
         pieces = []
         while sum(len(piece) for piece in pieces) < len(samples):
@@ -77,6 +88,7 @@ def _block_bootstrap_ic_ci(
         ic = _safe_rank_ic(boot, factor, label)
         if math.isfinite(ic):
             values.append(float(ic))
+        raise_if_research_cancelled(cancelled)
     if not values:
         return math.nan, math.nan, 0
     low, high = np.percentile(np.asarray(values, dtype=float), [2.5, 97.5])
@@ -103,6 +115,8 @@ def factor_ic(
     n_bootstrap: int = 200,
     random_seed: int | None = 0,
     min_time_blocks: int = 3,
+    max_work_items: int = MAX_RESAMPLE_WORK_ITEMS,
+    cancelled: Callable[[], bool] | None = None,
 ) -> dict:
     work = samples[[factor, label] + ([time_col] if time_col in samples.columns else [])].copy()
     work[factor] = pd.to_numeric(work[factor], errors="coerce")
@@ -145,13 +159,21 @@ def factor_ic(
         p_value = _p_value(spearman, count)
     approximate_p_value = p_value
     work = work.sort_values(time_col, kind="stable") if time_col in work.columns else work.reset_index(drop=True)
+    simulation_count, resource_budget, work_items = validate_resampling_request(
+        "factor IC bootstrap",
+        n_bootstrap,
+        count,
+        max_work_items=max_work_items,
+    )
+    effective_seed = 0 if random_seed is None else int(random_seed)
     ci_low, ci_high, bootstrap_count = _block_bootstrap_ic_ci(
         work.reset_index(drop=True),
         factor,
         label,
         effective_block_size,
-        n_bootstrap,
-        random_seed,
+        simulation_count,
+        effective_seed,
+        cancelled,
     )
     work["_block"] = _time_blocks(work, time_col)
     block_values = {}
@@ -182,6 +204,16 @@ def factor_ic(
         "ic_bootstrap_ci_high": ci_high,
         "block_size": effective_block_size,
         "bootstrap_sample_count": bootstrap_count,
+        "bootstrap_random_seed": effective_seed,
+        "bootstrap_simulation_count": simulation_count,
+        "bootstrap_confidence": 0.95,
+        "bootstrap_application_version": APP_VERSION,
+        "bootstrap_method_version": BLOCK_BOOTSTRAP_METHOD_VERSION,
+        "bootstrap_work_items": work_items,
+        "bootstrap_resource_budget": resource_budget,
+        "bootstrap_batch_size": 1,
+        "bootstrap_batch_count": simulation_count,
+        "bootstrap_max_batch_work_items": count,
         "ic_by_time_block": json.dumps(block_values, sort_keys=True),
         "ic_mean_by_block": block_mean,
         "ic_std_by_block": block_std,
@@ -201,6 +233,8 @@ def build_factor_ic_summary(
     *,
     n_bootstrap: int = 200,
     random_seed: int | None = 0,
+    max_work_items: int = MAX_RESAMPLE_WORK_ITEMS,
+    cancelled: Callable[[], bool] | None = None,
 ) -> pd.DataFrame:
     if features.empty or labels.empty or label not in labels.columns:
         return pd.DataFrame()
@@ -216,6 +250,8 @@ def build_factor_ic_summary(
                 horizon_bars=horizon,
                 n_bootstrap=n_bootstrap,
                 random_seed=random_seed,
+                max_work_items=max_work_items,
+                cancelled=cancelled,
             )
             for factor in chosen
         ]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import os
 import shutil
@@ -9,6 +10,13 @@ import tempfile
 from pathlib import Path
 
 APP_DIR = Path(__file__).resolve().parent
+if __package__ in {None, ""}:
+    # Direct script execution starts with only the package directory on
+    # sys.path. Add the repository root at this entry point so formal package
+    # imports resolve; business modules must not each grow their own fallback.
+    package_root = str(APP_DIR.parent)
+    if package_root not in sys.path:
+        sys.path.insert(0, package_root)
 if str(APP_DIR) not in sys.path:
     sys.path.insert(0, str(APP_DIR))
 
@@ -43,7 +51,9 @@ def _windows():
             "offset": offset,
             "is_event_bar": 1 if offset == 0 else 0,
             "bar_index": 10 + offset,
-            "bar_open_time_bjt": NOW,
+            "bar_open_time_bjt": (
+                dt.datetime.fromisoformat(NOW) + dt.timedelta(minutes=offset)
+            ).isoformat(),
             "open": 100.0,
             "high": 101.0,
             "low": 99.0,

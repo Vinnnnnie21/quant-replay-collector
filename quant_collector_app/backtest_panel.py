@@ -24,6 +24,7 @@ try:
         format_summary,
         trade_rows,
     )
+    from views.wheel_guard import install_no_wheel_on_value_inputs
 except ImportError:  # pragma: no cover - package import path
     from .app_i18n import tr
     from .backtesting.engine import run_backtest
@@ -42,6 +43,7 @@ except ImportError:  # pragma: no cover - package import path
         format_summary,
         trade_rows,
     )
+    from .views.wheel_guard import install_no_wheel_on_value_inputs
 
 
 class BacktestPanel(QtWidgets.QWidget):
@@ -57,6 +59,7 @@ class BacktestPanel(QtWidgets.QWidget):
         self.loaded_rule_path = ""
         self._analysis_params_source: dict[str, Any] | None = None
         self._build_ui()
+        install_no_wheel_on_value_inputs(self)
 
     def _build_ui(self):
         layout = QtWidgets.QVBoxLayout(self)

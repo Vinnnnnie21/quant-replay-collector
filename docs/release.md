@@ -1,5 +1,38 @@
 # Release Hygiene
 
+## v1.5.1 Release Notes
+
+`v1.5.1` hardens the existing local research workflow. It adds cooperative safe shutdown, atomic settings, bounded daily and pre-migration backups, strict research data-quality gates, reproducible randomized statistics, resource budgets and measured 270,000-bar performance coverage. It does not add live trading or change simulated execution, fees, slippage, PnL, backtesting, research features or future-data isolation.
+
+Large exports are now chunked, cancellable and published as a recoverable directory transaction so a cancelled re-export cannot contaminate an earlier successful export. Multi-timeframe and analysis work use single-flight or revision-based stale-result protection. Analysis rendering consumes a bounded worker payload, and one-point equity/PnL curves plus empty or replay-deferred states are visible in the chart.
+
+Analysis, export and daily-backup shutdown is non-blocking on the Qt thread: task state is finalized only after the underlying `QThread.finished` signal. Historical performance reads are revisioned background work, and the performance trade table uses bounded 200-row pages. Both self-check entry modes use the formal entry-logic report writer; a calculation failure is reported as a failed export rather than replaced with a fallback success report.
+
+The supported release target is Windows x64 with Python 3.13. CI now validates that runtime and installs the exact versions in `requirements-lock.txt`.
+
+Clean release commands:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.1-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.1-Clean
+```
+
+### Windows desktop entry
+
+`quant_collector_app\build_windows.bat` produces `quant_collector_app\dist\QRC.exe`. From the release root, create the current user's `QRC.lnk` desktop shortcut with:
+
+```powershell
+.\scripts\create_desktop_shortcut.ps1 -TargetPath .\quant_collector_app\dist\QRC.exe
+```
+
+Add `-DryRun` to print the resolved shortcut, target, working directory and icon without creating a `.lnk` file. The script needs no administrator rights, does not write the registry and accepts explicit `-TargetPath`, `-DesktopPath`, `-IconPath` and `-ShortcutName` parameters. The application window selects `quant_collector_app/assets/app_logo.png` for dark themes and `quant_collector_app/assets/app_logo_light.png` for light themes. `quant_collector_app/assets/app_icon.ico` is the fixed Windows executable and shortcut icon generated from the dark-theme logo. If the icon is removed, shortcut creation still falls back to the executable's default icon.
+
+Regenerate the multi-size icon after replacing the PNG source:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\generate_app_icon.py --source quant_collector_app\assets\app_logo.png --output quant_collector_app\assets\app_icon.ico
+```
+
 ## v1.5.0 Release Notes
 
 `v1.5.0` expands the local replay workspace into a usable simulated trading and funds-management workflow while preserving the project's research boundary. It adds exchange-style free chart navigation, explicit follow-latest framing, `0.1x` to `10x` playback stops, keyboard speed control, an axis-based current-price badge and OpenGL acceleration with software fallback. The target Windows system passed the 120 Hz frame-time budget during physical display validation.
@@ -13,7 +46,7 @@ SQLite schema version `6` remains current and existing sessions remain readable.
 Clean release commands:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.0-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.0-Clean --release-version 1.5.0
 .\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.0-Clean
 ```
 
@@ -52,8 +85,8 @@ This is a replay and research application. It does not connect to Binance order 
 Run from PowerShell at the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.0-Clean
-.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.0-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.1-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.1-Clean
 ```
 
 The output contains the source package, public documentation, tests, requirements and launch scripts. It includes `clean_release_report.json` and `clean_release_report.md`. The default public reports omit local absolute paths and individual skipped file names.
@@ -76,8 +109,8 @@ PowerShell verification commands. Use the project virtual environment so release
 .\.venv\Scripts\python.exe -m compileall -q quant_collector_app tests
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m quant_collector_app.self_check --core
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.0-Clean
-.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.0-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.1-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.1-Clean
 ```
 
 Inspect local-only files before staging:
@@ -92,11 +125,11 @@ The second command must produce no tracked runtime data, archives, caches, logs,
 Publish through a branch:
 
 ```powershell
-git switch -c release/v1.5.0
-git add .gitignore .github README.md docs quant_collector_app requirements.txt run_app.py run_app.pyw scripts start.bat tests
+git switch -c release/v1.5.1
+git add .gitignore .github README.md CHANGELOG.md docs quant_collector_app requirements.txt requirements-lock.txt run_app.py run_app.pyw scripts start.bat tests
 git status --short
-git commit -m "Prepare v1.5.0 release"
-git push -u origin release/v1.5.0
+git commit -m "Prepare v1.5.1 release"
+git push -u origin release/v1.5.1
 ```
 
 Open a pull request to `main`. GitHub Actions will run compilation, tests, the core health check, build a downloadable clean artifact and reject contaminated output. Create a GitHub Release from the reviewed merge commit or a release tag, and upload the checked clean artifact rather than the development directory.
@@ -104,5 +137,5 @@ Open a pull request to `main`. GitHub Actions will run compilation, tests, the c
 For a manually uploaded archive, package only the checked output:
 
 ```powershell
-Compress-Archive -Path dist/QuantReplayCollector-v1.5.0-Clean/* -DestinationPath QuantReplayCollector-v1.5.0-Clean.zip -Force
+Compress-Archive -Path dist/QuantReplayCollector-v1.5.1-Clean/* -DestinationPath QuantReplayCollector-v1.5.1-Clean.zip -Force
 ```

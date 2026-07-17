@@ -8,6 +8,7 @@ import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
 try:
+    from app_icon import apply_application_icon, apply_header_logo
     from app_config import (
         APP_NAME,
         APP_VERSION,
@@ -23,7 +24,9 @@ try:
         themed_input_qss,
     )
     from views.widget_effects import apply_button_shadow, apply_role_button_shadows
+    from views.windows_title_bar import apply_windows_title_bar_theme
 except ImportError:  # pragma: no cover - package import path
+    from ..app_icon import apply_application_icon, apply_header_logo
     from ..app_config import (
         APP_NAME,
         APP_VERSION,
@@ -39,6 +42,7 @@ except ImportError:  # pragma: no cover - package import path
         themed_input_qss,
     )
     from .widget_effects import apply_button_shadow, apply_role_button_shadows
+    from .windows_title_bar import apply_windows_title_bar_theme
 
 
 def _set_tab_text(tabs: QtWidgets.QTabWidget, widget: QtWidgets.QWidget | None, text: str) -> None:
@@ -67,6 +71,7 @@ def retranslate_main_window_ui(window) -> None:
         ("dataBox", "market_data"),
         ("replayBox", "replay_control"),
         ("tradeBox", "trade_actions"),
+        ("dangerBox", "trade_data_management_title"),
         ("tagBox", "event_tags_notes"),
         ("toolsBox", "tools"),
     ):
@@ -82,6 +87,11 @@ def retranslate_main_window_ui(window) -> None:
     window.btnFollow.setText(f"{window.tr('follow_latest')} (F)")
     window.btnResetView.setText(f"{window.tr('reset_view')} (K)")
     window.btnResetView.setToolTip(window.tr("reset_view_hint"))
+    if hasattr(window, "replayPerformanceSessionLabel"):
+        window.replayPerformanceSessionLabel.setText(window.tr("performance_session"))
+        window.btnContinuePerformanceSession.setText(
+            window.tr("continue_performance_session")
+        )
     window.btnOpenLong.setText(f"{window.tr('open_long')} (B)")
     window.btnOpenShort.setText(f"{window.tr('open_short')} (S)")
     window.btnCloseLong.setText(f"{window.tr('close_long')} (C)")
@@ -89,6 +99,29 @@ def retranslate_main_window_ui(window) -> None:
     window.btnUndo.setText(f"{window.tr('undo')} (Ctrl+Z)")
     window.btnRedo.setText(f"{window.tr('redo')} (Ctrl+Y)")
     window.btnClearTradeRecords.setText(window.tr("clear_trade_records"))
+    if hasattr(window, "btnToggleDanger"):
+        window.btnToggleDanger.setText(
+            window.tr("trade_data_management_hide")
+            if window.btnToggleDanger.isChecked()
+            else window.tr("trade_data_management_title")
+        )
+    if hasattr(window, "tradeManagementStartLabel"):
+        window.tradeManagementSessionLabel.setText(
+            window.tr("trade_data_management_session_group")
+        )
+        window.tradeManagementRangeLabel.setText(
+            window.tr("trade_data_management_range_group")
+        )
+        window.btnDeleteSessionTrade.setText(window.tr("delete_selected_trade_title"))
+        window.tradeManagementStartLabel.setText(window.tr("trade_data_management_start"))
+        window.tradeManagementEndLabel.setText(window.tr("trade_data_management_end"))
+        window.btnPreviewTradeRange.setText(window.tr("trade_data_management_preview_range"))
+        window.btnDeleteTradeRange.setText(window.tr("delete_trade_range_title"))
+        window.btnDeleteSelectedTrade.setText(window.tr("delete_selected_trade_title"))
+        if window.tradeManagementCandidateBox.count() == 0:
+            window.tradeManagementPreviewLabel.setText(
+                window.tr("trade_data_management_preview_initial")
+            )
     window.btnExport.setText(f"{window.tr('export_session')} (E)")
     window.btnAnalysis.setText(window.tr("data_analysis"))
     window.btnSettings.setText(window.tr("settings"))
@@ -175,7 +208,7 @@ def apply_themed_input_styles(root, theme: dict) -> int:
             combo.setStyleSheet(themed_input_qss("combo", theme))
             apply_button_shadow(combo, blur=12, y_offset=2, alpha=120)
             count += 1
-        for date_edit in root.findChildren(QtWidgets.QDateEdit):
+        for date_edit in root.findChildren(QtWidgets.QDateTimeEdit):
             date_edit.setStyleSheet(themed_input_qss("date", theme))
             apply_button_shadow(date_edit, blur=12, y_offset=2, alpha=120)
             count += 1
@@ -184,7 +217,7 @@ def apply_themed_input_styles(root, theme: dict) -> int:
                 check.setStyleSheet(themed_input_qss("tagcheck", theme))
                 count += 1
         for line_edit in root.findChildren(QtWidgets.QLineEdit):
-            if line_edit.property("role") == "searchInput":
+            if line_edit.property("role") in {"searchInput", "numericInput"}:
                 line_edit.setStyleSheet(themed_input_qss("lineedit", theme))
                 apply_button_shadow(line_edit, blur=12, y_offset=2, alpha=120)
                 count += 1
@@ -199,6 +232,12 @@ def apply_main_window_theme(window, theme: dict) -> None:
     if window.theme_settings.get("name") not in THEME_PRESETS:
         window.theme_settings["name"] = DEFAULT_THEME.get("name", "浅色")
     app = QtWidgets.QApplication.instance()
+    if app is not None:
+        apply_application_icon(app, tokens, window)
+    apply_windows_title_bar_theme(window, tokens)
+    header_logo = getattr(window, "headerLogoLabel", None)
+    if header_logo is not None:
+        apply_header_logo(header_logo, tokens)
     pal = QtGui.QPalette()
     pal.setColor(QtGui.QPalette.Window, QtGui.QColor(tokens["bg_primary"]))
     pal.setColor(QtGui.QPalette.WindowText, QtGui.QColor(tokens["text_primary"]))
@@ -210,7 +249,24 @@ def apply_main_window_theme(window, theme: dict) -> None:
     pal.setColor(QtGui.QPalette.Highlight, QtGui.QColor(tokens["selection"]))
     pal.setColor(QtGui.QPalette.HighlightedText, QtGui.QColor(tokens["text_primary"]))
     pal.setColor(QtGui.QPalette.PlaceholderText, QtGui.QColor(tokens["text_tertiary"]))
-    app.setPalette(pal)
+    palette_roles = (
+        QtGui.QPalette.Window,
+        QtGui.QPalette.WindowText,
+        QtGui.QPalette.Base,
+        QtGui.QPalette.AlternateBase,
+        QtGui.QPalette.Text,
+        QtGui.QPalette.Button,
+        QtGui.QPalette.ButtonText,
+        QtGui.QPalette.Highlight,
+        QtGui.QPalette.HighlightedText,
+        QtGui.QPalette.PlaceholderText,
+    )
+    current_palette = app.palette()
+    if any(
+        current_palette.color(role) != pal.color(role)
+        for role in palette_roles
+    ):
+        app.setPalette(pal)
 
     window.setStyleSheet(build_app_qss(window.theme_settings))
     # A window-level stylesheet does not reliably paint QPushButton backgrounds in

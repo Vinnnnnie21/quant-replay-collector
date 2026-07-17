@@ -7,6 +7,18 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+try:
+    from app_config import APP_VERSION
+except ImportError:  # pragma: no cover - package import path
+    from ..app_config import APP_VERSION
+from .bootstrap import (
+    DEFAULT_RANDOM_SEED,
+    DEFAULT_RESAMPLE_BATCH_SIZE,
+    MAX_BATCH_WORK_ITEMS,
+    MAX_RESAMPLE_WORK_ITEMS,
+    bootstrap_mean_ci,
+    validate_resampling_request,
+)
 from .context_features import FORBIDDEN_CONTEXT_TOKENS
 
 
@@ -15,6 +27,7 @@ CONTROL_SOURCE_TYPES = frozenset({"SCHEDULED_BAR", "AUTO_CANDIDATE", "MATCHED_CO
 USER_ACTIONS = frozenset({"OPEN_LONG", "OPEN_SHORT", "CLOSE_LONG", "CLOSE_SHORT"})
 ALLOWED_DISTANCE_SCALING = frozenset({"robust", "zscore", "standard", "none"})
 EPS = 1e-12
+PERMUTATION_METHOD_VERSION = "sign_permutation_v2"
 
 
 @dataclass(frozen=True)
@@ -286,60 +299,137 @@ def compare_user_vs_controls(
 def _valid_effects(comparison: pd.DataFrame) -> np.ndarray:
     if not isinstance(comparison, pd.DataFrame) or "effect_size" not in comparison.columns:
         raise ValueError("comparison requires effect_size")
-    return (
-        pd.to_numeric(comparison["effect_size"], errors="coerce")
-        .replace([np.inf, -np.inf], np.nan)
-        .dropna()
-        .to_numpy(dtype=float)
-    )
+    effects = pd.to_numeric(comparison["effect_size"], errors="coerce").to_numpy(dtype=float)
+    if not np.isfinite(effects).all():
+        raise ValueError(
+            "randomized statistical data quality gate rejected input: NaN or infinite effect values; "
+            "reload source data or inspect the data quality report"
+        )
+    return effects
 
 
 def bootstrap_effect_ci(
     comparison: pd.DataFrame,
     n_bootstrap: int = 1000,
-    random_seed: int | None = None,
+    random_seed: int | None = DEFAULT_RANDOM_SEED,
     confidence: float = 0.95,
+    batch_size: int = DEFAULT_RESAMPLE_BATCH_SIZE,
+    max_work_items: int = MAX_RESAMPLE_WORK_ITEMS,
 ) -> dict[str, Any]:
     effects = _valid_effects(comparison)
     if len(effects) < 2:
+        settings = bootstrap_mean_ci(
+            [],
+            n_boot=n_bootstrap,
+            ci=confidence,
+            random_state=random_seed,
+            batch_size=batch_size,
+            max_work_items=max_work_items,
+        )
         return {
             "effect_size": float(effects.mean()) if len(effects) else None,
             "ci_lower": None,
             "ci_upper": None,
             "warning": "insufficient_sample_for_bootstrap",
+            **{
+                key: settings[key]
+                for key in (
+                    "random_seed",
+                    "simulation_count",
+                    "confidence",
+                    "application_version",
+                    "method_version",
+                    "batch_size",
+                    "batch_count",
+                    "work_items",
+                    "resource_budget",
+                )
+            },
         }
-    rng = np.random.default_rng(random_seed)
-    samples = rng.choice(effects, size=(int(n_bootstrap), len(effects)), replace=True).mean(axis=1)
-    alpha = (1.0 - float(confidence)) / 2.0
+    result = bootstrap_mean_ci(
+        effects,
+        n_boot=n_bootstrap,
+        ci=confidence,
+        random_state=random_seed,
+        batch_size=batch_size,
+        max_work_items=max_work_items,
+    )
     return {
-        "effect_size": float(effects.mean()),
-        "ci_lower": float(np.quantile(samples, alpha)),
-        "ci_upper": float(np.quantile(samples, 1.0 - alpha)),
+        "effect_size": result["estimate"],
+        "ci_lower": result["ci_low"],
+        "ci_upper": result["ci_high"],
         "warning": None,
+        **{
+            key: result[key]
+            for key in (
+                "random_seed",
+                "simulation_count",
+                "confidence",
+                "application_version",
+                "method_version",
+                "batch_size",
+                "batch_count",
+                "work_items",
+                "resource_budget",
+            )
+        },
     }
 
 
 def permutation_test_effect(
     comparison: pd.DataFrame,
     n_permutations: int = 1000,
-    random_seed: int | None = None,
+    random_seed: int | None = DEFAULT_RANDOM_SEED,
+    batch_size: int = DEFAULT_RESAMPLE_BATCH_SIZE,
+    max_work_items: int = MAX_RESAMPLE_WORK_ITEMS,
 ) -> dict[str, Any]:
     effects = _valid_effects(comparison)
+    seed = DEFAULT_RANDOM_SEED if random_seed is None else int(random_seed)
+    simulation_count, budget, work_items = validate_resampling_request(
+        "permutation",
+        n_permutations,
+        len(effects),
+        max_work_items=max_work_items,
+    )
     if len(effects) < 2:
         return {
             "effect_size": float(effects.mean()) if len(effects) else None,
             "p_value": None,
             "warning": "insufficient_sample_for_permutation_test",
+            "random_seed": seed,
+            "simulation_count": simulation_count,
+            "application_version": APP_VERSION,
+            "method_version": PERMUTATION_METHOD_VERSION,
+            "batch_size": 0,
+            "batch_count": 0,
+            "work_items": work_items,
+            "resource_budget": budget,
         }
-    rng = np.random.default_rng(random_seed)
+    rng = np.random.default_rng(seed)
     observed = float(effects.mean())
-    signs = rng.choice(np.array([-1.0, 1.0]), size=(int(n_permutations), len(effects)))
-    simulated = (signs * effects).mean(axis=1)
-    exceedances = int(np.sum(np.abs(simulated) >= abs(observed)))
+    effective_batch_size = min(
+        simulation_count,
+        max(1, int(batch_size)),
+        max(1, MAX_BATCH_WORK_ITEMS // len(effects)),
+    )
+    exceedances = 0
+    for start in range(0, simulation_count, effective_batch_size):
+        batch_count = min(effective_batch_size, simulation_count - start)
+        signs = rng.choice(np.array([-1.0, 1.0]), size=(batch_count, len(effects)))
+        simulated = (signs * effects).mean(axis=1)
+        exceedances += int(np.sum(np.abs(simulated) >= abs(observed)))
     return {
         "effect_size": observed,
-        "p_value": float((exceedances + 1) / (int(n_permutations) + 1)),
+        "p_value": float((exceedances + 1) / (simulation_count + 1)),
         "warning": None,
+        "random_seed": seed,
+        "simulation_count": simulation_count,
+        "application_version": APP_VERSION,
+        "method_version": PERMUTATION_METHOD_VERSION,
+        "batch_size": effective_batch_size,
+        "batch_count": (simulation_count + effective_batch_size - 1) // effective_batch_size,
+        "work_items": work_items,
+        "resource_budget": budget,
     }
 
 
@@ -351,7 +441,7 @@ def summarize_matched_baseline(
     *,
     n_bootstrap: int = 1000,
     n_permutations: int = 1000,
-    random_seed: int | None = None,
+    random_seed: int | None = DEFAULT_RANDOM_SEED,
     horizon_bars: int | None = None,
     pricing_basis: str | None = "next_open",
 ) -> dict[str, Any]:

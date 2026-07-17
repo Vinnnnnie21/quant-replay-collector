@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Iterable
 
 try:
-    from app_config import DB_PATH
+    from app_config import BACKUP_DIR, DB_PATH
+    from database_backup import backup_database_before_upgrade
     from errors import DatabaseError
 except ImportError:  # pragma: no cover - package import path
-    from .app_config import DB_PATH
+    from .app_config import BACKUP_DIR, DB_PATH
+    from .database_backup import backup_database_before_upgrade
     from .errors import DatabaseError
 try:
     from storage_core.connection import connect_db, require_rowcount
@@ -17,6 +20,7 @@ try:
     from storage_core import premium_repository
     from storage_core import research_repository
     from storage_core import session_repository
+    from storage_core import trade_management_repository
     from storage_core import trade_repository
 except ImportError:  # pragma: no cover - package import path
     from .storage_core.connection import connect_db, require_rowcount
@@ -26,24 +30,18 @@ except ImportError:  # pragma: no cover - package import path
     from .storage_core import premium_repository
     from .storage_core import research_repository
     from .storage_core import session_repository
+    from .storage_core import trade_management_repository
     from .storage_core import trade_repository
 
 
 class StorageManager:
     SCHEMA_VERSION = 6
     MANUAL_RESEARCH_TABLES = (
-        "entry_annotation_history",
-        "entry_annotations",
-        "research_outcome_labels",
-        "event_context_features",
-        "strategy_samples",
-        "observation_universe",
         "account_equity",
         "event_features",
         "event_windows",
         "trade_events",
         "trades",
-        "sessions",
     )
     ALLOWED_TABLES = {
         "sessions",
@@ -76,23 +74,35 @@ class StorageManager:
         "created_at", "updated_at",
     ]
 
-    def __init__(self, db_path: Path | str = DB_PATH):
+    def __init__(self, db_path: Path | str = DB_PATH, *, backup_dir: Path | str | None = None):
         self.db_path = str(db_path)
+        path = Path(self.db_path)
+        existed_before_init = path.exists()
+        self.backup_dir = Path(backup_dir) if backup_dir is not None else (
+            Path(BACKUP_DIR) if path == Path(DB_PATH) else path.parent / "backups"
+        )
         try:
-            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
-            self._init_db()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._init_db(existed_before_init=existed_before_init)
         except OSError as exc:
             raise DatabaseError(f"Database directory is not writable: {exc}") from exc
 
     def connect(self):
         return connect_db(self.db_path)
 
-    def _init_db(self):
+    def _init_db(self, *, existed_before_init: bool = True):
         with self.connect() as conn:
             version = migrations.schema_version(conn)
         if version > self.SCHEMA_VERSION:
             raise RuntimeError(
                 f"Database schema version {version} is newer than supported version {self.SCHEMA_VERSION}."
+            )
+        if existed_before_init and version < self.SCHEMA_VERSION:
+            backup_database_before_upgrade(
+                self.db_path,
+                self.backup_dir,
+                from_version=version,
+                to_version=self.SCHEMA_VERSION,
             )
         # Version 0 databases predate migration metadata. The v1 repair is
         # idempotent and also completes partially upgraded legacy databases.
@@ -152,10 +162,67 @@ class StorageManager:
         with self.connect() as conn:
             return session_repository.get_latest_session(conn)
 
-    def clear_manual_research_records(self) -> dict[str, int]:
-        """Delete manually recorded trade research data while retaining market data."""
+    def get_session(self, session_id: str):
         with self.connect() as conn:
-            return session_repository.clear_manual_research_records(conn, self.MANUAL_RESEARCH_TABLES)
+            return session_repository.get_session(conn, session_id)
+
+    def list_performance_sessions(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return session_repository.list_performance_sessions(conn)
+
+    def clear_manual_research_records(self) -> dict[str, Any]:
+        """Delete all trade samples while retaining sessions and market data."""
+        with self.connect() as conn:
+            return trade_management_repository.clear_all_trade_samples(conn)
+
+    def preview_all_trade_sample_deletion(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            return trade_management_repository.preview_all_trade_sample_deletion(conn)
+
+    def list_trade_samples_for_management(
+        self,
+        *,
+        start_time: str,
+        end_time: str,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return trade_management_repository.list_trade_samples_for_time_range(
+                conn,
+                start_time=start_time,
+                end_time=end_time,
+                session_id=session_id,
+            )
+
+    def list_trade_samples_for_session(
+        self,
+        session_id: str,
+        *,
+        limit: int = 500,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return trade_management_repository.list_trade_samples_for_session(
+                conn,
+                session_id,
+                limit=limit,
+            )
+
+    def preview_trade_sample_deletion(
+        self,
+        trade_ids: list[str] | tuple[str, ...],
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            return trade_management_repository.preview_delete_trade_samples(
+                conn,
+                trade_ids,
+            )
+
+    def delete_trade_samples(
+        self,
+        trade_ids: list[str] | tuple[str, ...],
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            return trade_management_repository.delete_trade_samples(conn, trade_ids)
 
     def insert_trade(self, row: dict[str, Any]):
         with self.connect() as conn:
@@ -188,6 +255,10 @@ class StorageManager:
     def save_event_windows(self, session_id: str, event_id: str, rows: Iterable[dict[str, Any]]):
         with self.connect() as conn:
             event_repository.save_event_windows(conn, session_id, event_id, rows)
+
+    def fetch_event_windows_for_session(self, session_id: str) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return event_repository.list_event_windows_for_session(conn, session_id)
 
     def delete_event_windows(self, event_id: str):
         with self.connect() as conn:
@@ -273,6 +344,25 @@ class StorageManager:
     def upsert_klines(self, rows: Iterable[dict[str, Any]]) -> None:
         with self.connect() as conn:
             market_repository.upsert_klines(conn, rows)
+
+    def fetch_klines_for_range(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start_time_utc_ms: int,
+        end_time_utc_ms: int,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return market_repository.fetch_klines_for_range(
+                conn,
+                symbol=symbol,
+                interval=interval,
+                start_time_utc_ms=start_time_utc_ms,
+                end_time_utc_ms=end_time_utc_ms,
+                cancelled=cancelled,
+            )
 
     def save_data_quality_report(self, row: dict[str, Any]) -> None:
         with self.connect() as conn:

@@ -83,16 +83,11 @@ def test_generates_stable_observation_id_and_preserves_bar_index():
     assert candidate["data_version"].startswith("kline_")
 
 
-def test_shuffled_klines_are_ordered_before_candidate_generation():
-    ordered = generate_entry_observation_universe(_deep_v_like_klines(), symbol="BTCUSDT", interval="1m")
-    shuffled = generate_entry_observation_universe(
-        _deep_v_like_klines().sample(frac=1.0, random_state=11),
-        symbol="BTCUSDT",
-        interval="1m",
-    )
+def test_strategy_research_rejects_shuffled_klines_instead_of_reordering_them():
+    shuffled = _deep_v_like_klines().sample(frac=1.0, random_state=11)
 
-    assert shuffled["observation_id"].tolist() == ordered["observation_id"].tolist()
-    assert shuffled["decision_bar_index"].tolist() == ordered["decision_bar_index"].tolist()
+    with pytest.raises(ValueError, match="strategy research.*out-of-order.*quality report"):
+        generate_entry_observation_universe(shuffled, symbol="BTCUSDT", interval="1m")
 
 
 def test_next_bar_confirmation_keeps_setup_and_decision_bar_separate():

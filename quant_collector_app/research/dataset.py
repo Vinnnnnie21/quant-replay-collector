@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -10,9 +11,13 @@ import pandas as pd
 
 try:
     from i18n import tr
+    from chunked_csv import write_dataframe_csv_atomic
 except ImportError:  # package import path
     from ..i18n import tr
+    from ..chunked_csv import write_dataframe_csv_atomic
 from .event_study import build_event_study
+from .bootstrap import MAX_RESAMPLE_WORK_ITEMS
+from .cancellation import raise_if_research_cancelled
 from .experiment_tracker import create_manifest
 from .factor_audit import leakage_audit
 from .factor_binning import build_factor_binning_summary
@@ -125,14 +130,37 @@ def _label_distribution(labels: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _write_frame(output_dir: Path, filename: str, frame: pd.DataFrame, files: list[str], json_copy: bool = False) -> None:
-    frame.to_csv(output_dir / filename, index=False)
+def _write_frame(
+    output_dir: Path,
+    filename: str,
+    frame: pd.DataFrame,
+    files: list[str],
+    *,
+    json_copy: bool = False,
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[str], None] | None = None,
+) -> None:
+    write_dataframe_csv_atomic(
+        frame,
+        output_dir / filename,
+        checkpoint=lambda: raise_if_research_cancelled(cancelled),
+        on_chunk_written=(
+            None
+            if progress is None
+            else lambda chunk_index, chunk_count: progress(
+                f"Writing research table: {filename} "
+                f"(chunk {chunk_index}/{chunk_count})"
+            )
+        ),
+    )
     files.append(filename)
     if json_copy:
+        raise_if_research_cancelled(cancelled)
         json_name = str(Path(filename).with_suffix(".json"))
         records = frame.where(pd.notna(frame), None).to_dict("records") if not frame.empty else []
         (output_dir / json_name).write_text(json.dumps(records, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         files.append(json_name)
+        raise_if_research_cancelled(cancelled)
 
 
 def _write_audit_markdown(output_dir: Path, audit: dict, language: str) -> None:
@@ -161,6 +189,41 @@ def _write_audit_markdown(output_dir: Path, audit: dict, language: str) -> None:
     (output_dir / "data_audit.md").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _randomized_statistics_from_results(
+    event_summary: pd.DataFrame,
+    ic_summary: pd.DataFrame,
+) -> list[dict[str, Any]]:
+    specifications = (
+        ("iid_bootstrap_event_study", event_summary),
+        ("block_bootstrap_factor_ic", ic_summary),
+    )
+    column_map = {
+        "random_seed": "bootstrap_random_seed",
+        "simulation_count": "bootstrap_simulation_count",
+        "confidence": "bootstrap_confidence",
+        "method_version": "bootstrap_method_version",
+        "application_version": "bootstrap_application_version",
+        "batch_size": "bootstrap_batch_size",
+        "batch_count": "bootstrap_batch_count",
+        "work_items": "bootstrap_work_items",
+        "resource_budget": "bootstrap_resource_budget",
+        "max_batch_work_items": "bootstrap_max_batch_work_items",
+    }
+    results: list[dict[str, Any]] = []
+    for calculation, frame in specifications:
+        if frame is None or frame.empty or not set(column_map.values()) <= set(frame.columns):
+            continue
+        for execution_index, (_, row) in enumerate(frame.iterrows()):
+            item = {
+                "calculation": calculation,
+                "execution_index": execution_index,
+                **{field: _safe_json(row[column]) for field, column in column_map.items()},
+            }
+            if item["simulation_count"] is not None:
+                results.append(item)
+    return results
+
+
 def run_research_pack(
     output_dir: Path | str,
     event_windows: pd.DataFrame,
@@ -173,11 +236,17 @@ def run_research_pack(
     profile_version: str | None = None,
     baseline_spec: dict | str | None = None,
     split_spec: dict | str | None = None,
+    randomized_max_work_items: int = MAX_RESAMPLE_WORK_ITEMS,
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[str], None] | None = None,
 ) -> dict:
+    raise_if_research_cancelled(cancelled)
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     features = FeatureFactory().build(event_windows, trade_events, premium_history)
+    raise_if_research_cancelled(cancelled)
     labels = LabelFactory().build(event_windows, trade_events, trades)
+    raise_if_research_cancelled(cancelled)
     leakage = leakage_audit(features)
     if leakage["status"] != "PASS":
         raise ValueError(f"Research feature leakage audit failed: {leakage['forbidden_feature_columns']}")
@@ -187,28 +256,64 @@ def run_research_pack(
         samples = samples.merge(events_for_sample, on="event_id", how="left")
     audit = build_data_audit(features, labels, samples, trade_events, selected_label, leakage, language)
     label_distribution = _label_distribution(labels)
-    event_summary = build_event_study(features, labels, trade_events, selected_label)
-    binning = build_factor_binning_summary(features, labels, selected_label)
-    ic_summary = build_factor_ic_summary(features, labels, selected_label)
-    candidate_rules = search_rules(features, labels, selected_label)
+    event_summary = build_event_study(
+        features,
+        labels,
+        trade_events,
+        selected_label,
+        max_work_items=randomized_max_work_items,
+        cancelled=cancelled,
+    )
+    raise_if_research_cancelled(cancelled)
+    binning = build_factor_binning_summary(
+        features,
+        labels,
+        selected_label,
+        cancelled=cancelled,
+    )
+    raise_if_research_cancelled(cancelled)
+    ic_summary = build_factor_ic_summary(
+        features,
+        labels,
+        selected_label,
+        max_work_items=randomized_max_work_items,
+        cancelled=cancelled,
+    )
+    raise_if_research_cancelled(cancelled)
+    candidate_rules = search_rules(features, labels, selected_label, cancelled=cancelled)
+    raise_if_research_cancelled(cancelled)
     walk_forward_samples = features.merge(labels[["event_id", selected_label]], on="event_id", how="inner") if selected_label in labels.columns else pd.DataFrame()
     walk_forward = build_walk_forward_results(walk_forward_samples, candidate_rules, selected_label)
+    raise_if_research_cancelled(cancelled)
     files: list[str] = []
-    _write_frame(output_dir, "feature_registry.csv", feature_registry_frame(), files)
-    _write_frame(output_dir, "label_registry.csv", label_registry_frame(), files)
-    _write_frame(output_dir, "research_samples.csv", samples, files)
-    _write_frame(output_dir, "factor_values.csv", features, files)
-    _write_frame(output_dir, "label_values.csv", labels, files)
-    _write_frame(output_dir, "label_distribution.csv", label_distribution, files, json_copy=True)
-    _write_frame(output_dir, "event_study_summary.csv", event_summary, files, json_copy=True)
-    _write_frame(output_dir, "factor_binning_summary.csv", binning, files, json_copy=True)
-    _write_frame(output_dir, "factor_ic_summary.csv", ic_summary, files, json_copy=True)
-    _write_frame(output_dir, "candidate_rules.csv", candidate_rules, files, json_copy=True)
-    _write_frame(output_dir, "walk_forward_results.csv", walk_forward, files, json_copy=True)
+    def write_frame(filename: str, frame: pd.DataFrame, *, json_copy: bool = False) -> None:
+        _write_frame(
+            output_dir,
+            filename,
+            frame,
+            files,
+            json_copy=json_copy,
+            cancelled=cancelled,
+            progress=progress,
+        )
+
+    write_frame("feature_registry.csv", feature_registry_frame())
+    write_frame("label_registry.csv", label_registry_frame())
+    write_frame("research_samples.csv", samples)
+    write_frame("factor_values.csv", features)
+    write_frame("label_values.csv", labels)
+    write_frame("label_distribution.csv", label_distribution, json_copy=True)
+    write_frame("event_study_summary.csv", event_summary, json_copy=True)
+    write_frame("factor_binning_summary.csv", binning, json_copy=True)
+    write_frame("factor_ic_summary.csv", ic_summary, json_copy=True)
+    write_frame("candidate_rules.csv", candidate_rules, json_copy=True)
+    write_frame("walk_forward_results.csv", walk_forward, json_copy=True)
+    raise_if_research_cancelled(cancelled)
     (output_dir / "data_audit.json").write_text(json.dumps(_safe_json(audit), ensure_ascii=False, indent=2), encoding="utf-8")
     _write_audit_markdown(output_dir, audit, language)
     (output_dir / "leakage_audit.json").write_text(json.dumps(_safe_json(leakage), ensure_ascii=False, indent=2), encoding="utf-8")
     files.extend(["data_audit.json", "data_audit.md", "leakage_audit.json"])
+    raise_if_research_cancelled(cancelled)
     manifest = create_manifest(
         samples,
         selected_label,
@@ -217,7 +322,9 @@ def run_research_pack(
         profile_version=profile_version,
         baseline_spec=baseline_spec,
         split_spec=split_spec,
+        randomized_statistics=_randomized_statistics_from_results(event_summary, ic_summary),
     )
+    raise_if_research_cancelled(cancelled)
     write_research_report(
         output_dir / "research_report.md",
         manifest,
@@ -231,6 +338,7 @@ def run_research_pack(
         walk_forward,
         language=language,
     )
+    raise_if_research_cancelled(cancelled)
     (output_dir / "research_manifest.json").write_text(
         json.dumps(_safe_json(manifest), ensure_ascii=False, indent=2),
         encoding="utf-8",

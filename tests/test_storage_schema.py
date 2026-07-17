@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import sqlite3
 
+import pytest
+
+import storage as storage_module
 from storage import StorageManager
 
 
@@ -20,6 +23,25 @@ def test_initializes_versioned_quality_schema_and_connection_pragmas(tmp_path):
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
         assert conn.execute("PRAGMA synchronous").fetchone()[0] == 1
     assert {"sessions", "trades", "klines", "data_quality_reports"} <= tables
+
+
+def test_trade_event_replay_time_has_management_range_index(tmp_path):
+    storage = StorageManager(tmp_path / "trade_management_index.db")
+
+    with storage.connect() as conn:
+        indexes = {
+            row["name"]
+            for row in conn.execute("PRAGMA index_list(trade_events)").fetchall()
+        }
+        columns = [
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA index_info(idx_trade_events_replay_time)"
+            ).fetchall()
+        ]
+
+    assert "idx_trade_events_replay_time" in indexes
+    assert columns == ["bar_open_time_bjt", "event_type", "trade_id"]
 
 
 def test_legacy_database_is_upgraded_without_losing_existing_rows(tmp_path):
@@ -107,3 +129,111 @@ def test_kline_and_quality_report_writes_are_upserts(tmp_path):
     assert len(klines) == 1
     assert klines[0]["close"] == 101.5
     assert reports[0]["report_id"] == "r1"
+
+
+def test_fetch_klines_for_range_returns_narrow_ordered_curve_rows(tmp_path):
+    storage = StorageManager(tmp_path / "market_history.db")
+    storage.upsert_klines(
+        [
+            {
+                "symbol": symbol,
+                "interval": interval,
+                "open_time_utc_ms": open_time,
+                "open_time_bjt": f"time-{open_time}",
+                "close_time_utc_ms": open_time + 59_999,
+                "open": close,
+                "high": close,
+                "low": close,
+                "close": close,
+                "volume": 1.0,
+            }
+            for symbol, interval, open_time, close in (
+                ("BTCUSDT", "1m", 180_000, 103.0),
+                ("BTCUSDT", "1m", 60_000, 101.0),
+                ("BTCUSDT", "1m", 120_000, 102.0),
+                ("ETHUSDT", "1m", 120_000, 999.0),
+                ("BTCUSDT", "5m", 120_000, 999.0),
+            )
+        ]
+    )
+
+    rows = storage.fetch_klines_for_range(
+        symbol="BTCUSDT",
+        interval="1m",
+        start_time_utc_ms=60_000,
+        end_time_utc_ms=120_000,
+    )
+
+    assert rows == [
+        {
+            "bar_index": 0,
+            "open_time_bjt": "time-60000",
+            "open_time_utc_ms": 60_000,
+            "close": 101.0,
+        },
+        {
+            "bar_index": 1,
+            "open_time_bjt": "time-120000",
+            "open_time_utc_ms": 120_000,
+            "close": 102.0,
+        },
+    ]
+
+
+def test_fetch_klines_for_range_cooperatively_cancels_between_batches(tmp_path):
+    storage = StorageManager(tmp_path / "market_history_cancel.db")
+    row_count = 5_001
+    storage.upsert_klines(
+        {
+            "symbol": "BTCUSDT",
+            "interval": "1m",
+            "open_time_utc_ms": index * 60_000,
+            "open_time_bjt": f"time-{index}",
+            "close_time_utc_ms": index * 60_000 + 59_999,
+            "open": 100.0,
+            "high": 100.0,
+            "low": 100.0,
+            "close": 100.0,
+            "volume": 1.0,
+        }
+        for index in range(row_count)
+    )
+    cancellation_checks = 0
+
+    def cancelled() -> bool:
+        nonlocal cancellation_checks
+        cancellation_checks += 1
+        return cancellation_checks >= 2
+
+    rows = storage.fetch_klines_for_range(
+        symbol="BTCUSDT",
+        interval="1m",
+        start_time_utc_ms=0,
+        end_time_utc_ms=row_count * 60_000,
+        cancelled=cancelled,
+    )
+
+    assert rows == []
+    assert cancellation_checks == 2
+
+
+def test_existing_database_is_backed_up_before_schema_upgrade(tmp_path, monkeypatch):
+    path = tmp_path / "legacy.db"
+    backup_dir = tmp_path / "backups"
+    with sqlite3.connect(path) as conn:
+        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        conn.execute("INSERT INTO sessions VALUES ('before_upgrade')")
+
+    monkeypatch.setattr(
+        storage_module.migrations,
+        "migrate_to_v1",
+        lambda _conn: (_ for _ in ()).throw(RuntimeError("migration stopped")),
+    )
+
+    with pytest.raises(RuntimeError, match="migration stopped"):
+        StorageManager(path, backup_dir=backup_dir)
+
+    backups = list(backup_dir.glob("quant_replay_pre_upgrade_v0_to_v6_*.db"))
+    assert len(backups) == 1
+    with sqlite3.connect(backups[0]) as conn:
+        assert conn.execute("SELECT session_id FROM sessions").fetchone()[0] == "before_upgrade"

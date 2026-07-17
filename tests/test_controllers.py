@@ -118,6 +118,75 @@ def test_trade_controller_snapshots_take_profit_and_stop_loss_on_open():
     assert transaction.trade_row["stop_loss_price"] == pytest.approx(entry * 0.99)
 
 
+@pytest.mark.parametrize(
+    ("take_profit_pct", "stop_loss_pct", "expected_tp", "expected_sl"),
+    [
+        (None, None, None, None),
+        (None, 1.0, None, 1.0),
+        (2.0, None, 2.0, None),
+        (0, 0, None, None),
+    ],
+)
+def test_trade_controller_normalizes_nullable_one_sided_risk_settings(
+    take_profit_pct,
+    stop_loss_pct,
+    expected_tp,
+    expected_sl,
+):
+    controller, _storage = _controller()
+    df = _bars()
+
+    transaction = controller.prepare_open(
+        df,
+        df.iloc[20],
+        event_idx=20,
+        session_id="sess_1",
+        symbol="BTCUSDT",
+        interval="1m",
+        side="LONG",
+        event_id="evt_nullable",
+        trade_id="trd_nullable",
+        label_tags=[],
+        note="open",
+        settings=controller.execution_settings("close", 4, 1, 1000),
+        take_profit_pct=take_profit_pct,
+        stop_loss_pct=stop_loss_pct,
+        now_iso=NOW,
+    )
+
+    row = transaction.trade_row
+    assert row["take_profit_pct"] == expected_tp
+    assert row["stop_loss_pct"] == expected_sl
+    assert (row["take_profit_price"] is not None) is (expected_tp is not None)
+    assert (row["stop_loss_price"] is not None) is (expected_sl is not None)
+
+
+def test_trade_controller_rejects_invalid_tp_sl_before_storage_write():
+    controller, storage = _controller()
+    df = _bars()
+
+    with pytest.raises(ValueError, match="percentage"):
+        controller.prepare_open(
+            df,
+            df.iloc[20],
+            event_idx=20,
+            session_id="sess_1",
+            symbol="BTCUSDT",
+            interval="1m",
+            side="LONG",
+            event_id="evt_invalid",
+            trade_id="trd_invalid",
+            label_tags=[],
+            note="open",
+            settings=controller.execution_settings("close", 4, 1, 1000),
+            take_profit_pct="invalid",
+            stop_loss_pct=None,
+            now_iso=NOW,
+        )
+
+    assert storage.calls == []
+
+
 @pytest.mark.parametrize("side", ["LONG", "SHORT"])
 def test_trade_controller_prepares_and_commits_close_sides(side):
     controller, storage = _controller()

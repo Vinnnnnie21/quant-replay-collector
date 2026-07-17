@@ -189,11 +189,11 @@ def test_features_do_not_read_bars_after_observation():
     assert base.equals(mutated)
 
 
-def test_shuffled_input_is_sorted_by_bar_index_before_feature_calculation():
-    ordered = build_entry_context_features(_klines(), _observations().tail(1))
-    shuffled = build_entry_context_features(_klines().sample(frac=1.0, random_state=7), _observations().tail(1))
+def test_context_feature_research_rejects_shuffled_klines():
+    shuffled = _klines().sample(frac=1.0, random_state=7)
 
-    assert shuffled.equals(ordered)
+    with pytest.raises(ValueError, match="strategy research.*out-of-order.*quality report"):
+        build_entry_context_features(shuffled, _observations().tail(1))
 
 
 def test_next_bar_confirmation_observation_is_explicitly_marked():

@@ -17,6 +17,21 @@ def test_k_view_box_allows_free_x_and_y_mouse_navigation():
     assert view.yManual is False
 
 
+def test_k_view_box_never_constructs_unused_native_context_menu(monkeypatch):
+    original_init = pg.ViewBox.__init__
+    constructor_options = {}
+
+    def record_init(self, *args, **kwargs):
+        constructor_options.update(kwargs)
+        original_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(pg.ViewBox, "__init__", record_init)
+    view = KViewBox()
+
+    assert constructor_options["enableMenu"] is False
+    assert view.menu is None
+
+
 def test_k_view_box_emits_drag_lifecycle_once(monkeypatch):
     view = KViewBox()
     events: list[str] = []

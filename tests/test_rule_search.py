@@ -75,3 +75,28 @@ def test_rule_search_ranks_validated_oos_stable_rules_before_in_sample_winners()
     assert top["test_score"] > 0
     assert top_conditions[0]["column"] == "volume_ratio_20"
     assert "candidate hypothesis only" in top["warning"]
+
+
+def test_rule_search_propagates_bootstrap_cancellation():
+    windows, events, trades = research_input(60)
+    features = FeatureFactory().build(windows, events)
+    labels = LabelFactory().build(windows, events, trades)
+    cancellation_checks = 0
+
+    def cancelled() -> bool:
+        nonlocal cancellation_checks
+        cancellation_checks += 1
+        return cancellation_checks >= 2
+
+    with pytest.raises(RuntimeError, match="research calculation cancelled") as exc_info:
+        search_rules(
+            features,
+            labels,
+            factors=["pre_ret_10"],
+            max_depth=1,
+            max_rules=1,
+            horizon_bars=0,
+            cancelled=cancelled,
+        )
+
+    assert type(exc_info.value).__name__ == "ResearchCancelled"

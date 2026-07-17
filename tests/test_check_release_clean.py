@@ -33,6 +33,7 @@ def test_release_checker_rejects_virtual_environment_database_and_log(tmp_path):
     [
         ".codex_pytest_tmp/run/output.txt",
         ".pytest_tmp_integrity_full/output.txt",
+        ".test-artifacts/pytest-tmp/output.txt",
         "nested/__pycache__/module.py",
         "nested/module.pyc",
         "nested/module.pyo",

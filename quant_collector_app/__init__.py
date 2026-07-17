@@ -15,4 +15,4 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 if str(_PACKAGE_DIR) not in sys.path:
     sys.path.insert(0, str(_PACKAGE_DIR))
 
-__version__ = "1.5.0"
+__version__ = "1.5.1"

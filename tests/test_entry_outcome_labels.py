@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import pytest
 
 from research.entry_context_features import FEATURE_COLUMNS
 from research.entry_outcome_labels import LabelSpec, OUTCOME_COLUMNS, build_entry_outcome_labels
@@ -49,6 +50,13 @@ def test_fwd_ret_5_is_computed_from_future_close():
     assert row["observation_id"] == "obs_10"
     assert row["label_version"] == "entry_outcome_labels_v1"
     assert math.isclose(row["fwd_ret_5"], 115.0 / 110.0 - 1.0)
+
+
+def test_outcome_label_research_rejects_shuffled_klines():
+    shuffled = _klines().sample(frac=1.0, random_state=7)
+
+    with pytest.raises(ValueError, match="strategy research.*out-of-order.*quality report"):
+        build_entry_outcome_labels(shuffled, _observations(10))
 
 
 def test_label_spec_is_serializable_and_supports_dynamic_horizons():

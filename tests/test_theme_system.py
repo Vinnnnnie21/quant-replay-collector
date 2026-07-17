@@ -79,7 +79,7 @@ def test_reference_theme_tokens_are_present_and_separated():
     assert COLORS["chart_crosshair"] != COLORS["accent"]
     assert COLORS["warning"] != COLORS["accent"]
     assert COLORS["info"] == "#3B82F6"
-    assert FONT_SIZES == {"small": 12, "normal": 13, "medium": 14, "large": 18}
+    assert FONT_SIZES == {"small": 12, "normal": 13, "medium": 14, "large": 18, "xlarge": 24}
 
 
 def test_qss_uses_neutral_selection_and_limited_accent_usage():
@@ -124,6 +124,61 @@ def test_light_analysis_metric_cards_use_the_standard_card_treatment():
     assert f"background-color: {LIGHT_THEME['bg_card']}" in metric_block
     assert f"border: 1px solid {LIGHT_THEME['border_default']}" in metric_block
     assert "border-radius: 6px" in metric_block
+
+
+def test_light_theme_scrollbars_have_visible_track_handle_hover_and_pressed_states():
+    from ui_style import LIGHT_THEME
+
+    theme = normalize_theme_settings(LIGHT_THEME)
+    qss = build_app_qss(LIGHT_THEME)
+
+    vertical = _qss_block(qss, "QScrollBar:vertical")
+    horizontal = _qss_block(qss, "QScrollBar:horizontal")
+    handle = _qss_block(qss, "QScrollBar::handle:vertical")
+    hover = _qss_block(qss, "QScrollBar::handle:vertical:hover")
+    pressed = _qss_block(qss, "QScrollBar::handle:vertical:pressed")
+
+    assert theme["scrollbar_track"] in vertical
+    assert theme["scrollbar_handle"] in handle
+    assert theme["scrollbar_handle_hover"] in hover
+    assert theme["scrollbar_handle_pressed"] in pressed
+    assert "width: 13px" in vertical
+    assert "height: 13px" in horizontal
+    assert theme["scrollbar_handle"] != theme["bg_primary"]
+    assert theme["scrollbar_handle"] != theme["scrollbar_track"]
+    handle_rgb = tuple(int(theme["scrollbar_handle"][index : index + 2], 16) for index in (1, 3, 5))
+    background_rgb = tuple(int(theme["bg_primary"][index : index + 2], 16) for index in (1, 3, 5))
+    assert sum(abs(handle - background) for handle, background in zip(handle_rgb, background_rgb)) >= 150
+
+
+def test_dark_theme_keeps_its_own_global_scrollbar_palette():
+    from ui_style import LIGHT_THEME
+
+    light = normalize_theme_settings(LIGHT_THEME)
+    dark = normalize_theme_settings(EXCHANGE_DARK_THEME)
+    qss = build_app_qss(EXCHANGE_DARK_THEME)
+
+    assert dark["scrollbar_track"] in _qss_block(qss, "QScrollBar:vertical")
+    assert dark["scrollbar_handle"] in _qss_block(qss, "QScrollBar::handle:vertical")
+    assert dark["scrollbar_handle_hover"] in _qss_block(
+        qss, "QScrollBar::handle:vertical:hover"
+    )
+    assert dark["scrollbar_handle_pressed"] in _qss_block(
+        qss, "QScrollBar::handle:vertical:pressed"
+    )
+    assert dark["scrollbar_handle"] != light["scrollbar_handle"]
+
+
+def test_analysis_distribution_metric_labels_are_large_enough_for_scan_reading():
+    qss = build_app_qss(EXCHANGE_DARK_THEME)
+
+    distribution_label = _qss_block(qss, 'QLabel[role="distributionLabel"]')
+    distribution_value = _qss_block(qss, 'QLabel[role="distributionValue"]')
+
+    assert "font-size: 18px" in distribution_label
+    assert "min-height: 42px" in distribution_label
+    assert "font-size: 24px" in distribution_value
+    assert "min-height: 76px" in distribution_value
 
 
 def test_qss_uses_compact_okx_style_font_stack_for_chinese_text():
@@ -282,7 +337,7 @@ def test_qt_palette_and_chart_items_use_reference_colors(monkeypatch):
     pytest.importorskip("pyqtgraph")
 
     import views.main_window_presentation as presentation
-    from test_main_window_layout import _LayoutHost
+    from test_main_window_layout import _LayoutHost, _close_layout_host
     from views.candlestick_item import CandlestickItem
     from views.main_window_layout import build_main_window_ui
     from views.volume_item import VolumeItem
@@ -318,9 +373,109 @@ def test_qt_palette_and_chart_items_use_reference_colors(monkeypatch):
     assert host.theme_settings["crosshair"] == COLORS["chart_crosshair"]
     assert host.theme_settings["crosshair"] != host.theme_settings["accent"]
 
-    host.multiTimeframePanel.shutdown()
-    host.close()
-    app.processEvents()
+    _close_layout_host(host, app)
+
+
+def test_main_window_logo_variant_follows_the_applied_theme(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    pytest.importorskip("pyqtgraph")
+
+    import views.main_window_presentation as presentation
+    from test_main_window_layout import _LayoutHost, _close_layout_host
+    from ui_style import LIGHT_THEME
+    from views.main_window_layout import build_main_window_ui
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _LayoutHost()
+    build_main_window_ui(host)
+    monkeypatch.setattr(presentation, "save_theme_settings", lambda _theme: None)
+
+    presentation.apply_main_window_theme(host, EXCHANGE_DARK_THEME)
+    dark_corner = host.windowIcon().pixmap(64, 64).toImage().pixelColor(0, 0)
+    dark_header_corner = host.headerLogoLabel.pixmap().toImage().pixelColor(0, 0)
+    presentation.apply_main_window_theme(host, LIGHT_THEME)
+    light_corner = host.windowIcon().pixmap(64, 64).toImage().pixelColor(0, 0)
+    light_header_corner = host.headerLogoLabel.pixmap().toImage().pixelColor(0, 0)
+
+    assert dark_corner.alpha() == 255
+    assert dark_corner.lightness() < 16
+    assert dark_header_corner.alpha() == 255
+    assert dark_header_corner.lightness() < 16
+    assert light_corner.alpha() == 0
+    assert light_header_corner.alpha() == 0
+    assert host.headerLogoLabel.height() == host.headerTitleLabel.fontMetrics().height()
+    _close_layout_host(host, app)
+
+
+def test_main_window_light_theme_updates_the_native_title_bar(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    pytest.importorskip("pyqtgraph")
+
+    import views.main_window_presentation as presentation
+    import views.windows_title_bar as windows_title_bar
+    from test_main_window_layout import _LayoutHost, _close_layout_host
+    from ui_style import LIGHT_THEME
+    from views.main_window_layout import build_main_window_ui
+
+    calls: list[dict] = []
+
+    class RecordingApi:
+        def apply(self, hwnd, **options):
+            calls.append({"hwnd": hwnd, **options})
+            return True
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _LayoutHost()
+    build_main_window_ui(host)
+    monkeypatch.setattr(windows_title_bar, "_WindowsDwmTitleBarApi", RecordingApi)
+    monkeypatch.setattr(presentation, "save_theme_settings", lambda _theme: None)
+
+    presentation.apply_main_window_theme(host, LIGHT_THEME)
+
+    assert calls == [
+        {
+            "hwnd": int(host.winId()),
+            "dark": False,
+            "caption_color": "#FFFFFF",
+            "text_color": LIGHT_THEME["text_primary"].upper(),
+        }
+    ]
+    _close_layout_host(host, app)
+
+
+def test_reapplying_same_theme_does_not_repolish_the_entire_qapplication(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    QtGui = pytest.importorskip("PySide6.QtGui")
+    pytest.importorskip("pyqtgraph")
+
+    import views.main_window_presentation as presentation
+    from test_main_window_layout import _LayoutHost, _close_layout_host
+    from views.main_window_layout import build_main_window_ui
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    different = QtGui.QPalette(app.palette())
+    different.setColor(QtGui.QPalette.Window, QtGui.QColor("#FF00FF"))
+    app.setPalette(different)
+    host = _LayoutHost()
+    build_main_window_ui(host)
+    monkeypatch.setattr(presentation, "save_theme_settings", lambda _theme: None)
+    original_set_palette = QtWidgets.QApplication.setPalette
+    palette_updates: list[QtGui.QPalette] = []
+
+    def record_palette(self, palette) -> None:
+        palette_updates.append(QtGui.QPalette(palette))
+        original_set_palette(palette)
+
+    monkeypatch.setattr(QtWidgets.QApplication, "setPalette", record_palette)
+
+    presentation.apply_main_window_theme(host, EXCHANGE_DARK_THEME)
+    presentation.apply_main_window_theme(host, EXCHANGE_DARK_THEME)
+
+    assert len(palette_updates) == 1
+    _close_layout_host(host, app)
 
 
 def _rendered_color(host, widget, x: int, y: int):
@@ -348,7 +503,7 @@ def test_main_window_effective_background_layers_and_role_button_styles(monkeypa
     pytest.importorskip("pyqtgraph")
 
     import views.main_window_presentation as presentation
-    from test_main_window_layout import _LayoutHost
+    from test_main_window_layout import _LayoutHost, _close_layout_host
     from views.main_window_layout import build_main_window_ui
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -399,6 +554,11 @@ def test_main_window_effective_background_layers_and_role_button_styles(monkeypa
             host.btnUndo: "secondaryButton",
             host.btnRedo: "secondaryButton",
             host.btnClearTradeRecords: "dangerGhostButton",
+            host.btnDeleteTradeRange: "dangerGhostButton",
+            host.btnDeleteSelectedTrade: "dangerGhostButton",
+            host.btnDeleteSessionTrade: "dangerGhostButton",
+            host.btnPreviewTradeRange: "secondaryButton",
+            host.btnContinuePerformanceSession: "secondaryButton",
             host.btnApplyEventMeta: "secondaryButton",
             host.btnExport: "headerAction",
             host.btnAnalysis: "workspaceNavButton",
@@ -416,6 +576,12 @@ def test_main_window_effective_background_layers_and_role_button_styles(monkeypa
             else:
                 assert button.styleSheet().strip() == ""
 
+        assert host.tradeManagementStart.styleSheet().strip() != ""
+        assert host.tradeManagementEnd.styleSheet().strip() != ""
+        assert host.tradeManagementCandidateBox.styleSheet().strip() != ""
+        assert host.takeProfitPctSpin.styleSheet().strip() != ""
+        assert host.stopLossPctSpin.styleSheet().strip() != ""
+
         dump_path = tmp_path / "effective_theme_dump.txt"
         dump = presentation.dump_widget_theme(host, dump_path)
         assert dump_path.read_text(encoding="utf-8") == dump
@@ -424,10 +590,7 @@ def test_main_window_effective_background_layers_and_role_button_styles(monkeypa
         assert "role=workspaceToolbar" in dump
         assert "localStyleSheet=False" in dump
     finally:
-        if hasattr(host, "multiTimeframePanel"):
-            host.multiTimeframePanel.shutdown()
-        host.close()
-        app.processEvents()
+        _close_layout_host(host, app)
 
 
 def test_theme_dialog_uses_preset_level_theme_tokens_only():

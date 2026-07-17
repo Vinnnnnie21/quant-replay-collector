@@ -154,6 +154,21 @@ def test_backtest_service_returns_clear_errors_for_invalid_inputs():
     assert "no K-line data" in empty_data.errors[0]
 
 
+def test_backtest_service_rejects_unordered_input_before_date_range_slicing():
+    unordered = _market_df().iloc[[1, 0, *range(2, 30)]].reset_index(drop=True)
+
+    result = BacktestService().run(
+        BacktestConfig(),
+        unordered,
+        date_range=_date_range(),
+        rule_params=_params(),
+    )
+
+    assert result.success is False
+    assert "out-of-order" in result.errors[0]
+    assert "quality report" in result.errors[0]
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

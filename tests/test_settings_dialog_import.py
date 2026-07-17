@@ -40,3 +40,37 @@ def test_settings_dialog_exposes_and_saves_chart_render_backend(monkeypatch):
     dialog.close()
     host.close()
     app.processEvents()
+
+
+def test_settings_numeric_inputs_do_not_change_on_wheel(monkeypatch):
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    QtCore = pytest.importorskip("PySide6.QtCore")
+    QtGui = pytest.importorskip("PySide6.QtGui")
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    import settings_dialog
+    from settings_dialog import SettingsDialog
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = QtWidgets.QWidget()
+    host.current_language = "zh_CN"
+    monkeypatch.setattr(settings_dialog, "load_app_settings", lambda: {"language": "zh_CN"})
+    dialog = SettingsDialog(host)
+    before = dialog.cacheLimitSpin.value()
+    local = QtCore.QPointF(dialog.cacheLimitSpin.rect().center())
+    event = QtGui.QWheelEvent(
+        local,
+        QtCore.QPointF(dialog.cacheLimitSpin.mapToGlobal(local.toPoint())),
+        QtCore.QPoint(),
+        QtCore.QPoint(0, -120),
+        QtCore.Qt.NoButton,
+        QtCore.Qt.NoModifier,
+        QtCore.Qt.ScrollUpdate,
+        False,
+    )
+
+    QtWidgets.QApplication.sendEvent(dialog.cacheLimitSpin, event)
+
+    assert dialog.cacheLimitSpin.value() == before
+    dialog.close()
+    host.close()
+    app.processEvents()

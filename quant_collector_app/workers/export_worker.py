@@ -6,8 +6,10 @@ from pathlib import Path
 from PySide6 import QtCore
 
 try:
+    from cancellation import CancellationToken
     from app_logger import get_logger
 except ImportError:  # pragma: no cover - package import path
+    from ..cancellation import CancellationToken
     from ..app_logger import get_logger
 
 
@@ -35,26 +37,26 @@ class ExportWorker(QtCore.QObject):
         self.target = Path(target)
         self.language = str(language or "zh_CN")
         self.selected_label = str(selected_label or "fwd_ret_10_side_adj")
-        self._cancelled = False
+        self.cancellation_token = CancellationToken()
 
     @QtCore.Slot()
     def cancel(self) -> None:
-        self._cancelled = True
+        self.cancellation_token.request()
 
     @QtCore.Slot()
     def run(self) -> None:
         started = time.perf_counter()
         self.started.emit()
-        if self._cancelled:
+        if self.cancellation_token.is_requested():
             self.cancelled.emit()
             return
         try:
             self.progress.emit("Preparing export...")
             try:
-                from exporter import Exporter
+                from exporter import ExportCancelled, Exporter
                 from storage import StorageManager
             except ImportError:  # pragma: no cover - package import path
-                from ..exporter import Exporter
+                from ..exporter import ExportCancelled, Exporter
                 from ..storage import StorageManager
 
             output_dir = Exporter(StorageManager(self.db_path)).export_session(
@@ -62,12 +64,16 @@ class ExportWorker(QtCore.QObject):
                 self.target,
                 language=self.language,
                 selected_label=self.selected_label,
+                cancelled=self.cancellation_token.is_requested,
+                progress=self.progress.emit,
             )
-            if self._cancelled:
+            if self.cancellation_token.is_requested():
                 self.cancelled.emit()
                 return
             elapsed = time.perf_counter() - started
             self.finished.emit(str(output_dir), [], elapsed)
+        except ExportCancelled:
+            self.cancelled.emit()
         except Exception as exc:
             logger.exception("Export background task failed.")
             self.failed.emit(f"{type(exc).__name__}: {exc}", time.perf_counter() - started)

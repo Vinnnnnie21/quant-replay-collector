@@ -62,6 +62,56 @@ def get_latest_session(conn) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def get_session(conn, session_id: str) -> dict[str, Any] | None:
+    """Read one explicit restore target without relying on saved ordering."""
+
+    row = conn.execute(
+        """
+        SELECT
+            session_id,
+            symbol,
+            interval,
+            start_date_bjt,
+            end_date_bjt,
+            cursor_bar_index,
+            follow_latest,
+            speed,
+            last_opened_at,
+            last_saved_at,
+            app_version,
+            initial_equity,
+            trade_notional,
+            fee_bps,
+            slippage_bps,
+            fill_mode,
+            take_profit_pct,
+            stop_loss_pct
+        FROM sessions
+        WHERE session_id = ?
+        """,
+        (str(session_id),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_performance_sessions(conn) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT
+            session_id,
+            symbol,
+            interval,
+            start_date_bjt,
+            end_date_bjt,
+            last_opened_at,
+            last_saved_at
+        FROM sessions
+        ORDER BY COALESCE(last_saved_at, last_opened_at) DESC, session_id ASC
+        """
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def clear_manual_research_records(conn, tables: tuple[str, ...]) -> dict[str, int]:
     deleted = {
         table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])

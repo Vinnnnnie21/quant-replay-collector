@@ -11,6 +11,7 @@ EXCLUDED_DIRECTORY_NAMES = {
     ".venv",
     "__pycache__",
     ".pytest_cache",
+    ".test-artifacts",
     ".codex_pytest_tmp",
     "Backup",
     ".codex-backups",

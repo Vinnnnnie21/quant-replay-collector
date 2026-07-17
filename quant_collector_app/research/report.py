@@ -62,6 +62,18 @@ def write_research_report(
             f"- Intervals: {', '.join(manifest.get('intervals', [])) or 'none'}",
         ]
     )
+    randomized_lines = [
+        (
+            f"- {item.get('calculation')}: random_seed={item.get('random_seed')}, "
+            f"simulation_count={item.get('simulation_count')}, confidence={item.get('confidence')}, "
+            f"batch_size={item.get('batch_size')}, batch_count={item.get('batch_count')}, "
+            f"work_items={item.get('work_items')}, resource_budget={item.get('resource_budget')}, "
+            f"max_batch_work_items={item.get('max_batch_work_items')}, "
+            f"method_version={item.get('method_version')}, "
+            f"application_version={item.get('application_version')}"
+        )
+        for item in manifest.get("randomized_statistics", [])
+    ] or ["- 无" if zh else "- none"]
     quality_lines = (
         [
             f"- 有效样本：{audit.get('valid_sample_count', 0)}",
@@ -134,6 +146,10 @@ def write_research_report(
         f"## {_text('dataset', language, 'Dataset')}",
         "",
         *dataset_lines,
+        "",
+        "## 随机统计设置" if zh else "## Randomized Statistics",
+        "",
+        *randomized_lines,
         "",
         f"## {_text('data_quality', language, 'Data Quality')}",
         "",

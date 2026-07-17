@@ -29,6 +29,33 @@ def test_package_mode_core_modules_are_import_safe():
     assert importlib.import_module("quant_collector_app.self_check") is not None
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        [str(APP_DIR / "self_check.py"), "--core"],
+        ["-m", "quant_collector_app.self_check", "--core"],
+    ],
+    ids=["script-mode", "package-mode"],
+)
+def test_core_self_check_uses_formal_entry_logic_writer_without_pythonpath(command):
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+
+    run = subprocess.run(
+        [sys.executable, *command],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert run.returncode == 0, run.stderr
+    assert '"status": "ok"' in run.stdout
+    assert "entry logic report fell back" not in run.stderr.lower()
+    assert "no module named 'quant_collector_app'" not in run.stderr.lower()
+
+
 def test_leaf_modules_do_not_require_app_dir_pythonpath():
     env = os.environ.copy()
     env.pop("PYTHONPATH", None)

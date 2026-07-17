@@ -6,6 +6,21 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+try:
+    from research.kline_quality import (
+        EVENT_WINDOW_TIME_COLUMNS,
+        parse_kline_time_ms,
+        validate_event_window_research_input,
+        validate_research_klines,
+    )
+except ImportError:  # pragma: no cover - package import path
+    from ..research.kline_quality import (
+        EVENT_WINDOW_TIME_COLUMNS,
+        parse_kline_time_ms,
+        validate_event_window_research_input,
+        validate_research_klines,
+    )
+
 
 RETURN_COLUMNS = [
     "source",
@@ -143,13 +158,13 @@ def _add_return_columns(out: pd.DataFrame, group_key: str | None = None) -> pd.D
 def build_return_series(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return _empty_returns()
+    validate_research_klines(df, context="statistical analysis")
     required = ["bar_index", "open_time_bjt", "open", "high", "low", "close", "volume"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         return _empty_returns()
 
-    out = df[required].copy()
-    out = out.sort_values("bar_index").drop_duplicates("bar_index").reset_index(drop=True)
+    out = df[required].copy().reset_index(drop=True)
     for col in ["open", "high", "low", "close", "volume"]:
         out[col] = pd.to_numeric(out[col], errors="coerce")
 
@@ -166,27 +181,26 @@ def build_return_series(df: pd.DataFrame) -> pd.DataFrame:
 def build_event_window_return_series(windows: pd.DataFrame) -> pd.DataFrame:
     if windows is None or windows.empty:
         return _empty_returns()
-    required = ["bar_index", "open", "high", "low", "close", "volume"]
-    missing = [c for c in required if c not in windows.columns]
-    if missing:
-        return _empty_returns()
+    validate_event_window_research_input(windows)
 
     df = windows.copy()
-    if "open_time_bjt" not in df.columns and "bar_open_time_bjt" in df.columns:
-        df["open_time_bjt"] = df["bar_open_time_bjt"]
-    if "open_time_bjt" not in df.columns:
-        df["open_time_bjt"] = ""
+    time_column = next(column for column in EVENT_WINDOW_TIME_COLUMNS if column in df.columns)
+    if time_column in {"open_time_bjt", "bar_open_time_bjt"}:
+        df["open_time_bjt"] = df[time_column]
+    else:
+        open_time_ms = parse_kline_time_ms(df[time_column])
+        df["open_time_bjt"] = pd.to_datetime(
+            open_time_ms,
+            unit="ms",
+            utc=True,
+        ).dt.tz_convert("Asia/Shanghai")
 
     for col in ["open", "high", "low", "close", "volume", "bar_index"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
 
     if "event_id" in df.columns:
-        sort_cols = ["event_id"]
-        sort_cols.append("offset" if "offset" in df.columns else "bar_index")
-        df = df.sort_values(sort_cols).drop_duplicates(["event_id", "bar_index"]).reset_index(drop=True)
         df["segment_id"] = df["event_id"].astype(str)
     else:
-        df = df.sort_values("bar_index").drop_duplicates("bar_index").reset_index(drop=True)
         breaks = df["bar_index"].diff().fillna(1).ne(1).cumsum()
         df["segment_id"] = "segment_" + breaks.astype(str)
         df["event_id"] = pd.NA

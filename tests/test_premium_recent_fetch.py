@@ -8,7 +8,9 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pyqtgraph")
 
 from main_app import MainWindow
+from premium_controller import PremiumController
 from storage import StorageManager
+from task_lifecycle import BackgroundTaskLifecycle, TaskState
 
 
 def _premium_row(index: int) -> dict:
@@ -66,3 +68,73 @@ def test_premium_plot_uses_recent_fetch_not_full_table():
 
     assert calls == ["recent:240"]
     assert window.premiumBuyCurve.values[1][-1] == 9.0
+
+
+def test_request_premium_sample_registers_the_background_task() -> None:
+    emitted: list[bool] = []
+    lifecycle = BackgroundTaskLifecycle()
+    window = SimpleNamespace(
+        premium_controller=PremiumController(),
+        premium_worker=SimpleNamespace(request_stop=lambda: None),
+        requestPremium=SimpleNamespace(emit=lambda: emitted.append(True)),
+        task_lifecycle=lifecycle,
+    )
+
+    MainWindow.request_premium_sample(window)
+
+    assert emitted == [True]
+    assert lifecycle.state("premium_sample") is TaskState.RUNNING
+
+
+def test_request_premium_sample_after_shutdown_does_not_change_state_or_emit() -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    lifecycle.begin_shutdown()
+    emitted: list[bool] = []
+    controller = PremiumController()
+    window = SimpleNamespace(
+        premium_controller=controller,
+        premium_worker=SimpleNamespace(request_stop=lambda: None),
+        requestPremium=SimpleNamespace(emit=lambda: emitted.append(True)),
+        task_lifecycle=lifecycle,
+    )
+
+    MainWindow.request_premium_sample(window)
+
+    assert controller.inflight is False
+    assert emitted == []
+    assert lifecycle.state("premium_sample") is None
+
+
+def test_completed_premium_sample_finishes_the_registered_task() -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    lifecycle.start("premium_sample")
+    window = SimpleNamespace(
+        premium_controller=PremiumController(),
+        storage=SimpleNamespace(insert_premium_sample=lambda _row: None),
+        premiumStatus=SimpleNamespace(setText=lambda _text: None),
+        premiumStats=SimpleNamespace(setPlainText=lambda _text: None),
+        _set_widget_role=lambda *_args: None,
+        _refresh_premium_plot=lambda: None,
+        task_lifecycle=lifecycle,
+    )
+
+    MainWindow.on_premium_sample(window, _premium_row(1))
+
+    assert lifecycle.state("premium_sample") is TaskState.COMPLETED
+
+
+def test_cancelled_premium_sample_releases_the_task() -> None:
+    lifecycle = BackgroundTaskLifecycle()
+    lifecycle.start("premium_sample")
+    lifecycle.request_stop_all()
+    controller = PremiumController()
+    controller.inflight = True
+    window = SimpleNamespace(
+        premium_controller=controller,
+        task_lifecycle=lifecycle,
+    )
+
+    MainWindow.on_premium_cancelled(window)
+
+    assert controller.inflight is False
+    assert lifecycle.state("premium_sample") is TaskState.COMPLETED

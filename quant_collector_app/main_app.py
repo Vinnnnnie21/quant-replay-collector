@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -12,6 +13,7 @@ import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
+from app_icon import apply_application_icon
 from app_config import (
     APP_NAME,
     APP_VERSION,
@@ -28,6 +30,7 @@ from app_config import (
 from app_logger import get_logger, install_exception_hook
 from app_i18n import tr as i18n_tr
 from app_settings import load_app_settings, save_app_settings
+from database_backup import backup_database_if_needed
 from execution import ExecutionSettings
 from market_data import bjt_now_iso, clamp
 from premium_monitor import PremiumWorker
@@ -54,6 +57,7 @@ from presenters.status_presenter import (
 )
 from replay_controller import ReplayController
 from render_state import RenderState
+from safe_shutdown import SafeShutdownCoordinator
 from render.chart_render_adapter import (
     autoscale_y,
     clamp_xrange,
@@ -72,6 +76,7 @@ from render.chart_render_adapter import (
     sync_markers,
 )
 from controllers.analysis_controller import AnalysisRefreshController
+from controllers.daily_backup_controller import DailyBackupController
 from controllers.export_task_controller import ExportTaskController
 from controllers.market_data_controller import (
     accept_loaded_market_key as apply_loaded_market_key,
@@ -130,16 +135,25 @@ from controllers.trade_action_controller import (
 
 from controllers.trade_record_controller import (
     confirm_clear_trade_records as apply_clear_trade_records,
+    confirm_delete_selected_trade as apply_delete_selected_trade,
+    confirm_delete_session_trade as apply_delete_session_trade,
+    confirm_delete_trade_range as apply_delete_trade_range,
+    preview_trade_data_range as apply_preview_trade_data_range,
+    refresh_trade_management_sessions as apply_refresh_trade_management_sessions,
+    load_trade_management_session_trades as apply_load_trade_management_session_trades,
+)
+from controllers.session_resume_controller import (
+    continue_performance_session as apply_continue_performance_session,
+    refresh_replay_performance_sessions as apply_refresh_replay_performance_sessions,
 )
 from services.analysis_refresh import (
+    AnalysisRefreshRequest,
     AnalysisRefreshResult,
-    AnalysisRefreshSnapshot,
+    PublishedMarketData,
     build_dataset_summary_text,
     build_event_study_summary_frame,
-    build_performance_summary_text,
 )
 from services.session_service import (
-    SessionSaveInput,
     build_session_restore_plan,
     save_session_state,
     should_autosave,
@@ -150,6 +164,7 @@ from ui_watchdog import UiFreezeWatchdog
 from state import AppState
 from startup import bootstrap_runtime_dirs, configure_logging
 from storage import StorageManager
+from task_lifecycle import BackgroundTaskLifecycle
 from trade_controller import TradeController
 from render.marker_renderer import MarkerPayloadCache
 from views.main_window_layout import build_main_window_ui
@@ -162,6 +177,10 @@ from views.main_window_connections import (
 from views.main_window_presentation import (
     apply_main_window_theme,
     retranslate_main_window_ui,
+)
+from views.session_ui_adapter import (
+    apply_session_restore_plan,
+    build_session_save_input,
 )
 from views.theme_dialog import ThemeDialog
 from workers.loader_worker import LoaderWorker
@@ -196,9 +215,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.premium_controller = PremiumController()
         self.replay_controller = ReplayController()
         self.app_state = AppState()
+        self.task_lifecycle = BackgroundTaskLifecycle()
         self._export_success_callback = None
 
         self.df = pd.DataFrame()
+        self._market_data_generation = 0
         self.cursor = 0
         self._drawn_n = -1
         self._last_rebuild_key = None
@@ -259,14 +280,16 @@ class MainWindow(QtWidgets.QMainWindow):
         self._trade_by_id: dict[str, dict[str, Any]] = {}
         self._shortcuts: list[QtGui.QShortcut] = []
         self._analysis_workspace = None
+        self._analysis_performance_payload = None
         self.analysis_refresh_controller = AnalysisRefreshController(
-            snapshot_factory=self._analysis_refresh_snapshot,
+            snapshot_factory=self._analysis_refresh_request,
             is_playing=lambda: bool(self.playing),
+            lifecycle=self.task_lifecycle,
             parent=self,
         )
         self.analysis_refresh_controller.resultReady.connect(self._apply_analysis_refresh_result)
         self.analysis_refresh_controller.failed.connect(self._on_analysis_refresh_failed)
-        self.export_task_controller = ExportTaskController(parent=self)
+        self.export_task_controller = ExportTaskController(lifecycle=self.task_lifecycle, parent=self)
         self.export_task_controller.finished.connect(self._on_export_finished)
         self.export_task_controller.failed.connect(self._on_export_failed)
         self.export_task_controller.cancelled.connect(self._on_export_cancelled)
@@ -282,7 +305,27 @@ class MainWindow(QtWidgets.QMainWindow):
         self.premium_thread.start()
 
         self._build_ui()
+        self._handling_close_event = False
+        self._safe_shutdown_coordinator = SafeShutdownCoordinator(
+            lifecycle=self.task_lifecycle,
+            save=self._save_for_shutdown,
+            stop_producers=self._stop_shutdown_producers,
+            show_status=self.status.setText,
+            schedule_poll=lambda callback: QtCore.QTimer.singleShot(50, callback),
+            finalize=self._finalize_shutdown,
+        )
+        self.daily_backup_controller = DailyBackupController(
+            db_path=self.storage.db_path,
+            backup_dir=self.storage.backup_dir,
+            lifecycle=self.task_lifecycle,
+            parent=self,
+        )
+        self.daily_backup_controller.progress.connect(self._on_daily_backup_progress)
+        self.daily_backup_controller.finished.connect(self._on_daily_backup_finished)
+        self.daily_backup_controller.failed.connect(self._on_daily_backup_failed)
+        self.daily_backup_controller.cancelled.connect(self._on_daily_backup_cancelled)
         self._restore_layout_preferences()
+        self.analysis_refresh_controller.progress.connect(self.status.setText)
         self.export_task_controller.progress.connect(self.status.setText)
         self._connect()
         self._install_theme()
@@ -304,30 +347,113 @@ class MainWindow(QtWidgets.QMainWindow):
         self.ui_watchdog = UiFreezeWatchdog(log_dir=LOG_DIR, parent=self)
 
         self._restore_latest_session_if_any()
+        self.refresh_replay_performance_sessions()
+        self.daily_backup_controller.schedule()
 
     def closeEvent(self, event: QtGui.QCloseEvent):
+        self._handling_close_event = True
+        try:
+            ready = self._safe_shutdown_coordinator.request_close()
+        finally:
+            self._handling_close_event = False
+        if ready:
+            self._shutdown_graphics()
+            event.accept()
+        else:
+            event.ignore()
+
+    def _shutdown_graphics(self) -> None:
+        for widget_name in ("premiumPlot", "glw"):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.shutdown()
+
+    def _save_for_shutdown(self) -> None:
         try:
             self.persist_session_state()
         except Exception:
             logger.exception("关闭窗口时保存会话失败")
-            pass
+
+    def _stop_shutdown_producers(self) -> None:
+        for timer_name in ("timer", "autosave_timer", "premium_timer"):
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                timer.stop()
+
+    def _backup_local_database(self) -> dict[str, Any]:
         try:
-            self.loader.abort()
-        except Exception:
-            pass
-        for t in (self.loader_thread, self.premium_thread):
-            try:
-                t.quit()
-                t.wait(1000)
-            except Exception:
-                pass
+            return backup_database_if_needed(
+                self.storage.db_path,
+                self.storage.backup_dir,
+            )
+        except Exception as exc:
+            logger.exception("Local database backup failed.")
+            message = f"数据库备份失败：{type(exc).__name__}: {exc}"
+            self.status.setText(message)
+            self._log(message)
+            return {"status": "failed", "error": message}
+
+    def _on_daily_backup_finished(self, result: dict[str, Any]) -> None:
+        status = str(result.get("status") or "ok")
+        self._log(f"Daily database backup finished: {status}")
+        self._on_daily_backup_progress("本地数据库后台备份完成")
+
+    def _on_daily_backup_progress(self, message: str) -> None:
+        active_tasks = set(getattr(self.task_lifecycle, "active_tasks", ()))
+        if active_tasks - {"daily_backup"}:
+            return
+        self.status.setText(message)
+
+    def _on_daily_backup_failed(self, error: str) -> None:
+        message = f"数据库备份失败：{error}"
+        logger.error("Daily database backup failed: %s", error)
+        self.status.setText(message)
+        self._log(message)
+
+    def _on_daily_backup_cancelled(self) -> None:
+        self._log("Daily database backup cancelled at a safe SQLite page boundary.")
+
+    def _finalize_shutdown(self) -> bool:
+        for timer_name in ("timer", "autosave_timer", "premium_timer"):
+            timer = getattr(self, timer_name, None)
+            if timer is not None:
+                timer.stop()
+        panel_stopped = True
         if hasattr(self, "multiTimeframePanel"):
-            self.multiTimeframePanel.shutdown()
+            panel_stopped = self.multiTimeframePanel.shutdown() is not False
         if hasattr(self, "ui_watchdog"):
             self.ui_watchdog.shutdown()
-        self.export_task_controller.shutdown()
-        self.analysis_refresh_controller.shutdown()
-        super().closeEvent(event)
+        workspace_stopped = True
+        workspace = getattr(self, "_analysis_workspace", None)
+        if workspace is not None:
+            workspace_stopped = workspace.shutdown() is not False
+        controllers_stopped = True
+        daily_backup_controller = getattr(self, "daily_backup_controller", None)
+        if daily_backup_controller is not None:
+            controllers_stopped = daily_backup_controller.shutdown() is not False
+        controllers_stopped = (
+            self.export_task_controller.shutdown() is not False
+            and controllers_stopped
+        )
+        controllers_stopped = (
+            self.analysis_refresh_controller.shutdown() is not False
+            and controllers_stopped
+        )
+        stopped = True
+        for thread in (self.loader_thread, self.premium_thread):
+            if thread.isRunning():
+                thread.quit()
+                stopped = False
+        if (
+            not panel_stopped
+            or not workspace_stopped
+            or not controllers_stopped
+            or not stopped
+        ):
+            return False
+        if not self._handling_close_event:
+            QtCore.QTimer.singleShot(0, self.close)
+        return True
 
     # ---------- UI ----------
     def _build_ui(self):
@@ -589,23 +715,7 @@ class MainWindow(QtWidgets.QMainWindow):
             self.session_id = plan.session_id
             self._restoring_session_settings = True
             try:
-                if plan.symbol:
-                    self._set_symbol_value(plan.symbol)
-                if plan.interval:
-                    self.intervalBox.setCurrentText(plan.interval)
-                if plan.start_date_bjt:
-                    self.startDate.setDate(QtCore.QDate.fromString(plan.start_date_bjt, "yyyy-MM-dd"))
-                if plan.end_date_bjt:
-                    self.endDate.setDate(QtCore.QDate.fromString(plan.end_date_bjt, "yyyy-MM-dd"))
-                self.follow_latest = plan.follow_latest
-                self.speedSlider.setValue(plan.speed_slider_value)
-                self.initialEquitySpin.setValue(plan.initial_equity)
-                self.tradeNotionalSpin.setValue(plan.trade_notional)
-                self.feeBpsSpin.setValue(plan.fee_bps)
-                self.slippageBpsSpin.setValue(plan.slippage_bps)
-                self.takeProfitPctSpin.setValue(plan.take_profit_pct or 0.0)
-                self.stopLossPctSpin.setValue(plan.stop_loss_pct or 0.0)
-                self._set_fill_mode_value(plan.fill_mode)
+                apply_session_restore_plan(self, plan)
             finally:
                 self._restoring_session_settings = False
             self.restore_snapshot_pending = True
@@ -616,34 +726,24 @@ class MainWindow(QtWidgets.QMainWindow):
             self._log(f"恢复会话失败：{type(e).__name__}: {e}")
             self.session_id = self._new_id("sess")
 
+    def refresh_replay_performance_sessions(self):
+        return apply_refresh_replay_performance_sessions(self)
+
+    def continue_performance_session(self):
+        return apply_continue_performance_session(self)
+
     def persist_session_state(self):
         started = time.perf_counter()
         if not self.session_id:
             return
         try:
             now_iso = bjt_now_iso()
-            current_market_key = self._current_market_key() if hasattr(self, "_current_market_key") else self._display_market_key
             result = save_session_state(
                 self.storage,
-                SessionSaveInput(
-                    session_id=self.session_id,
-                    current_market_key=current_market_key,
-                    sample_market_key=self._sample_market_key,
-                    has_trade_samples=bool(self.trades or self.events),
-                    display_interval_matches_sample=self._is_display_interval_same_as_sample_interval(),
-                    cursor=int(self.cursor),
-                    sample_cursor_bar_index=int(self._sample_cursor_bar_index),
-                    follow_latest=bool(self.follow_latest),
-                    speed=self.current_speed(),
+                build_session_save_input(
+                    self,
                     now_iso=now_iso,
                     app_version=APP_VERSION,
-                    initial_equity=float(self.initialEquitySpin.value()),
-                    trade_notional=float(self.tradeNotionalSpin.value()),
-                    fee_bps=float(self.feeBpsSpin.value()),
-                    slippage_bps=float(self.slippageBpsSpin.value()),
-                    fill_mode=self._fill_mode_value(),
-                    take_profit_pct=getattr(self, "take_profit_pct_value", lambda: None)(),
-                    stop_loss_pct=getattr(self, "stop_loss_pct_value", lambda: None)(),
                 )
             )
             self._sample_cursor_bar_index = result.sample_cursor_bar_index
@@ -709,6 +809,24 @@ class MainWindow(QtWidgets.QMainWindow):
     def confirm_clear_trade_records(self):
         apply_clear_trade_records(self)
 
+    def confirm_delete_trade_range(self):
+        apply_delete_trade_range(self)
+
+    def confirm_delete_selected_trade(self):
+        apply_delete_selected_trade(self)
+
+    def confirm_delete_session_trade(self):
+        apply_delete_session_trade(self)
+
+    def preview_trade_data_range(self):
+        return apply_preview_trade_data_range(self)
+
+    def refresh_trade_management_sessions(self):
+        return apply_refresh_trade_management_sessions(self)
+
+    def load_trade_management_session_trades(self):
+        return apply_load_trade_management_session_trades(self)
+
     def _new_id(self, prefix: str):
         return f"{prefix}_{uuid.uuid4().hex[:12]}"
 
@@ -762,7 +880,7 @@ class MainWindow(QtWidgets.QMainWindow):
         auto_resume_after_load: bool = False,
         reset_session: bool | None = None,
     ):
-        request_market_data_load(
+        return request_market_data_load(
             self,
             restore=restore,
             use_cache=use_cache,
@@ -809,12 +927,12 @@ class MainWindow(QtWidgets.QMainWindow):
         )
 
     def take_profit_pct_value(self) -> float | None:
-        value = float(self.takeProfitPctSpin.value())
-        return value if value > 0 else None
+        value = self.takeProfitPctSpin.value()
+        return float(value) if value is not None and float(value) > 0 else None
 
     def stop_loss_pct_value(self) -> float | None:
-        value = float(self.stopLossPctSpin.value())
-        return value if value > 0 else None
+        value = self.stopLossPctSpin.value()
+        return float(value) if value is not None and float(value) > 0 else None
 
     def on_execution_settings_changed(self, *_):
         if bool(getattr(self, "_restoring_session_settings", False)):
@@ -1057,13 +1175,13 @@ class MainWindow(QtWidgets.QMainWindow):
             for table in tables:
                 table.clearSelection()
                 table.setCurrentCell(-1, -1)
-            self._populate_tables(include_heavy=include_heavy)
+            self._populate_tables(include_heavy=False)
         finally:
             for table, old_state in old_signal_state.items():
                 table.blockSignals(old_state)
             _maybe_log_slow_operation(self, "_refresh_tables", started)
-        if include_heavy:
-            self._refresh_performance_summary()
+        if include_heavy and hasattr(self, "analysis_refresh_controller"):
+            self.analysis_refresh_controller.schedule()
 
     def _populate_tables(self, include_heavy: bool = True):
         populate_trade_tables(self.openTradesTable, self.closedTradesTable, self.trades)
@@ -1079,11 +1197,8 @@ class MainWindow(QtWidgets.QMainWindow):
         )
         if hasattr(self, "recentEventsList"):
             populate_recent_event_list(self.recentEventsList, getattr(self, "recentEventsEmptyState", None), self.events)
-        if include_heavy:
-            equity_rows = self._current_equity_rows()
-            populate_equity_table(self.equityTable, equity_rows)
-            self._populate_event_study_table()
-            self._refresh_dataset_summary()
+        if include_heavy and hasattr(self, "analysis_refresh_controller"):
+            self.analysis_refresh_controller.schedule()
         if hasattr(self, "_update_empty_states"):
             self._update_empty_states()
 
@@ -1104,46 +1219,63 @@ class MainWindow(QtWidgets.QMainWindow):
             has_dataset = bool(text) and not text.startswith("暂无")
             self.datasetStack.setCurrentIndex(1 if has_dataset else 0)
 
-    def _analysis_refresh_snapshot(self) -> AnalysisRefreshSnapshot:
-        return AnalysisRefreshSnapshot(
-            events=self._event_rows_for_study(),
-            features=self._feature_rows_for_session(),
-            trades=[dict(t) for t in self.trades],
-            equity_rows=self._current_equity_rows(),
-            initial_equity=float(self.initialEquitySpin.value()),
+    def _clear_analysis_views(self) -> None:
+        self.equityTable.setRowCount(0)
+        self.eventStudyTable.setRowCount(0)
+        self.performanceText.clear()
+        self.datasetText.clear()
+        self._update_empty_states()
+
+    def _analysis_refresh_request(self) -> AnalysisRefreshRequest:
+        started = time.perf_counter()
+        market_frame = getattr(self, "df", None)
+        has_market_frame = isinstance(market_frame, pd.DataFrame) and not market_frame.empty
+        trade_notional_spin = getattr(self, "tradeNotionalSpin", None)
+        storage = getattr(self, "storage", None)
+        values = {
+            "db_path": str(getattr(storage, "db_path", "")),
+            "session_id": str(getattr(self, "session_id", None) or ""),
+            "market_data": (
+                PublishedMarketData(
+                    generation=int(getattr(self, "_market_data_generation", 0)),
+                    frame=market_frame,
+                )
+                if has_market_frame
+                else None
+            ),
+            "market_cursor": int(self.cursor) if has_market_frame else None,
+            "initial_equity": float(self.initialEquitySpin.value()),
+            "trade_notional": (
+                float(trade_notional_spin.value())
+                if trade_notional_spin is not None
+                else 1000.0
+            ),
+        }
+        return AnalysisRefreshRequest(
+            **values,
+            ui_input_capture_seconds=time.perf_counter() - started,
+            ui_thread_id=threading.get_ident(),
         )
 
     def _on_analysis_refresh_failed(self, error: str) -> None:
         self._log(f"Analysis refresh failed: {error}")
 
     def _apply_analysis_refresh_result(self, result: AnalysisRefreshResult) -> None:
+        if hasattr(self, "equityTable"):
+            populate_equity_table(self.equityTable, result.equity_rows)
         populate_event_study_table(self.eventStudyTable, result.event_study)
         self.datasetText.setPlainText(result.dataset_text)
         if hasattr(self, "performanceText"):
             self.performanceText.setPlainText(result.performance_text)
         if hasattr(self, "_update_empty_states"):
             self._update_empty_states()
+        if result.performance_workspace is not None:
+            self._analysis_performance_payload = result.performance_workspace
+            workspace = getattr(self, "_analysis_workspace", None)
+            if workspace is not None:
+                workspace.apply_performance_payload(result.performance_workspace)
         for warning in result.warnings:
             self._log(warning)
-
-    def _current_equity_rows(self) -> list[dict[str, Any]]:
-        from accounting import build_continuous_equity_curve, build_equity_curve
-
-        if not self.df.empty:
-            end = int(clamp(self.cursor, 0, len(self.df) - 1)) + 1
-            return build_continuous_equity_curve(
-                self.df.iloc[:end].to_dict("records"),
-                self.trades,
-                self.session_id or "",
-                float(self.initialEquitySpin.value()),
-                float(self.tradeNotionalSpin.value()),
-            )
-        return build_equity_curve(
-            self.trades,
-            self.session_id or "",
-            float(self.initialEquitySpin.value()),
-            float(self.tradeNotionalSpin.value()),
-        )
 
     def _feature_rows_for_session(self) -> list[dict[str, Any]]:
         if not self.session_id:
@@ -1188,23 +1320,6 @@ class MainWindow(QtWidgets.QMainWindow):
         finally:
             _maybe_log_slow_operation(self, "_refresh_dataset_summary", started)
 
-    def _refresh_performance_summary(self):
-        started = time.perf_counter()
-
-        if not hasattr(self, "performanceText"):
-            return
-        try:
-            text, warning = build_performance_summary_text(
-                self.trades,
-                self._current_equity_rows(),
-                float(self.initialEquitySpin.value()),
-            )
-            self.performanceText.setPlainText(text)
-            if warning:
-                self._log(warning)
-        finally:
-            _maybe_log_slow_operation(self, "_refresh_performance_summary", started)
-
     def jump_to_trade_row(self, item: QtWidgets.QTableWidgetItem):
         trade_id = self.sender().item(item.row(), 0).data(ROLE_ID)
         trade = self._trade_by_id.get(trade_id)
@@ -1245,6 +1360,9 @@ class MainWindow(QtWidgets.QMainWindow):
         return self.export_controller
 
     def export_session(self):
+        lifecycle = getattr(self, "task_lifecycle", None)
+        if lifecycle is not None and lifecycle.shutdown_in_progress:
+            return
         if not self.session_id:
             return
         target = QtWidgets.QFileDialog.getExistingDirectory(self, "选择导出目录", str(EXPORT_DIR))
@@ -1259,6 +1377,9 @@ class MainWindow(QtWidgets.QMainWindow):
         language: str | None = None,
         selected_label: str = "fwd_ret_10_side_adj",
     ):
+        lifecycle = getattr(self, "task_lifecycle", None)
+        if lifecycle is not None and lifecycle.shutdown_in_progress:
+            return False
         if not self.session_id or self.app_state.export.running or self.export_task_controller.is_running:
             return False
 
@@ -1306,9 +1427,21 @@ class MainWindow(QtWidgets.QMainWindow):
 
     # ---------- Premium ----------
     def request_premium_sample(self):
+        if self.task_lifecycle.shutdown_in_progress:
+            return
         if not self.premium_controller.begin_sample():
             return
+        request_stop = getattr(self.premium_worker, "request_stop", None)
+        self.task_lifecycle.start(
+            "premium_sample",
+            request_stop=request_stop if callable(request_stop) else None,
+        )
         self.requestPremium.emit()
+
+    @QtCore.Slot()
+    def on_premium_cancelled(self) -> None:
+        self.premium_controller.inflight = False
+        self.task_lifecycle.complete("premium_sample")
 
     def on_premium_sample(self, row: dict[str, Any]):
         self.premium_controller.complete_sample(row, self.storage)
@@ -1328,6 +1461,10 @@ class MainWindow(QtWidgets.QMainWindow):
             self.premiumStatus.setText(f"最近采样：{row['sample_time_bjt']} | 状态：ERROR")
             self.premiumStats.setPlainText(row.get("error_message") or "采样失败")
         self._refresh_premium_plot()
+        if row.get("sample_status") == "OK":
+            self.task_lifecycle.complete("premium_sample")
+        else:
+            self.task_lifecycle.fail("premium_sample", row.get("error_message") or "Premium sample failed")
 
     def _refresh_premium_plot(self):
         refresh_premium_plot(self)
@@ -1351,6 +1488,7 @@ def main():
     logger.info("启动 %s v%s，日志文件=%s", APP_NAME, APP_VERSION, log_path)
     try:
         app = QtWidgets.QApplication(sys.argv)
+        apply_application_icon(app)
         win = MainWindow()
         win.show()
         sys.exit(app.exec())

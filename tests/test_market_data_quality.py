@@ -66,6 +66,58 @@ def test_quality_report_does_not_hide_out_of_order_input():
     assert report.data_quality_status == "FAIL"
 
 
+def test_cache_round_trip_preserves_float64_market_values_exactly(tmp_path):
+    req = _request(use_cache=True)
+    start_ms = int(req.start_dt_bjt.timestamp() * 1000)
+    exact_open = 100.13693952214545
+    raw = pd.DataFrame(
+        [
+            _row(start_ms, open_price=exact_open, high=101.0, low=99.0, close=100.5),
+            _row(start_ms + 60_000),
+            _row(start_ms + 120_000),
+        ],
+        columns=BINANCE_RAW_COLUMNS,
+    )
+    expected, _stats = _normalize_kline_df(
+        raw,
+        req.start_dt_bjt,
+        req.end_dt_bjt,
+        req.interval,
+        "test",
+    )
+    loader = KlineLoader(tmp_path, client=object())
+    path = loader.cache_path(req.symbol, req.interval, req.start_dt_bjt, req.end_dt_bjt)
+    loader.cache.write_frame(path, expected)
+
+    restored, _report = loader.read_cache(path, req, req.symbol, req.interval)
+
+    assert restored.loc[0, "open"] == expected.loc[0, "open"]
+
+
+def test_collection_quality_report_audits_sort_deduplication_and_invalid_row_exclusion():
+    req = _request()
+    start_ms = int(req.start_dt_bjt.timestamp() * 1000)
+    invalid = _row(start_ms + 120_000, high=98.0, low=99.0)
+    raw = pd.DataFrame(
+        [
+            _row(start_ms + 60_000),
+            _row(start_ms),
+            _row(start_ms),
+            invalid,
+        ],
+        columns=BINANCE_RAW_COLUMNS,
+    )
+
+    cleaned, stats = _normalize_kline_df(raw, req.start_dt_bjt, req.end_dt_bjt, req.interval, "test")
+    report = assess_data_quality(cleaned, req.symbol, req.interval, req.start_dt_bjt, req.end_dt_bjt, "test", stats)
+
+    assert report.repair_actions == (
+        {"action": "sort_by_open_time", "affected_rows": 1},
+        {"action": "drop_duplicate_bars", "affected_rows": 1},
+        {"action": "exclude_invalid_rows", "affected_rows": 1},
+    )
+
+
 def test_negative_volume_is_rejected_by_quality_audit():
     req = _request()
     start_ms = int(req.start_dt_bjt.timestamp() * 1000)
@@ -79,6 +131,21 @@ def test_negative_volume_is_rejected_by_quality_audit():
     assert stats["invalid_volume"] == 1
     assert report.invalid_rows == 1
     assert report.data_quality_status == "FAIL"
+
+
+def test_non_finite_volume_is_excluded_and_recorded_as_collection_repair():
+    req = _request()
+    start_ms = int(req.start_dt_bjt.timestamp() * 1000)
+    bad = _row(start_ms + 60_000)
+    bad[5] = float("inf")
+    raw = pd.DataFrame([_row(start_ms), bad, _row(start_ms + 120_000)], columns=BINANCE_RAW_COLUMNS)
+
+    cleaned, stats = _normalize_kline_df(raw, req.start_dt_bjt, req.end_dt_bjt, req.interval, "test")
+    report = assess_data_quality(cleaned, req.symbol, req.interval, req.start_dt_bjt, req.end_dt_bjt, "test", stats)
+
+    assert len(cleaned) == 2
+    assert stats["dropped_invalid"] == 1
+    assert {"action": "exclude_invalid_rows", "affected_rows": 1} in report.repair_actions
 
 
 def test_client_retries_rate_limit_and_keeps_timeout():

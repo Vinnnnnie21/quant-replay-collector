@@ -40,8 +40,12 @@ class LoaderWorker(QtCore.QObject):
 
     @QtCore.Slot(object)
     def load(self, request: LoadRequest):
-        self._abort = False
         self.started.emit()
+        if self._abort:
+            self._abort = False
+            self.cancelled.emit()
+            self.finished.emit(pd.DataFrame(), "Loading cancelled.")
+            return
         try:
             frame, message = self.kline_loader.load(
                 request,
@@ -56,6 +60,8 @@ class LoaderWorker(QtCore.QObject):
             message = f"加载失败：{format_request_error(exc)}"
             self.failed.emit(message)
             self.finished.emit(pd.DataFrame(), message)
+        finally:
+            self._abort = False
 
 
 __all__ = ["LoaderWorker"]

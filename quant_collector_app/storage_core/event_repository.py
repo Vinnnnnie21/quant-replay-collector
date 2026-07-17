@@ -67,6 +67,18 @@ def save_event_windows(conn, session_id: str, event_id: str, rows: Iterable[dict
     )
 
 
+def list_event_windows_for_session(conn, session_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT * FROM event_windows
+        WHERE session_id=?
+        ORDER BY event_id ASC, offset ASC, id ASC
+        """,
+        (session_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def delete_event_windows(conn, event_id: str) -> None:
     conn.execute("DELETE FROM event_windows WHERE event_id=?", (event_id,))
 

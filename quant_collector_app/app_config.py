@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import os
 import shutil
 import sys
 import warnings
@@ -9,12 +10,14 @@ from datetime import datetime
 from pathlib import Path
 
 try:
+    from atomic_write import atomic_write_text
     from ui_style import DARK_THEME, LIGHT_THEME, normalize_theme_settings
 except ImportError:  # pragma: no cover - package import path
+    from .atomic_write import atomic_write_text
     from .ui_style import DARK_THEME, LIGHT_THEME, normalize_theme_settings
 
 APP_NAME = "Quant Replay Collector"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.5.1"
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_INTERVAL = "1m"
 DEFAULT_INITIAL_EQUITY = 10_000.0
@@ -108,4 +111,8 @@ def load_theme_settings() -> dict:
 def save_theme_settings(theme: dict) -> None:
     THEME_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     normalized = normalize_theme_settings(theme)
-    THEME_CONFIG_PATH.write_text(json.dumps(normalized, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_text(
+        THEME_CONFIG_PATH,
+        json.dumps(normalized, ensure_ascii=False, indent=2),
+        replace_fn=os.replace,
+    )

@@ -32,6 +32,7 @@ class DataQualityReport:
     source: str
     strictly_increasing: bool
     data_quality_status: str
+    repair_actions: tuple[dict[str, int | str], ...]
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -89,7 +90,21 @@ def assess_data_quality(
         source=source,
         strictly_increasing=strictly_increasing,
         data_quality_status=status,
+        repair_actions=_repair_actions(clean_stats),
     )
+
+
+def _repair_actions(clean_stats: dict[str, int]) -> tuple[dict[str, int | str], ...]:
+    actions: list[dict[str, int | str]] = []
+    for stat, action in (
+        ("out_of_order", "sort_by_open_time"),
+        ("dropped_duplicates", "drop_duplicate_bars"),
+        ("dropped_invalid", "exclude_invalid_rows"),
+    ):
+        affected_rows = int(clean_stats.get(stat, 0))
+        if affected_rows:
+            actions.append({"action": action, "affected_rows": affected_rows})
+    return tuple(actions)
 
 
 __all__ = ["DataQualityReport", "assess_data_quality"]

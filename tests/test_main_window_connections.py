@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import os
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+QtCore = pytest.importorskip("PySide6.QtCore")
 
 from views.main_window_connections import setup_table
 from views.main_window_connections import connect_main_window_signals
@@ -40,8 +42,9 @@ class _ViewBox:
         self.sigXRangeChanged = _Signal()
 
 
-class _DummyWindow:
+class _DummyWindow(QtWidgets.QWidget):
     def __init__(self):
+        super().__init__()
         self.calls = []
         for name in (
             "btnApplyMarket",
@@ -60,6 +63,11 @@ class _DummyWindow:
             "btnUndo",
             "btnRedo",
             "btnClearTradeRecords",
+            "btnPreviewTradeRange",
+            "btnDeleteTradeRange",
+            "btnDeleteSelectedTrade",
+            "btnDeleteSessionTrade",
+            "btnContinuePerformanceSession",
             "btnToggleDanger",
             "btnApplyEventMeta",
             "btnToggleDetail",
@@ -81,6 +89,8 @@ class _DummyWindow:
         self.slippageBpsSpin = QtWidgets.QDoubleSpinBox()
         self.tradeNotionalSpin = QtWidgets.QDoubleSpinBox()
         self.initialEquitySpin = QtWidgets.QDoubleSpinBox()
+        self.tradeManagementSessionBox = QtWidgets.QComboBox()
+        self.replayPerformanceSessionBox = QtWidgets.QComboBox()
         self.requestLoad = _Signal()
         self.requestPremium = _Signal()
         self.loader = _Worker()
@@ -95,6 +105,11 @@ class _DummyWindow:
         self.eventFilterTag = QtWidgets.QComboBox()
         self.eventFilterSide = QtWidgets.QComboBox()
         self.eventFilterType = QtWidgets.QComboBox()
+        for value in tuple(self.__dict__.values()):
+            candidates = value.values() if isinstance(value, dict) else (value,)
+            for candidate in candidates:
+                if isinstance(candidate, QtWidgets.QWidget) and candidate.parentWidget() is None:
+                    candidate.setParent(self)
 
     def _record(self, name, *args):
         self.calls.append((name, args))
@@ -117,6 +132,12 @@ class _DummyWindow:
     def undo(self): self._record("undo")
     def redo(self): self._record("redo")
     def confirm_clear_trade_records(self): self._record("confirm_clear_trade_records")
+    def preview_trade_data_range(self): self._record("preview_trade_data_range")
+    def confirm_delete_trade_range(self): self._record("confirm_delete_trade_range")
+    def confirm_delete_selected_trade(self): self._record("confirm_delete_selected_trade")
+    def confirm_delete_session_trade(self): self._record("confirm_delete_session_trade")
+    def load_trade_management_session_trades(self): self._record("load_trade_management_session_trades")
+    def continue_performance_session(self): self._record("continue_performance_session")
     def apply_labels_to_selected_event(self): self._record("apply_labels_to_selected_event")
     def filter_symbol_list(self, text): self._record("filter_symbol_list", text)
     def on_symbol_item_selected(self, item): self._record("on_symbol_item_selected", item)
@@ -142,6 +163,45 @@ class _DummyWindow:
     def toggle_log_drawer(self, value): self._record("toggle_log_drawer", value)
 
 
+def _destroy_test_widget(widget: QtWidgets.QWidget, app: QtWidgets.QApplication) -> None:
+    destroyed: list[bool] = []
+    widget.destroyed.connect(lambda: destroyed.append(True))
+    widget.deleteLater()
+    app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+    app.processEvents()
+    assert destroyed == [True]
+    widget.__dict__.clear()
+    gc.collect()
+    app.processEvents()
+
+
+@pytest.fixture
+def dummy_window():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    window = _DummyWindow()
+    yield window
+    _destroy_test_widget(window, app)
+
+
+def test_dummy_window_has_one_qt_ownership_root():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    before = set(app.topLevelWidgets())
+
+    window = _DummyWindow()
+
+    try:
+        added = set(app.topLevelWidgets()) - before
+        roots = set()
+        for widget in added:
+            root = widget
+            while root.parentWidget() is not None:
+                root = root.parentWidget()
+            roots.add(root)
+        assert roots == {window}
+    finally:
+        _destroy_test_widget(window, app)
+
+
 def test_setup_table_preserves_read_only_single_row_selection_contract():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     table = QtWidgets.QTableWidget()
@@ -152,13 +212,11 @@ def test_setup_table_preserves_read_only_single_row_selection_contract():
     assert table.selectionMode() == QtWidgets.QAbstractItemView.SingleSelection
     assert table.editTriggers() == QtWidgets.QAbstractItemView.NoEditTriggers
     assert table.showGrid() is False
-    table.close()
-    app.processEvents()
+    _destroy_test_widget(table, app)
 
 
-def test_market_and_play_buttons_have_separate_connections():
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = _DummyWindow()
+def test_market_and_play_buttons_have_separate_connections(dummy_window):
+    window = dummy_window
 
     connect_main_window_signals(window)
     window.btnApplyMarket.click()
@@ -171,23 +229,19 @@ def test_market_and_play_buttons_have_separate_connections():
     assert any(call[0] == "on_market_params_changed" for call in window.calls)
     assert ("on_interval_changed_for_dynamic_switch", ("1m",)) in window.calls
     assert not hasattr(window, "btnReloadData")
-    app.processEvents()
 
 
-def test_price_chart_drag_lifecycle_is_connected():
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = _DummyWindow()
+def test_price_chart_drag_lifecycle_is_connected(dummy_window):
+    window = dummy_window
 
     connect_main_window_signals(window)
 
     assert window.on_chart_drag_started in window.vb_price.dragStarted.connections
     assert window.on_chart_drag_finished in window.vb_price.dragFinished.connections
-    app.processEvents()
 
 
-def test_visible_main_window_buttons_are_wired_or_stateful():
-    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
-    window = _DummyWindow()
+def test_visible_main_window_buttons_are_wired_or_stateful(dummy_window):
+    window = dummy_window
 
     connect_main_window_signals(window)
 
@@ -208,6 +262,11 @@ def test_visible_main_window_buttons_are_wired_or_stateful():
         "btnUndo",
         "btnRedo",
         "btnClearTradeRecords",
+        "btnPreviewTradeRange",
+        "btnDeleteTradeRange",
+        "btnDeleteSelectedTrade",
+        "btnDeleteSessionTrade",
+        "btnContinuePerformanceSession",
         "btnApplyEventMeta",
     )
     for name in click_buttons:
@@ -216,4 +275,3 @@ def test_visible_main_window_buttons_are_wired_or_stateful():
         assert getattr(window, name).receivers("2toggled(bool)") > 0, name
     for interval, button in window.chartIntervalButtons.items():
         assert button.receivers("2clicked()") > 0, interval
-    app.processEvents()

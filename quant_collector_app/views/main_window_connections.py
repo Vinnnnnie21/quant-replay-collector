@@ -65,6 +65,10 @@ def connect_main_window_signals(window) -> None:
     window.btnToEnd.clicked.connect(window.jump_to_end)
     window.btnFollow.clicked.connect(window.toggle_follow)
     window.btnResetView.clicked.connect(window.reset_view)
+    if hasattr(window, "btnContinuePerformanceSession"):
+        window.btnContinuePerformanceSession.clicked.connect(
+            window.continue_performance_session
+        )
     window.btnExport.clicked.connect(window.export_session)
     window.btnAnalysis.clicked.connect(window.open_analysis_workspace)
     if hasattr(window, "btnReplayWorkspace"):
@@ -77,10 +81,26 @@ def connect_main_window_signals(window) -> None:
     window.btnUndo.clicked.connect(window.undo)
     window.btnRedo.clicked.connect(window.redo)
     window.btnClearTradeRecords.clicked.connect(window.confirm_clear_trade_records)
+    if hasattr(window, "btnPreviewTradeRange"):
+        window.btnPreviewTradeRange.clicked.connect(window.preview_trade_data_range)
+        window.btnDeleteTradeRange.clicked.connect(window.confirm_delete_trade_range)
+        window.btnDeleteSelectedTrade.clicked.connect(window.confirm_delete_selected_trade)
+    if hasattr(window, "btnDeleteSessionTrade"):
+        window.btnDeleteSessionTrade.clicked.connect(window.confirm_delete_session_trade)
+        window.tradeManagementSessionBox.currentIndexChanged.connect(
+            window.load_trade_management_session_trades
+        )
     if hasattr(window, "btnToggleDanger"):
         window.btnToggleDanger.toggled.connect(window.dangerActions.setVisible)
         window.btnToggleDanger.toggled.connect(
-            lambda checked: window.btnToggleDanger.setText("隐藏危险操作" if checked else "显示危险操作")
+            lambda checked: window.btnToggleDanger.setText(
+                window.tr("trade_data_management_hide")
+                if checked
+                else window.tr("trade_data_management_title")
+            )
+        )
+        window.btnToggleDanger.toggled.connect(
+            lambda checked: window.refresh_trade_management_sessions() if checked else None
         )
     window.btnApplyEventMeta.clicked.connect(window.apply_labels_to_selected_event)
     window.symbolSearchEdit.textChanged.connect(window.filter_symbol_list)
@@ -121,6 +141,10 @@ def connect_main_window_signals(window) -> None:
     window.multiTimeframePanel.loadFailed.connect(window.on_multi_timeframe_load_failed)
     window.requestPremium.connect(window.premium_worker.fetch_once, QtCore.Qt.QueuedConnection)
     window.premium_worker.finished.connect(window.on_premium_sample)
+    premium_cancelled = getattr(window.premium_worker, "cancelled", None)
+    premium_cancel_handler = getattr(window, "on_premium_cancelled", None)
+    if premium_cancelled is not None and callable(premium_cancel_handler):
+        premium_cancelled.connect(premium_cancel_handler)
     window.vb_price.userInteracted.connect(window.on_user_interaction)
     window.vb_vol.userInteracted.connect(window.on_user_interaction)
     window.vb_price.dragStarted.connect(window.on_chart_drag_started)

@@ -9,9 +9,9 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = REPO_ROOT / "dist" / "QuantReplayCollector-v1.5.0-Clean"
+DEFAULT_OUTPUT = REPO_ROOT / "dist" / "QuantReplayCollector-v1.5.1-Clean"
 PROJECT_NAME = "Quant Replay Collector"
-RELEASE_VERSION = "v1.5.0"
+RELEASE_VERSION = "v1.5.1"
 ROOT_CONTENT = (
     "README.md",
     "CHANGELOG.md",
@@ -21,9 +21,12 @@ ROOT_CONTENT = (
     "quant_collector_app",
     "tests",
     "requirements.txt",
+    "requirements-lock.txt",
     "start.bat",
     "run_app.py",
     "run_app.pyw",
+    "scripts/create_desktop_shortcut.ps1",
+    "scripts/generate_app_icon.py",
 )
 EXCLUDED_DIR_NAMES = {
     ".agents",
@@ -31,6 +34,7 @@ EXCLUDED_DIR_NAMES = {
     ".venv",
     "__pycache__",
     ".pytest_cache",
+    ".test-artifacts",
     ".codex-backups",
     "Backup",
     "backup_old",
@@ -56,7 +60,7 @@ def excluded_reason(relative_path: Path) -> str | None:
         return "private_environment"
     if "__pycache__" in parts or suffix in {".pyc", ".pyo"}:
         return "python_cache"
-    if ".pytest_cache" in parts:
+    if ".pytest_cache" in parts or ".test-artifacts" in parts:
         return "cache"
     if any(
         part in {".codex-backups", "backup", "backup_old", "build", "dist", "performance_reports"}

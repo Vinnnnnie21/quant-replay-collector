@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gc
+import importlib
 import os
 
 import pytest
@@ -9,12 +11,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 QtGui = pytest.importorskip("PySide6.QtGui")
 QtCore = pytest.importorskip("PySide6.QtCore")
-pytest.importorskip("pyqtgraph")
+pg = pytest.importorskip("pyqtgraph")
 
 from ui_style import COLORS, build_app_qss, style_primary_button
 from app_i18n import tr as i18n_tr
-from views.main_window_layout import build_main_window_ui
+from views.main_window_layout import (
+    _ManagedPlotWidget,
+    _replace_disabled_plot_menu,
+    build_main_window_ui,
+)
 from views.date_picker import DatePicker
+from views.nullable_percent_input import NullablePercentInput
 from views.main_window_presentation import (
     apply_main_window_theme,
     retranslate_main_window_ui,
@@ -25,6 +32,21 @@ def _qss_block(qss: str, selector: str) -> str:
     start = qss.index(selector)
     end = qss.index("}", start)
     return qss[start:end]
+
+
+def _send_wheel(widget: QtWidgets.QWidget, delta: int = -120) -> None:
+    local = QtCore.QPointF(widget.rect().center())
+    event = QtGui.QWheelEvent(
+        local,
+        QtCore.QPointF(widget.mapToGlobal(local.toPoint())),
+        QtCore.QPoint(),
+        QtCore.QPoint(0, delta),
+        QtCore.Qt.NoButton,
+        QtCore.Qt.NoModifier,
+        QtCore.Qt.ScrollUpdate,
+        False,
+    )
+    QtWidgets.QApplication.sendEvent(widget, event)
 
 
 class _RenderState:
@@ -39,6 +61,7 @@ class _LayoutHost(QtWidgets.QMainWindow):
 
     def __init__(self):
         super().__init__()
+        self._start_multi_timeframe_worker = False
         self._render_state = _RenderState()
         self._last_rebuild_key = object()
         self._last_marker_sync_key = object()
@@ -109,6 +132,27 @@ class _LayoutHost(QtWidgets.QMainWindow):
     def _render(self, force: bool = False) -> None:
         self.render_forced = force
 
+    def closeEvent(self, event) -> None:
+        if hasattr(self, "multiTimeframePanel"):
+            self.multiTimeframePanel.shutdown()
+        if hasattr(self, "premiumPlot"):
+            self.premiumPlot.shutdown()
+        if hasattr(self, "glw"):
+            self.glw.shutdown()
+        event.accept()
+
+
+def _close_layout_host(host: _LayoutHost, app: QtWidgets.QApplication) -> None:
+    destroyed: list[bool] = []
+    host.destroyed.connect(lambda: destroyed.append(True))
+    assert host.close() is True
+    app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+    app.processEvents()
+    assert destroyed == [True]
+    host.__dict__.clear()
+    gc.collect()
+    app.processEvents()
+
 
 def test_main_window_layout_builds_existing_primary_widgets():
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
@@ -139,7 +183,14 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert host.eventStudyTable.columnCount() == 9
     assert host.multiTimeframePanel is not None
     assert getattr(host.headerSymbolValue.parentWidget(), "property")("role") != "metricBlock"
-    assert host.headerTitleLabel.text() == "Quant Replay Collector v1.5.0"
+    assert host.headerLogoLabel.text() == ""
+    assert host.headerLogoLabel.pixmap() is not None
+    assert not host.headerLogoLabel.pixmap().isNull()
+    assert host.headerLogoLabel.width() == host.headerLogoLabel.height()
+    assert host.headerTitleLabel.text() == "Quant Replay Collector v1.5.1"
+    header_layout = host.headerBar.layout()
+    assert header_layout.indexOf(host.headerLogoLabel) < header_layout.indexOf(host.headerTitleLabel)
+    assert header_layout.indexOf(host.headerTitleLabel) < header_layout.indexOf(host.btnReplayWorkspace)
     assert "BTCUSDT" in host.headerMainLabel.text()
     assert "1m" in host.headerMainLabel.text()
     assert "O " in host.headerMainLabel.text()
@@ -162,6 +213,8 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert host.speedSlider.maximum() == 6
     assert host.speedSlider.value() == 3
     assert host.speedLabel.text().endswith("1.0x")
+    assert isinstance(host.replayPerformanceSessionBox, QtWidgets.QComboBox)
+    assert host.btnContinuePerformanceSession.property("role") == "secondaryButton"
     shortcut_keys = {binding[0] for binding in host.shortcut_bindings}
     assert QtCore.Qt.Key_Left in shortcut_keys
     assert QtCore.Qt.Key_Right in shortcut_keys
@@ -175,9 +228,11 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert notional_label.minimumWidth() >= notional_label.fontMetrics().horizontalAdvance(
         notional_label.text()
     )
-    assert host.takeProfitPctSpin.minimum() == 0.0
-    assert host.stopLossPctSpin.minimum() == 0.0
-    assert host.takeProfitPctSpin.specialValueText() == "空"
+    assert isinstance(host.takeProfitPctSpin, NullablePercentInput)
+    assert isinstance(host.stopLossPctSpin, NullablePercentInput)
+    assert host.takeProfitPctSpin.value() is None
+    assert host.stopLossPctSpin.value() is None
+    assert host.takeProfitPctSpin.text() == ""
     assert host.accountOverviewCard is not None
     assert host.accountEquityValue.text() == "-"
     assert host.openPositionsMiniTable.columnCount() == 6
@@ -189,6 +244,26 @@ def test_main_window_layout_builds_existing_primary_widgets():
     ]
     assert isinstance(host.startDate, DatePicker)
     assert isinstance(host.endDate, DatePicker)
+    assert host.dangerBox.title() == "交易数据管理"
+    assert host.btnToggleDanger.text() == "交易数据管理"
+    assert host.dangerActions.isHidden()
+    assert isinstance(host.tradeManagementSessionBox, QtWidgets.QComboBox)
+    assert isinstance(host.tradeManagementSessionTradeTable, QtWidgets.QTableWidget)
+    assert host.tradeManagementSessionTradeTable.columnCount() == 10
+    assert host.btnDeleteSessionTrade.property("role") == "dangerGhostButton"
+    assert isinstance(host.tradeManagementStart, QtWidgets.QDateTimeEdit)
+    assert isinstance(host.tradeManagementEnd, QtWidgets.QDateTimeEdit)
+    assert bytes(host.tradeManagementStart.dateTime().timeZone().id()) == b"Asia/Shanghai"
+    assert bytes(host.tradeManagementEnd.dateTime().timeZone().id()) == b"Asia/Shanghai"
+    assert isinstance(host.tradeManagementCandidateBox, QtWidgets.QComboBox)
+    assert host.btnPreviewTradeRange.text() == "预览时间段"
+    assert host.btnPreviewTradeRange.property("role") == "secondaryButton"
+    assert host.btnDeleteTradeRange.text() == "删除时间段交易数据"
+    assert host.btnDeleteTradeRange.property("role") == "dangerGhostButton"
+    assert host.btnDeleteSelectedTrade.text() == "删除选中交易样本"
+    assert host.btnDeleteSelectedTrade.property("role") == "dangerGhostButton"
+    assert host.btnClearTradeRecords.text() == "清空全部交易样本"
+    assert host.btnClearTradeRecords.property("role") == "dangerGhostButton"
     trade_page_layout = host.rightTradePage.widget().layout()
     assert trade_page_layout.indexOf(host.tradeCurrentPositionCard) < trade_page_layout.indexOf(host.tradeBox)
     original_start_date = host.startDate.date()
@@ -202,6 +277,10 @@ def test_main_window_layout_builds_existing_primary_widgets():
     host.startDate.setDate(host.endDate.date().addDays(3))
     assert host.endDate.date() == host.startDate.date()
     assert host.pricePlot.getAxis("right").isVisible()
+    assert host.pricePlot.ctrlMenu.parent() is host.glw
+    assert host.volPlot.ctrlMenu.parent() is host.glw
+    assert not isinstance(host.pricePlot.ctrlMenu, QtWidgets.QMenu)
+    assert not isinstance(host.volPlot.ctrlMenu, QtWidgets.QMenu)
     assert host.barDetailLabels["open"].text() == "开盘价"
     assert host.barDetailLabels["high"].text() == "最高价"
     assert host.barDetailLabels["low"].text() == "最低价"
@@ -228,9 +307,191 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert not host.rightTabs.isHidden()
     assert host.rightPanelRail.isHidden()
     assert host.rightPanel.maximumWidth() == 460
+    _close_layout_host(host, app)
+
+
+def test_main_window_core_value_inputs_do_not_change_on_wheel():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _LayoutHost()
+    build_main_window_ui(host)
+    controls = (
+        (host.startDate, host.startDate.date),
+        (host.endDate, host.endDate.date),
+        (host.tradeManagementStart, host.tradeManagementStart.dateTime),
+        (host.tradeManagementEnd, host.tradeManagementEnd.dateTime),
+        (host.feeBpsSpin, host.feeBpsSpin.value),
+        (host.slippageBpsSpin, host.slippageBpsSpin.value),
+        (host.tradeNotionalSpin, host.tradeNotionalSpin.value),
+        (host.initialEquitySpin, host.initialEquitySpin.value),
+        (host.takeProfitPctSpin, host.takeProfitPctSpin.value),
+        (host.stopLossPctSpin, host.stopLossPctSpin.value),
+    )
+
+    try:
+        before = [getter() for _control, getter in controls]
+        for control, _getter in controls:
+            _send_wheel(control)
+        assert [getter() for _control, getter in controls] == before
+    finally:
+        _close_layout_host(host, app)
+
+
+def test_main_window_sidebar_uses_global_scrollbar_theme_without_inline_override():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _LayoutHost()
+    build_main_window_ui(host)
+
+    try:
+        right_controls = host.rightTradePage
+        assert right_controls.styleSheet() == ""
+        host.resize(1280, 720)
+        host.show()
+        right_controls.widget().setMinimumHeight(900)
+        app.processEvents()
+        assert right_controls.verticalScrollBar().maximum() > 0
+    finally:
+        _close_layout_host(host, app)
+
+
+def test_kline_chart_viewport_still_receives_wheel_events():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _LayoutHost()
+    build_main_window_ui(host)
+
+    class WheelObserver(QtCore.QObject):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.count = 0
+
+        def eventFilter(self, watched, event):  # noqa: N802 - Qt override
+            if event.type() == QtCore.QEvent.Wheel:
+                self.count += 1
+            return False
+
+    observer = WheelObserver(host)
+    viewport = host.glw.viewport()
+    viewport.installEventFilter(observer)
+
+    try:
+        _send_wheel(viewport)
+        assert observer.count == 1
+    finally:
+        _close_layout_host(host, app)
+
+
+def test_closing_layout_host_explicitly_shuts_down_pyqtgraph_scene():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _LayoutHost()
+    build_main_window_ui(host)
+    price_plot = host.pricePlot
+    volume_plot = host.volPlot
+    destroyed: list[bool] = []
+    host.destroyed.connect(lambda: destroyed.append(True))
+
+    assert host.testAttribute(QtCore.Qt.WA_DeleteOnClose) is True
+
     host.multiTimeframePanel.shutdown()
     host.close()
+    assert host.glw.closed is True
+    assert price_plot.ctrlMenu is None
+    assert volume_plot.ctrlMenu is None
+    app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
     app.processEvents()
+    assert destroyed == [True]
+    host.__dict__.clear()
+    price_plot = None
+    volume_plot = None
+    gc.collect()
+    app.processEvents()
+
+
+def test_disabled_plot_menu_releases_native_menu_without_deferred_delete():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    plot = pg.PlotItem()
+    owner = pg.PlotWidget(plotItem=plot)
+    original_menu = plot.ctrlMenu
+    destroyed: list[bool] = []
+    original_menu.destroyed.connect(lambda: destroyed.append(True))
+
+    _replace_disabled_plot_menu(plot, owner)
+    owner.show()
+    app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+    app.processEvents()
+
+    # Retaining the Python wrapper proves replacement did not queue a competing
+    # DeferredDelete. Normal wrapper ownership releases it once this reference
+    # is dropped.
+    assert destroyed == []
+    assert plot.ctrlMenu is not original_menu
+    assert not isinstance(plot.ctrlMenu, QtWidgets.QMenu)
+    assert plot.ctrlMenu.parent() is owner
+    assert plot.ctrlMenu.isEnabled() is False
+    assert plot.ctrlMenu.actions() == []
+    assert plot.ctrl.gridAlphaSlider is not None
+
+    original_menu = None
+    gc.collect()
+    app.processEvents()
+    assert destroyed == [True]
+
+    owner.close()
+    owner.deleteLater()
+    app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+    app.processEvents()
+
+
+def test_disabled_plot_widget_does_not_construct_a_native_qmenu(monkeypatch):
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    plot_item_module = importlib.import_module(
+        "pyqtgraph.graphicsItems.PlotItem.PlotItem"
+    )
+    native_qmenu = plot_item_module.QtWidgets.QMenu
+    constructions: list[bool] = []
+
+    class CountingMenu(native_qmenu):
+        def __init__(self, *args, **kwargs):
+            constructions.append(True)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(plot_item_module.QtWidgets, "QMenu", CountingMenu)
+    plot = _ManagedPlotWidget()
+
+    assert constructions == []
+    assert not isinstance(plot.plotItem.ctrlMenu, native_qmenu)
+
+    plot.shutdown()
+    app.sendPostedEvents(None, QtCore.QEvent.DeferredDelete)
+
+
+def test_ignored_close_keeps_pyqtgraph_scene_alive():
+    class _IgnoreCloseHost(_LayoutHost):
+        ignore_close = True
+
+        def closeEvent(self, event):
+            if self.ignore_close:
+                event.ignore()
+                return
+            super().closeEvent(event)
+
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = _IgnoreCloseHost()
+    build_main_window_ui(host)
+    host.show()
+    app.processEvents()
+
+    try:
+        assert host.close() is False
+        app.processEvents()
+
+        assert host.isVisible() is True
+        assert host.glw.closed is False
+        assert host.pricePlot.ctrlMenu is not None
+        assert host.volPlot.ctrlMenu is not None
+        assert host.pricePlot.getViewBox() is host.vb_price
+        assert host.volPlot.getViewBox() is host.vb_vol
+    finally:
+        host.ignore_close = False
+        _close_layout_host(host, app)
 
 
 def test_current_price_uses_right_axis_badge_below_candles():
@@ -245,9 +506,7 @@ def test_current_price_uses_right_axis_badge_below_candles():
         assert not hasattr(host, "currentPriceLabel")
         assert host.currentPriceLine.zValue() < host.candleItem.zValue()
     finally:
-        host.multiTimeframePanel.shutdown()
-        host.close()
-        app.processEvents()
+        _close_layout_host(host, app)
 
 
 @pytest.mark.parametrize(
@@ -296,9 +555,7 @@ def test_main_window_layout_remains_usable_at_common_window_sizes(width, height)
         empty_rect = host.tradePositionEmptyState.geometry()
         assert abs(empty_rect.center().y() - empty_host_rect.center().y()) <= 2
     finally:
-        host.multiTimeframePanel.shutdown()
-        host.close()
-        app.processEvents()
+        _close_layout_host(host, app)
 
 
 def test_main_window_presentation_updates_language_and_theme(monkeypatch):
@@ -353,11 +610,12 @@ def test_main_window_presentation_updates_language_and_theme(monkeypatch):
     assert host.barDetailLabels["close"].text() == "Close"
     assert host.barDetailLabels["volume"].text() == "Volume"
     assert host.barDetailLabels["index"].text() == "Bar Index"
+    assert host.btnContinuePerformanceSession.text() == "Continue Session"
+    assert host.tradeManagementSessionLabel.text() == "By Performance Session"
+    assert host.tradeManagementRangeLabel.text() == "By Replay Time Range"
     host.current_language = "zh_CN"
     retranslate_main_window_ui(host)
     assert host.candleTitleLabel.text() == "当前K线详情"
     assert host.barDetailLabels["volume"].text() == "成交量"
     assert host.barDetailLabels["index"].text() == "K线序号"
-    host.multiTimeframePanel.shutdown()
-    host.close()
-    app.processEvents()
+    _close_layout_host(host, app)

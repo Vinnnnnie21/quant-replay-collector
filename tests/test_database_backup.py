@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from quant_collector_app.database_backup import (
+    BackupCancelled,
     backup_database,
+    backup_database_if_needed,
     export_annotations_jsonl,
     list_backups,
     run_database_integrity_check,
@@ -104,3 +106,55 @@ def test_gitignore_ignores_default_backups_directory():
     ignored = {line.strip() for line in gitignore.splitlines()}
     assert "backups/" in ignored
     assert "quant_collector_app/backups/" in ignored
+
+
+def test_daily_backup_keeps_only_newest_fourteen_days(tmp_path):
+    storage = StorageManager(tmp_path / "source.db")
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    for day in range(1, 16):
+        (backup_dir / f"quant_replay_202601{day:02d}_000000.db").write_bytes(b"old backup")
+
+    result = backup_database_if_needed(
+        storage.db_path,
+        backup_dir,
+        today="20260116",
+    )
+
+    backups = list_backups(backup_dir)
+    assert result["status"] == "ok"
+    assert len(backups) == 14
+    assert backups[0].name.startswith("quant_replay_20260103_")
+    assert backups[-1].name.startswith("quant_replay_20260116_")
+
+
+def test_existing_daily_backup_is_verified_before_it_is_trusted(tmp_path):
+    storage = StorageManager(tmp_path / "source.db")
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir(exist_ok=True)
+    (backup_dir / "quant_replay_20260116_000000.db").write_bytes(b"corrupt")
+
+    with pytest.raises(ValueError, match="SQLite backup verification failed"):
+        backup_database_if_needed(
+            storage.db_path,
+            backup_dir,
+            today="20260116",
+        )
+
+
+def test_cancelled_daily_backup_leaves_no_partial_or_success_file(tmp_path):
+    storage = StorageManager(tmp_path / "source.db")
+    storage.upsert_session(
+        {"session_id": "session_cancel_backup", "symbol": "BTCUSDT", "interval": "1m"}
+    )
+    backup_dir = tmp_path / "backups"
+
+    with pytest.raises(BackupCancelled, match="cancelled"):
+        backup_database(
+            storage.db_path,
+            backup_dir,
+            cancelled=lambda: True,
+        )
+
+    assert list(backup_dir.glob("*.db")) == []
+    assert list(backup_dir.glob("*.partial")) == []

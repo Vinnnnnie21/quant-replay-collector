@@ -1,7 +1,12 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
+
+
+class EquityCurveCancelled(Exception):
+    pass
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -83,6 +88,7 @@ def build_continuous_equity_curve(
     session_id: str,
     initial_equity: float,
     default_notional: float,
+    cancelled: Callable[[], bool] | None = None,
 ) -> list[dict[str, Any]]:
     base_equity = max(0.0, _safe_float(initial_equity, 10_000.0))
     notional = max(1.0, _safe_float(default_notional, 1_000.0))
@@ -90,6 +96,8 @@ def build_continuous_equity_curve(
     peak = base_equity
     rows: list[dict[str, Any]] = []
     for sequence_no, bar in enumerate(bars, start=1):
+        if cancelled is not None and cancelled():
+            raise EquityCurveCancelled()
         bar_row = dict(bar)
         idx = _bar_index(bar_row, sequence_no - 1)
         price = _safe_float(bar_row.get("close"), default=float("nan"))
@@ -127,6 +135,8 @@ def build_continuous_equity_curve(
                 "open_position_count": open_count,
             }
         )
+    if cancelled is not None and cancelled():
+        raise EquityCurveCancelled()
     return rows
 
 

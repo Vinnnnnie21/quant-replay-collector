@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import importlib
+
 import pyqtgraph as pg
 from PySide6 import QtCore, QtWidgets
 
 try:
+    from app_icon import apply_header_logo
     from app_config import (
         APP_VERSION,
         BINANCE_TOP_MARKET_CAP_SYMBOLS,
@@ -26,10 +29,17 @@ try:
     from views.candlestick_item import CandlestickItem
     from views.chart_axis import CurrentPriceAxis, IndexTimeAxis
     from views.date_picker import DatePicker, bind_date_range
+    from views.nullable_percent_input import NullablePercentInput
     from views.k_view_box import KViewBox
     from views.high_refresh_viewport import configure_high_refresh_viewport, verify_high_refresh_viewport
+    from views.plot_lifecycle import (
+        close_parent_owned_graphics_view,
+        prepare_plot_for_shutdown,
+    )
     from views.volume_item import VolumeItem
+    from views.wheel_guard import install_no_wheel_on_value_inputs
 except ImportError:  # pragma: no cover - package import path
+    from ..app_icon import apply_header_logo
     from ..app_config import (
         APP_VERSION,
         BINANCE_TOP_MARKET_CAP_SYMBOLS,
@@ -52,9 +62,147 @@ except ImportError:  # pragma: no cover - package import path
     from .candlestick_item import CandlestickItem
     from .chart_axis import CurrentPriceAxis, IndexTimeAxis
     from .date_picker import DatePicker, bind_date_range
+    from .nullable_percent_input import NullablePercentInput
     from .k_view_box import KViewBox
     from .high_refresh_viewport import configure_high_refresh_viewport, verify_high_refresh_viewport
+    from .plot_lifecycle import (
+        close_parent_owned_graphics_view,
+        prepare_plot_for_shutdown,
+    )
     from .volume_item import VolumeItem
+    from .wheel_guard import install_no_wheel_on_value_inputs
+
+
+class _DisabledPlotMenu(QtCore.QObject):
+    """Non-visual close sentinel for PlotItems whose menus are disabled."""
+
+    def __init__(self, owner: QtWidgets.QWidget) -> None:
+        super().__init__(owner)
+        self._enabled = False
+
+    def setEnabled(self, enabled: bool) -> None:
+        self._enabled = bool(enabled)
+
+    def isEnabled(self) -> bool:
+        return self._enabled
+
+    def hide(self) -> None:
+        return None
+
+    def actions(self) -> list:
+        return []
+
+
+class _PlotMenuBuildStub(QtCore.QObject):
+    """Satisfy PlotItem setup when its context menu is permanently disabled."""
+
+    def __init__(self, *_args, **_kwargs) -> None:
+        super().__init__()
+        self._actions: list[QtWidgets.QWidgetAction] = []
+        self._children: list[_PlotMenuBuildStub] = []
+
+    def addMenu(self, _name: str) -> "_PlotMenuBuildStub":
+        child = _PlotMenuBuildStub()
+        child.setParent(self)
+        self._children.append(child)
+        return child
+
+    def addAction(self, action: QtWidgets.QWidgetAction) -> None:
+        self._actions.append(action)
+
+    def actions(self) -> list[QtWidgets.QWidgetAction]:
+        return list(self._actions)
+
+    def hide(self) -> None:
+        return None
+
+
+def _build_disabled_plot_item(**kwargs) -> pg.PlotItem:
+    """Construct a menu-disabled PlotItem without allocating a native QMenu."""
+
+    plot_item_module = importlib.import_module(
+        "pyqtgraph.graphicsItems.PlotItem.PlotItem"
+    )
+    qt_widgets = plot_item_module.QtWidgets
+    native_qmenu = qt_widgets.QMenu
+    qt_widgets.QMenu = _PlotMenuBuildStub
+    try:
+        return pg.PlotItem(enableMenu=False, **kwargs)
+    finally:
+        qt_widgets.QMenu = native_qmenu
+
+
+def _replace_disabled_plot_menu(plot: pg.PlotItem, owner: QtWidgets.QWidget) -> None:
+    """Replace the unused menu without scheduling competing Qt deletion."""
+
+    native_menu = plot.ctrlMenu
+    native_menu.hide()
+    plot.ctrlMenu = _DisabledPlotMenu(owner)
+    plot.setMenuEnabled(False, None)
+
+
+class _ManagedGraphicsLayoutWidget(pg.GraphicsLayoutWidget):
+    """Run pyqtgraph's explicit cleanup protocol after close is accepted."""
+
+    def __init__(self, owner: QtWidgets.QWidget) -> None:
+        super().__init__(owner)
+        self._managed_plots: tuple[pg.PlotItem, ...] = ()
+
+    def manage_plots(self, *plots: pg.PlotItem) -> None:
+        self._managed_plots = tuple(plots)
+
+    def shutdown(self) -> None:
+        if self.closed:
+            return
+        managed_plots = self._managed_plots
+        for plot in managed_plots:
+            menu = getattr(plot, "ctrlMenu", None)
+            if menu is not None:
+                menu.hide()
+            # PlotItem.close() contains pyqtgraph's PySide-specific teardown
+            # and its AxisItem cleanup requires a live scene. Run it before
+            # detaching the now-empty PlotItem from GraphicsLayout.
+            prepare_plot_for_shutdown(plot)
+            plot.close()
+            self.ci.removeItem(plot)
+        close_parent_owned_graphics_view(self)
+        self._managed_plots = ()
+
+
+class _ManagedPlotWidget(pg.PlotWidget):
+    """Own PlotItem menus and use pyqtgraph's explicit close protocol once."""
+
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        *,
+        background="default",
+        plotItem: pg.PlotItem | None = None,
+        **kwargs,
+    ) -> None:
+        plot_item = plotItem or _build_disabled_plot_item(**kwargs)
+        super().__init__(parent=parent, background=background, plotItem=plot_item)
+        _replace_disabled_plot_menu(self.plotItem, self)
+
+    def shutdown(self) -> None:
+        plot = self.plotItem
+        if plot is None:
+            return
+        menu = plot.ctrlMenu
+        if menu is not None:
+            menu.hide()
+        prepare_plot_for_shutdown(plot)
+        plot.close()
+        self.plotItem = None
+        close_parent_owned_graphics_view(self)
+
+    def close(self) -> bool:
+        # pyqtgraph's PlotWidget.close() assumes plotItem is still present.
+        # Explicit shutdown clears it, while Qt/pytest may legitimately close
+        # the wrapper again during parent teardown.
+        if self.plotItem is None:
+            return bool(QtWidgets.QWidget.close(self))
+        return bool(super().close())
 
 
 def _card(title_text: str) -> tuple[QtWidgets.QGroupBox, QtWidgets.QVBoxLayout]:
@@ -136,6 +284,10 @@ def _stacked_empty_table(title: str, body: str, table: QtWidgets.QTableWidget) -
 
 
 def build_main_window_ui(self) -> None:
+    # An accepted close must release the complete Qt/pyqtgraph object tree.
+    # SafeShutdownCoordinator still controls acceptance; ignored close events
+    # do not trigger deletion.
+    self.setAttribute(QtCore.Qt.WA_DeleteOnClose, True)
     central = QtWidgets.QWidget()
     central.setObjectName("appRoot")
     self.setCentralWidget(central)
@@ -153,11 +305,10 @@ def build_main_window_ui(self) -> None:
     header_l.setContentsMargins(SPACING["lg"], SPACING["xs"], SPACING["lg"], SPACING["xs"])
     header_l.setSpacing(SPACING["sm"])
 
-    app_mark = QtWidgets.QLabel("QRC")
-    app_mark.setProperty("role", "headerMark")
-    app_mark.setFixedWidth(30)
-    app_mark.setAlignment(QtCore.Qt.AlignCenter)
-    header_l.addWidget(app_mark)
+    self.headerLogoLabel = QtWidgets.QLabel()
+    self.headerLogoLabel.setProperty("role", "headerLogo")
+    apply_header_logo(self.headerLogoLabel, getattr(self, "theme_settings", None))
+    header_l.addWidget(self.headerLogoLabel)
     self.headerTitleLabel = QtWidgets.QLabel(f"Quant Replay Collector v{APP_VERSION}")
     self.headerTitleLabel.setProperty("role", "appTitle")
     self.headerTitleLabel.setMinimumWidth(190)
@@ -384,17 +535,99 @@ def build_main_window_ui(self) -> None:
     trade_l.addLayout(trade_grid)
     sidebar_l.addWidget(trade_box)
 
-    danger_box, danger_l = _card("危险操作")
+    danger_box, danger_l = _card("交易数据管理")
     danger_box.setObjectName("dangerSection")
     self.dangerBox = danger_box
     self.btnToggleDanger = QtWidgets.QToolButton()
-    self.btnToggleDanger.setText("显示危险操作")
+    self.btnToggleDanger.setText("交易数据管理")
     self.btnToggleDanger.setCheckable(True)
     self.btnToggleDanger.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
     self.btnToggleDanger.setProperty("role", "compactButton")
     self.dangerActions = QtWidgets.QWidget()
     danger_actions_l = QtWidgets.QVBoxLayout(self.dangerActions)
     danger_actions_l.setContentsMargins(0, 0, 0, 0)
+    danger_actions_l.setSpacing(SPACING["sm"])
+
+    self.tradeManagementSessionLabel = QtWidgets.QLabel("按绩效会话")
+    self.tradeManagementSessionLabel.setProperty("role", "sectionLabel")
+    danger_actions_l.addWidget(self.tradeManagementSessionLabel)
+    self.tradeManagementSessionBox = QtWidgets.QComboBox()
+    self.tradeManagementSessionBox.setObjectName("tradeManagementSessionBox")
+    danger_actions_l.addWidget(self.tradeManagementSessionBox)
+    self.tradeManagementSessionTradeTable = QtWidgets.QTableWidget(0, 10)
+    self.tradeManagementSessionTradeTable.setObjectName("tradeManagementSessionTradeTable")
+    self.tradeManagementSessionTradeTable.setHorizontalHeaderLabels(
+        [
+            "交易",
+            "品种",
+            "方向",
+            "开仓时间",
+            "平仓时间",
+            "开仓价",
+            "平仓价",
+            "数量",
+            "PnL",
+            "状态",
+        ]
+    )
+    self.tradeManagementSessionTradeTable.setEditTriggers(
+        QtWidgets.QAbstractItemView.NoEditTriggers
+    )
+    self.tradeManagementSessionTradeTable.setSelectionBehavior(
+        QtWidgets.QAbstractItemView.SelectRows
+    )
+    self.tradeManagementSessionTradeTable.setSelectionMode(
+        QtWidgets.QAbstractItemView.SingleSelection
+    )
+    self.tradeManagementSessionTradeTable.verticalHeader().setVisible(False)
+    self.tradeManagementSessionTradeTable.setMinimumHeight(132)
+    self.tradeManagementSessionTradeTable.setMaximumHeight(180)
+    self.btnDeleteSessionTrade = QtWidgets.QPushButton("删除选中交易样本")
+    self.btnDeleteSessionTrade.setProperty("role", "dangerGhostButton")
+    danger_actions_l.addWidget(self.tradeManagementSessionTradeTable)
+    danger_actions_l.addWidget(self.btnDeleteSessionTrade)
+
+    self.tradeManagementRangeLabel = QtWidgets.QLabel("按回放时间段")
+    self.tradeManagementRangeLabel.setProperty("role", "sectionLabel")
+    danger_actions_l.addWidget(self.tradeManagementRangeLabel)
+    range_form = QtWidgets.QFormLayout()
+    range_form.setContentsMargins(0, 0, 0, 0)
+    range_form.setSpacing(SPACING["sm"])
+    range_form.setRowWrapPolicy(QtWidgets.QFormLayout.WrapLongRows)
+    self.tradeManagementStart = QtWidgets.QDateTimeEdit()
+    self.tradeManagementStart.setObjectName("tradeManagementStart")
+    self.tradeManagementStart.setCalendarPopup(True)
+    self.tradeManagementStart.setDisplayFormat("yyyy-MM-dd HH:mm")
+    self.tradeManagementStart.setDateTime(
+        QtCore.QDateTime(self.startDate.date(), QtCore.QTime(0, 0))
+    )
+    self.tradeManagementEnd = QtWidgets.QDateTimeEdit()
+    self.tradeManagementEnd.setObjectName("tradeManagementEnd")
+    self.tradeManagementEnd.setCalendarPopup(True)
+    self.tradeManagementEnd.setDisplayFormat("yyyy-MM-dd HH:mm")
+    self.tradeManagementEnd.setDateTime(
+        QtCore.QDateTime(self.endDate.date().addDays(1), QtCore.QTime(0, 0))
+    )
+    self.tradeManagementStartLabel = QtWidgets.QLabel("开始")
+    self.tradeManagementEndLabel = QtWidgets.QLabel("结束")
+    range_form.addRow(self.tradeManagementStartLabel, self.tradeManagementStart)
+    range_form.addRow(self.tradeManagementEndLabel, self.tradeManagementEnd)
+    danger_actions_l.addLayout(range_form)
+    self.btnPreviewTradeRange = QtWidgets.QPushButton("预览时间段")
+    self.btnPreviewTradeRange.setProperty("role", "secondaryButton")
+    danger_actions_l.addWidget(self.btnPreviewTradeRange)
+    self.tradeManagementPreviewLabel = QtWidgets.QLabel("尚未预览")
+    self.tradeManagementPreviewLabel.setProperty("role", "muted")
+    self.tradeManagementPreviewLabel.setWordWrap(True)
+    danger_actions_l.addWidget(self.tradeManagementPreviewLabel)
+    self.tradeManagementCandidateBox = QtWidgets.QComboBox()
+    self.tradeManagementCandidateBox.setObjectName("tradeManagementCandidateBox")
+    danger_actions_l.addWidget(self.tradeManagementCandidateBox)
+    self.btnDeleteSelectedTrade = QtWidgets.QPushButton("删除选中交易样本")
+    self.btnDeleteTradeRange = QtWidgets.QPushButton("删除时间段交易数据")
+    for button in (self.btnDeleteSelectedTrade, self.btnDeleteTradeRange):
+        button.setProperty("role", "dangerGhostButton")
+        danger_actions_l.addWidget(button)
     danger_actions_l.addWidget(self.btnClearTradeRecords)
     self.dangerActions.setVisible(False)
     danger_l.addWidget(self.btnToggleDanger)
@@ -429,16 +662,10 @@ def build_main_window_ui(self) -> None:
     self.initialEquitySpin.setRange(1.0, 1_000_000_000.0)
     self.initialEquitySpin.setDecimals(2)
     self.initialEquitySpin.setValue(DEFAULT_INITIAL_EQUITY)
-    self.takeProfitPctSpin = QtWidgets.QDoubleSpinBox()
-    self.takeProfitPctSpin.setRange(0.0, 100.0)
-    self.takeProfitPctSpin.setDecimals(2)
-    self.takeProfitPctSpin.setSingleStep(0.1)
-    self.takeProfitPctSpin.setSpecialValueText("空")
-    self.stopLossPctSpin = QtWidgets.QDoubleSpinBox()
-    self.stopLossPctSpin.setRange(0.0, 100.0)
-    self.stopLossPctSpin.setDecimals(2)
-    self.stopLossPctSpin.setSingleStep(0.1)
-    self.stopLossPctSpin.setSpecialValueText("空")
+    self.takeProfitPctSpin = NullablePercentInput()
+    self.takeProfitPctSpin.setObjectName("takeProfitPctInput")
+    self.stopLossPctSpin = NullablePercentInput()
+    self.stopLossPctSpin.setObjectName("stopLossPctInput")
     exec_form.addRow("成交模式", self.fillModeBox)
     exec_form.addRow("手续费 bps", self.feeBpsSpin)
     exec_form.addRow("滑点 bps", self.slippageBpsSpin)
@@ -566,7 +793,24 @@ def build_main_window_ui(self) -> None:
     replay_toolbar_l.addWidget(self.btnToEnd)
     replay_toolbar_l.addWidget(self.btnFollow)
     replay_toolbar_l.addWidget(self.btnResetView)
-    replay_toolbar_l.addStretch(1)
+    self.replayPerformanceSessionLabel = QtWidgets.QLabel("绩效会话")
+    self.replayPerformanceSessionLabel.setProperty("role", "muted")
+    self.replayPerformanceSessionBox = QtWidgets.QComboBox()
+    self.replayPerformanceSessionBox.setObjectName("replayPerformanceSessionBox")
+    self.replayPerformanceSessionBox.setMinimumWidth(0)
+    self.replayPerformanceSessionBox.setMaximumWidth(260)
+    self.replayPerformanceSessionBox.setSizePolicy(
+        QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed
+    )
+    self.btnContinuePerformanceSession = QtWidgets.QPushButton("继续绩效会话")
+    self.btnContinuePerformanceSession.setProperty("role", "secondaryButton")
+    self.btnContinuePerformanceSession.setMaximumWidth(130)
+    self.btnContinuePerformanceSession.setSizePolicy(
+        QtWidgets.QSizePolicy.Ignored, QtWidgets.QSizePolicy.Fixed
+    )
+    replay_toolbar_l.addWidget(self.replayPerformanceSessionLabel)
+    replay_toolbar_l.addWidget(self.replayPerformanceSessionBox, 1)
+    replay_toolbar_l.addWidget(self.btnContinuePerformanceSession)
     replay_toolbar_l.addWidget(self.speedLabel)
     self.speedSlider.setFixedWidth(128)
     replay_toolbar_l.addWidget(self.speedSlider)
@@ -603,7 +847,7 @@ def build_main_window_ui(self) -> None:
         toolbar_l.addWidget(chip)
     chart_l.addWidget(chart_toolbar)
 
-    self.glw = pg.GraphicsLayoutWidget()
+    self.glw = _ManagedGraphicsLayoutWidget(self)
     render_backend = str(getattr(self, "app_settings", {}).get("render_backend") or "hardware")
     self._chart_uses_opengl = configure_high_refresh_viewport(self.glw, backend=render_backend)
     if self._chart_uses_opengl:
@@ -619,13 +863,22 @@ def build_main_window_ui(self) -> None:
     self.axis_current_price = CurrentPriceAxis("right")
     self.vb_price = KViewBox()
     self.vb_vol = KViewBox()
-    self.pricePlot = self.glw.addPlot(
-        row=0,
-        col=0,
+    self.pricePlot = _build_disabled_plot_item(
         viewBox=self.vb_price,
         axisItems={"bottom": self.axis_price, "right": self.axis_current_price},
     )
-    self.volPlot = self.glw.addPlot(row=1, col=0, viewBox=self.vb_vol, axisItems={"bottom": self.axis_vol})
+    self.volPlot = _build_disabled_plot_item(
+        viewBox=self.vb_vol,
+        axisItems={"bottom": self.axis_vol},
+    )
+    self.glw.addItem(self.pricePlot, row=0, col=0)
+    self.glw.addItem(self.volPlot, row=1, col=0)
+    # Replace the disabled menu while PlotItem is intact. Releasing the original
+    # Python wrapper is sufficient; a competing DeferredDelete request can race
+    # the parent/graphics teardown on Windows.
+    _replace_disabled_plot_menu(self.pricePlot, self.glw)
+    _replace_disabled_plot_menu(self.volPlot, self.glw)
+    self.glw.manage_plots(self.pricePlot, self.volPlot)
     self.volPlot.setXLink(self.pricePlot)
     self.volPlot.setMaximumHeight(170)
     self.pricePlot.showAxis("right")
@@ -1015,7 +1268,12 @@ def build_main_window_ui(self) -> None:
     overview_scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
     overview_scroll.setWidget(overview)
     self.rightOverviewScroll = overview_scroll
-    self.multiTimeframePanel = MultiTimeframePanel(language=self.current_language, parent=self)
+    self.multiTimeframePanel = MultiTimeframePanel(
+        language=self.current_language,
+        parent=self,
+        start_worker=bool(getattr(self, "_start_multi_timeframe_worker", True)),
+        lifecycle=getattr(self, "task_lifecycle", None),
+    )
     self.backtestPanel = None
     self.strategyConsistencyPanel = None
 
@@ -1077,7 +1335,7 @@ def build_main_window_ui(self) -> None:
     self.premiumStats.setReadOnly(True)
     self.premiumStats.setMaximumHeight(110)
     self.premiumStats.setPlainText("-")
-    self.premiumPlot = pg.PlotWidget()
+    self.premiumPlot = _ManagedPlotWidget()
     self.premiumPlot.showGrid(x=True, y=True, alpha=0.14)
     self.premiumPlot.addLegend(offset=(8, 8))
     self.premiumBuyCurve = self.premiumPlot.plot([], [], pen=pg.mkPen(COLORS["success"], width=1.5, style=QtCore.Qt.DashLine), symbol="o", symbolSize=4, name="买入溢价")
@@ -1171,6 +1429,7 @@ def build_main_window_ui(self) -> None:
     self._add_shortcut("Ctrl+Y", self.redo)
     self._add_shortcut("E", self.export_session)
     self._add_shortcut("K", self.reset_view)
+    install_no_wheel_on_value_inputs(self)
     self._update_header()
     self._update_load_play_button()
     self.retranslate_ui()

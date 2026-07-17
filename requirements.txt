@@ -1,1 +1,1 @@
--r quant_collector_app/requirements.txt
+-r requirements-lock.txt

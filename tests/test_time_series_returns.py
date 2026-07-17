@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 
 import pandas as pd
+import pytest
 
 from time_series_analysis.returns import annualized_log_return, annualized_return, build_event_window_return_series, build_return_series, cumulative_log_return, log_return, simple_return, summarize_return_distribution
 
@@ -25,6 +26,13 @@ def test_build_return_series_empty_safe():
     out = build_return_series(pd.DataFrame())
     assert out.empty
     assert "simple_return" in out.columns
+
+
+def test_build_return_series_rejects_out_of_order_klines():
+    unordered = _klines(5).iloc[[1, 0, 2, 3, 4]].reset_index(drop=True)
+
+    with pytest.raises(ValueError, match="statistical analysis.*out-of-order.*quality report"):
+        build_return_series(unordered)
 
 
 def test_simple_and_log_return_calculation():
@@ -108,11 +116,211 @@ def test_event_window_return_series_does_not_cross_windows():
     assert "event_id" in out.columns
 
 
+def test_event_window_return_series_rejects_duplicate_bar_index_within_event():
+    windows = pd.DataFrame(
+        {
+            "event_id": ["e1", "e1", "e1"],
+            "offset": [-1, 0, 1],
+            "bar_index": [100, 100, 101],
+            "bar_open_time_bjt": pd.date_range("2026-01-01", periods=3, freq="min", tz="Asia/Shanghai"),
+            "open": [100.0, 100.0, 101.0],
+            "high": [101.0, 101.0, 102.0],
+            "low": [99.0, 99.0, 100.0],
+            "close": [100.0, 101.0, 102.0],
+            "volume": [10.0, 11.0, 12.0],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="statistical analysis.*duplicate bar_index.*reload source data or inspect the data quality report",
+    ):
+        build_event_window_return_series(windows)
+
+
+def test_event_window_return_series_rejects_out_of_order_bar_index_without_offset():
+    windows = pd.DataFrame(
+        {
+            "event_id": ["e1", "e1"],
+            "bar_index": [101, 100],
+            "bar_open_time_bjt": pd.to_datetime(
+                ["2026-01-01T00:01:00+08:00", "2026-01-01T00:00:00+08:00"]
+            ),
+            "open": [101.0, 100.0],
+            "high": [102.0, 101.0],
+            "low": [100.0, 99.0],
+            "close": [101.0, 100.0],
+            "volume": [11.0, 10.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match="statistical analysis.*out-of-order bar_index.*quality report"):
+        build_event_window_return_series(windows)
+
+
+def test_event_window_return_series_rejects_out_of_order_bar_index_with_ordered_offset():
+    windows = pd.DataFrame(
+        {
+            "event_id": ["e1", "e1"],
+            "offset": [0, 1],
+            "bar_index": [101, 100],
+            "bar_open_time_bjt": [
+                "2026-01-01T00:00:00+08:00",
+                "2026-01-01T00:01:00+08:00",
+            ],
+            "open": [101.0, 100.0],
+            "high": [102.0, 101.0],
+            "low": [100.0, 99.0],
+            "close": [101.0, 100.0],
+            "volume": [11.0, 10.0],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "statistical analysis.*out-of-order bar_index.*"
+            "reload source data or inspect the data quality report"
+        ),
+    ):
+        build_event_window_return_series(windows)
+
+
+def test_event_window_return_series_rejects_out_of_order_offset():
+    windows = pd.DataFrame(
+        {
+            "event_id": ["e1", "e1"],
+            "offset": [1, 0],
+            "bar_index": [100, 101],
+            "bar_open_time_bjt": ["2026-01-01T00:00:00+08:00", "2026-01-01T00:01:00+08:00"],
+            "open": [100.0, 101.0],
+            "high": [101.0, 102.0],
+            "low": [99.0, 100.0],
+            "close": [100.0, 101.0],
+            "volume": [10.0, 11.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match="statistical analysis.*out-of-order offset.*quality report"):
+        build_event_window_return_series(windows)
+
+
+def test_event_window_return_series_rejects_duplicate_timestamp_within_event():
+    windows = pd.DataFrame(
+        {
+            "event_id": ["e1", "e1"],
+            "offset": [0, 1],
+            "bar_index": [100, 101],
+            "bar_open_time_bjt": [
+                "2026-01-01T00:00:00+08:00",
+                "2026-01-01T00:00:00+08:00",
+            ],
+            "open": [100.0, 101.0],
+            "high": [101.0, 102.0],
+            "low": [99.0, 100.0],
+            "close": [100.0, 101.0],
+            "volume": [10.0, 11.0],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "statistical analysis.*duplicate timestamp.*"
+            "reload source data or inspect the data quality report"
+        ),
+    ):
+        build_event_window_return_series(windows)
+
+
+@pytest.mark.parametrize(
+    ("column", "bad_value", "problem"),
+    [
+        ("close", float("inf"), "non-finite close"),
+        ("volume", float("nan"), "non-finite volume"),
+        ("offset", float("inf"), "non-finite offset"),
+        ("bar_open_time_bjt", "not-a-timestamp", "invalid timestamp"),
+    ],
+)
+def test_event_window_return_series_rejects_non_finite_values_and_invalid_time(
+    column,
+    bad_value,
+    problem,
+):
+    windows = pd.DataFrame(
+        {
+            "event_id": ["e1", "e1"],
+            "offset": [0.0, 1.0],
+            "bar_index": [100, 101],
+            "bar_open_time_bjt": ["2026-01-01T00:00:00+08:00", "2026-01-01T00:01:00+08:00"],
+            "open": [100.0, 101.0],
+            "high": [101.0, 102.0],
+            "low": [99.0, 100.0],
+            "close": [100.0, 101.0],
+            "volume": [10.0, 11.0],
+        }
+    )
+    windows.loc[1, column] = bad_value
+
+    with pytest.raises(ValueError, match=rf"statistical analysis.*{problem}.*quality report"):
+        build_event_window_return_series(windows)
+
+
+def test_event_window_return_series_allows_shared_bar_index_across_interleaved_events():
+    windows = pd.DataFrame(
+        {
+            "event_id": ["e1", "e2", "e1", "e2"],
+            "offset": [0, 0, 1, 1],
+            "bar_index": [100, 100, 101, 101],
+            "bar_open_time_bjt": [
+                "2026-01-01T00:00:00+08:00",
+                "2026-01-01T00:00:00+08:00",
+                "2026-01-01T00:01:00+08:00",
+                "2026-01-01T00:01:00+08:00",
+            ],
+            "open": [100.0, 200.0, 101.0, 202.0],
+            "high": [101.0, 201.0, 102.0, 203.0],
+            "low": [99.0, 199.0, 100.0, 201.0],
+            "close": [100.0, 200.0, 101.0, 202.0],
+            "volume": [10.0, 20.0, 11.0, 21.0],
+        }
+    )
+
+    result = build_event_window_return_series(windows)
+
+    assert len(result) == 4
+    assert result[result["event_id"] == "e1"]["bar_index"].tolist() == [100, 101]
+    assert result[result["event_id"] == "e2"]["bar_index"].tolist() == [100, 101]
+    assert result[result["event_id"] == "e1"]["simple_return"].iloc[1] == pytest.approx(0.01)
+    assert result[result["event_id"] == "e2"]["simple_return"].iloc[1] == pytest.approx(0.01)
+
+
+def test_event_window_return_series_preserves_compatible_utc_millisecond_time_column():
+    windows = pd.DataFrame(
+        {
+            "bar_index": [100, 101],
+            "open_time_utc_ms": [1_767_225_600_000, 1_767_225_660_000],
+            "open": [100.0, 101.0],
+            "high": [101.0, 102.0],
+            "low": [99.0, 100.0],
+            "close": [100.0, 101.0],
+            "volume": [10.0, 11.0],
+        }
+    )
+
+    result = build_event_window_return_series(windows)
+
+    assert result["open_time_bjt"].astype(str).str.len().gt(0).all()
+    assert pd.Timestamp(result.loc[0, "open_time_bjt"]) == pd.Timestamp(
+        "2026-01-01T08:00:00+08:00"
+    )
+
+
 def test_event_window_return_series_segments_by_bar_gap_without_event_id():
     windows = pd.DataFrame(
         {
             "bar_index": [1, 2, 10, 11],
-            "bar_open_time_bjt": ["a", "b", "c", "d"],
+            "bar_open_time_bjt": pd.date_range("2026-01-01", periods=4, freq="min", tz="Asia/Shanghai"),
             "open": [10, 11, 20, 21],
             "high": [11, 12, 21, 22],
             "low": [9, 10, 19, 20],

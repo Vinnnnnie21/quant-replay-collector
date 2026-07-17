@@ -39,13 +39,15 @@ if errorlevel 1 (
 )
 
 echo Building Windows executable...
+set "ICON_ARG="
+if exist "assets\app_icon.ico" set "ICON_ARG=--icon=assets\app_icon.ico --add-data=assets\app_icon.ico;assets --add-data=assets\app_logo.png;assets --add-data=assets\app_logo_light.png;assets"
 %PYTHON_CMD% -m PyInstaller ^
     --noconfirm ^
     --clean ^
     --onefile ^
     --windowed ^
-    --name QuantReplayCollector ^
-    main_app.py >> "%LOG_FILE%" 2>&1
+    --name QRC ^
+    %ICON_ARG% main_app.py >> "%LOG_FILE%" 2>&1
 
 if errorlevel 1 (
     echo Build failed.
@@ -55,7 +57,8 @@ if errorlevel 1 (
 )
 
 echo.
-echo Build completed: %CD%\dist\QuantReplayCollector.exe
+echo Build completed: %CD%\dist\QRC.exe
+if not exist "assets\app_icon.ico" echo App icon not found; QRC.exe uses the default executable icon.
 echo Build log: %LOG_FILE%
 pause
 endlocal

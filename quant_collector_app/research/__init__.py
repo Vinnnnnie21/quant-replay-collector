@@ -8,7 +8,6 @@ from .behavior_model import (
     summarize_behavior_model,
 )
 from .context_features import compute_context_features_for_sample, compute_multi_window_context_features
-from .dataset import run_research_pack
 from .matched_baseline import (
     MatchedBaselineSpec,
     bootstrap_effect_ci,
@@ -28,6 +27,14 @@ from .validation import (
     summarize_rule_validation,
     validate_candidate_rule,
 )
+
+
+def run_research_pack(*args, **kwargs):
+    """Load the heavy research-pack pipeline only when it is requested."""
+
+    from .dataset import run_research_pack as implementation
+
+    return implementation(*args, **kwargs)
 
 __all__ = [
     "MatchedBaselineSpec",

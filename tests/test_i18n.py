@@ -45,6 +45,12 @@ def test_i18n_major_keys_return_chinese_and_english():
         "clear_trade_records_busy",
         "clear_trade_records_done",
         "clear_trade_records_failed",
+        "trade_data_management_session_group",
+        "trade_data_management_range_group",
+        "delete_session_trade_phrase_prompt",
+        "delete_session_trade_phrase",
+        "continue_performance_session",
+        "continue_performance_session_busy",
         "undo",
         "redo",
         "current_positions",
@@ -100,6 +106,8 @@ def test_i18n_major_keys_return_chinese_and_english():
     assert tr("apply_market", "en_US") == "Apply Market"
     assert tr("bar_volume", "zh_CN") == "成交量"
     assert tr("bar_volume", "en_US") == "Volume"
+    assert tr("delete_session_trade_phrase", "zh_CN") == "DELETE TRADE"
+    assert tr("delete_trade_range_phrase", "zh_CN") == "DELETE RANGE"
 
 
 def test_i18n_missing_key_returns_default():

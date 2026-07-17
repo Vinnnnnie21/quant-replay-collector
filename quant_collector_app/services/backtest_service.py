@@ -15,6 +15,7 @@ try:
     from backtesting.parameter_schema import StrategyRuleParams
     from backtesting.result_summary import summarize_backtest_result
     from backtesting.types import BacktestConfig
+    from research.kline_quality import validate_research_klines
 except ImportError:  # pragma: no cover - package import path
     from ..analysis.rule_parameter_export import analysis_output_to_backtest_params
     from ..backtesting.date_range import BacktestDateRange, slice_backtest_date_range
@@ -24,6 +25,7 @@ except ImportError:  # pragma: no cover - package import path
     from ..backtesting.parameter_schema import StrategyRuleParams
     from ..backtesting.result_summary import summarize_backtest_result
     from ..backtesting.types import BacktestConfig
+    from ..research.kline_quality import validate_research_klines
 
 
 TRADE_OUTPUT_COLUMNS = (
@@ -78,6 +80,8 @@ class BacktestService:
                 )
             ).validate()
             self._validate_config(config)
+            if isinstance(market_df, pd.DataFrame) and not market_df.empty:
+                validate_research_klines(market_df, context="backtest")
             required_lookbacks = [params.trend_lookback, params.drop_lookback, params.volume_lookback]
             if params.regime_filter == "uptrend":
                 required_lookbacks.append(params.uptrend_lookback)

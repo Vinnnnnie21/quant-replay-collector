@@ -36,6 +36,7 @@ def normalize_kline_df(
     out = df.copy()
     for column in PRICE_COLUMNS:
         out[column] = pd.to_numeric(out[column], errors="coerce")
+    out[list(PRICE_COLUMNS)] = out[list(PRICE_COLUMNS)].replace([np.inf, -np.inf], np.nan)
 
     if "open_time_ms" in out.columns:
         out["open_time_ms"] = pd.to_numeric(out["open_time_ms"], errors="coerce")

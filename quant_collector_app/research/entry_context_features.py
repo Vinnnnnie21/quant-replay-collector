@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from .data_versioning import attach_kline_data_version
+from .kline_quality import validate_research_klines
 
 
 REQUIRED_OHLCV_COLUMNS = ["open", "high", "low", "close", "volume"]
@@ -176,6 +177,7 @@ def build_entry_context_features(
         return result
     _validate_columns(klines, REQUIRED_OHLCV_COLUMNS, "kline")
     _validate_columns(observations, REQUIRED_OBSERVATION_COLUMNS, "observation")
+    validate_research_klines(klines, context="strategy research")
 
     ordered = _ordered_klines(klines)
     warnings = _feature_cutoff_warnings(observations)
@@ -462,7 +464,7 @@ def _ordered_klines(klines: pd.DataFrame) -> pd.DataFrame:
         ordered["_bar_index"] = pd.to_numeric(pd.Series(ordered.index, index=ordered.index), errors="coerce")
     if ordered["_bar_index"].isna().any():
         raise ValueError("kline bar_index must be numeric")
-    return ordered.sort_values("_bar_index", kind="stable").reset_index(drop=True)
+    return ordered.reset_index(drop=True)
 
 
 def _prior_return(visible: pd.DataFrame, bars: int) -> float:

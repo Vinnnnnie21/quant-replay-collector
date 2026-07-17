@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
+from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 try:
@@ -13,22 +16,95 @@ except ImportError:  # pragma: no cover - package import path
 
 
 BACKUP_NAME_PREFIX = "quant_replay"
+DAILY_BACKUP_RETENTION = 14
 ANNOTATION_TABLES = ("entry_annotations", "entry_annotation_history")
 PROTECTED_TABLES = ("sessions", "trades", "entry_annotations", "entry_annotation_history")
 
 
-def backup_database(db_path: str | Path = DB_PATH, backup_dir: str | Path = BACKUP_DIR) -> dict[str, Any]:
+class BackupCancelled(RuntimeError):
+    pass
+
+
+def _copy_database_atomic(
+    source: Path,
+    backup_path: Path,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
+    partial_path = backup_path.with_suffix(backup_path.suffix + ".partial")
+
+    def ensure_not_cancelled() -> None:
+        if cancelled is not None and cancelled():
+            raise BackupCancelled("database backup cancelled at a safe SQLite page boundary")
+
+    def report_progress(_status: int, remaining: int, total: int) -> None:
+        ensure_not_cancelled()
+        if progress is not None:
+            progress(max(0, int(total) - int(remaining)), int(total))
+
+    ensure_not_cancelled()
+    partial_path.unlink(missing_ok=True)
+    try:
+        with closing(sqlite3.connect(source)) as src, closing(sqlite3.connect(partial_path)) as dst:
+            with dst:
+                src.backup(dst, pages=1024, progress=report_progress)
+        ensure_not_cancelled()
+        verification = verify_backup(partial_path)
+        partial_path.replace(backup_path)
+        verification["backup_path"] = backup_path
+        return verification
+    except Exception:
+        partial_path.unlink(missing_ok=True)
+        raise
+
+
+def backup_database(
+    db_path: str | Path = DB_PATH,
+    backup_dir: str | Path = BACKUP_DIR,
+    *,
+    timestamp: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, int], None] | None = None,
+) -> dict[str, Any]:
     source = Path(db_path)
     if not source.exists():
         raise FileNotFoundError(f"Database does not exist: {source}")
     target_dir = Path(backup_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
-    backup_path = _next_backup_path(target_dir)
-    with sqlite3.connect(source) as src, sqlite3.connect(backup_path) as dst:
-        src.backup(dst)
-    verification = verify_backup(backup_path)
+    backup_path = _next_backup_path(target_dir, timestamp=timestamp)
+    verification = _copy_database_atomic(
+        source,
+        backup_path,
+        cancelled=cancelled,
+        progress=progress,
+    )
     return {
         "status": "ok",
+        "db_path": source,
+        "backup_path": backup_path,
+        "verification": verification,
+    }
+
+
+def backup_database_before_upgrade(
+    db_path: str | Path,
+    backup_dir: str | Path,
+    *,
+    from_version: int,
+    to_version: int,
+) -> dict[str, Any]:
+    source = Path(db_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Database does not exist: {source}")
+    target_dir = Path(backup_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    prefix = f"{BACKUP_NAME_PREFIX}_pre_upgrade_v{int(from_version)}_to_v{int(to_version)}"
+    backup_path = _next_backup_path(target_dir, prefix=prefix)
+    verification = _copy_database_atomic(source, backup_path)
+    return {
+        "status": "ok",
+        "reason": "pre_upgrade",
         "db_path": source,
         "backup_path": backup_path,
         "verification": verification,
@@ -47,7 +123,7 @@ def verify_backup(backup_path: str | Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"Backup does not exist: {path}")
     try:
-        with sqlite3.connect(f"file:{path}?mode=ro", uri=True) as conn:
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as conn:
             integrity = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
             if integrity.lower() != "ok":
                 raise ValueError(f"integrity_check returned {integrity}")
@@ -119,14 +195,28 @@ def backup_database_if_needed(
     backup_dir: str | Path = BACKUP_DIR,
     *,
     today: str | None = None,
+    cancelled: Callable[[], bool] | None = None,
+    progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
+    if cancelled is not None and cancelled():
+        raise BackupCancelled("database backup cancelled before it started")
     date_text = today or datetime.now().strftime("%Y%m%d")
     existing_today = [
         path for path in list_backups(backup_dir) if path.name.startswith(f"{BACKUP_NAME_PREFIX}_{date_text}_")
     ]
     if existing_today:
+        verify_backup(existing_today[-1])
+        _prune_daily_backups(Path(backup_dir))
         return {"status": "skipped", "reason": "daily_backup_already_exists", "backup_path": existing_today[-1]}
-    return backup_database(db_path, backup_dir)
+    result = backup_database(
+        db_path,
+        backup_dir,
+        timestamp=f"{date_text}_{datetime.now().strftime('%H%M%S')}",
+        cancelled=cancelled,
+        progress=progress,
+    )
+    _prune_daily_backups(Path(backup_dir))
+    return result
 
 
 def export_annotations_jsonl(db_path: str | Path = DB_PATH, backup_dir: str | Path = BACKUP_DIR) -> dict[str, Any]:
@@ -143,14 +233,26 @@ def export_annotations_jsonl(db_path: str | Path = DB_PATH, backup_dir: str | Pa
     return {"status": "ok", "jsonl_path": jsonl_path, "row_count": len(rows)}
 
 
-def _next_backup_path(backup_dir: Path) -> Path:
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    candidate = backup_dir / f"{BACKUP_NAME_PREFIX}_{timestamp}.db"
+def _next_backup_path(
+    backup_dir: Path,
+    *,
+    timestamp: str | None = None,
+    prefix: str = BACKUP_NAME_PREFIX,
+) -> Path:
+    timestamp = timestamp or datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = backup_dir / f"{prefix}_{timestamp}.db"
     suffix = 1
     while candidate.exists():
-        candidate = backup_dir / f"{BACKUP_NAME_PREFIX}_{timestamp}_{suffix:02d}.db"
+        candidate = backup_dir / f"{prefix}_{timestamp}_{suffix:02d}.db"
         suffix += 1
     return candidate
+
+
+def _prune_daily_backups(backup_dir: Path, retention: int = DAILY_BACKUP_RETENTION) -> None:
+    daily_name = re.compile(rf"^{re.escape(BACKUP_NAME_PREFIX)}_\d{{8}}_\d{{6}}(?:_\d{{2}})?\.db$")
+    daily_backups = [path for path in list_backups(backup_dir) if daily_name.fullmatch(path.name)]
+    for expired in daily_backups[:-max(0, int(retention))]:
+        expired.unlink()
 
 
 def _next_annotations_path(backup_dir: Path) -> Path:
@@ -250,7 +352,9 @@ def _database_integrity_status(integrity: str, migration_status: str) -> str:
 
 
 __all__ = [
+    "BackupCancelled",
     "backup_database",
+    "backup_database_before_upgrade",
     "backup_database_if_needed",
     "export_annotations_jsonl",
     "list_backups",

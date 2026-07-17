@@ -73,14 +73,38 @@ def get_real_usd_cny():
 
 class PremiumWorker(QtCore.QObject):
     finished = QtCore.Signal(dict)
+    cancelled = QtCore.Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._stop_requested = False
+
+    @QtCore.Slot()
+    def request_stop(self) -> None:
+        self._stop_requested = True
+
+    def _finish_if_stopped(self) -> bool:
+        if not self._stop_requested:
+            return False
+        self._stop_requested = False
+        self.cancelled.emit()
+        return True
 
     @QtCore.Slot()
     def fetch_once(self):
+        if self._finish_if_stopped():
+            return
         sample_time = datetime.now(BJT).isoformat(timespec="seconds")
         try:
             buy = get_binance_p2p_price("BUY")
+            if self._finish_if_stopped():
+                return
             sell = get_binance_p2p_price("SELL")
+            if self._finish_if_stopped():
+                return
             usd_cny, fx_source = get_real_usd_cny()
+            if self._finish_if_stopped():
+                return
             avg = (buy + sell) / 2.0
             buy_premium_pct = ((buy - usd_cny) / usd_cny) * 100.0
             sell_premium_pct = ((sell - usd_cny) / usd_cny) * 100.0
@@ -102,6 +126,8 @@ class PremiumWorker(QtCore.QObject):
                 }
             )
         except Exception as e:
+            if self._finish_if_stopped():
+                return
             self.finished.emit(
                 {
                     "sample_time_bjt": sample_time,

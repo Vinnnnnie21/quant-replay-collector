@@ -14,6 +14,10 @@ try:
     from market_data import LoadRequest
     from render_state import RenderState
     from services.session_service import load_session_snapshot_state
+    from controllers.session_resume_controller import (
+        abort_performance_session_resume,
+        complete_performance_session_resume,
+    )
     from timeframe_switcher import (
         build_time_centered_xrange,
         capture_time_anchor,
@@ -26,6 +30,10 @@ except ImportError:  # pragma: no cover - package import path
     from ..market_data import LoadRequest
     from ..render_state import RenderState
     from ..services.session_service import load_session_snapshot_state
+    from .session_resume_controller import (
+        abort_performance_session_resume,
+        complete_performance_session_resume,
+    )
     from ..timeframe_switcher import (
         build_time_centered_xrange,
         capture_time_anchor,
@@ -125,11 +133,16 @@ def on_multi_timeframe_load_failed(window, interval: str, error: str) -> None:
 
 
 def on_interval_changed_for_dynamic_switch(window, new_interval: str) -> None:
-    window._update_header()
-    if window.df.empty:
+    lifecycle = getattr(window, "task_lifecycle", None)
+    if lifecycle is not None and lifecycle.shutdown_in_progress:
         return
     if window._loading_data:
         window._queued_dynamic_interval = str(new_interval).strip()
+        return
+    if lifecycle is not None and tuple(lifecycle.active_tasks):
+        return
+    window._update_header()
+    if window.df.empty:
         return
     display_key = getattr(window, "_display_market_key", None) or getattr(window, "_loaded_market_key", None)
     previous_interval = display_key[1] if display_key else None
@@ -205,26 +218,40 @@ def load_data(
     preserve_time_anchor: bool = False,
     auto_resume_after_load: bool = False,
     reset_session: bool | None = None,
-) -> None:
+) -> bool:
+    lifecycle = getattr(window, "task_lifecycle", None)
+    if lifecycle is not None and (
+        lifecycle.shutdown_in_progress or tuple(lifecycle.active_tasks)
+    ):
+        return False
     del preserve_time_anchor, auto_resume_after_load
-    window.playing = False
-    window._accum = 0.0
-    window.replay_controller.load_state(window.cursor, False, window.follow_latest, 0.0)
     symbol = window._normalized_symbol()
     if symbol is None:
-        return
-    window._set_symbol_value(symbol)
+        return False
     interval = window.intervalBox.currentText().strip()
     d0 = window.startDate.date()
     d1 = window.endDate.date()
     if d0 > d1:
         QtWidgets.QMessageBox.warning(window, "日期范围错误", "开始日期不能晚于结束日期。")
-        return
-    window._pending_market_key = window._current_market_key()
+        return False
     start_dt = QtCore.QDateTime(d0, QtCore.QTime(0, 0)).toPython().replace(tzinfo=BJT)
     end_dt = QtCore.QDateTime(d1, QtCore.QTime(23, 59, 59)).toPython().replace(tzinfo=BJT)
     use_cache = bool(restore) if use_cache is None else bool(use_cache)
     reset_session = (not restore and not dynamic_switch) if reset_session is None else bool(reset_session)
+
+    if lifecycle is not None:
+        request_stop = getattr(getattr(window, "loader", None), "abort", None)
+        if not lifecycle.start(
+            "market_data_load",
+            request_stop=request_stop if callable(request_stop) else None,
+        ):
+            return False
+
+    window.playing = False
+    window._accum = 0.0
+    window.replay_controller.load_state(window.cursor, False, window.follow_latest, 0.0)
+    window._set_symbol_value(symbol)
+    window._pending_market_key = window._current_market_key()
 
     if restore and window.restoring_session_id:
         window.session_id = window.restoring_session_id
@@ -238,7 +265,7 @@ def load_data(
         window.redo_stack.clear()
         window.restore_snapshot_pending = False
 
-    if not dynamic_switch:
+    if not dynamic_switch and not restore:
         window.persist_session_state()
     window.status.setText(window.tr("dynamic_switch_loading") if dynamic_switch else f"{symbol} {interval} 加载中...")
     window._loading_data = True
@@ -255,12 +282,50 @@ def load_data(
             use_cache=use_cache,
         )
     )
+    return True
 
 
 def on_load_progress(window, message: str) -> None:
     window.app_state.data_load.status_message = message
     window.status.setText(_chart_status_message(message))
     window._log(message)
+
+
+def restore_session_snapshot(window) -> bool:
+    """Restore one selected session snapshot, rolling back an explicit switch on failure."""
+
+    try:
+        snapshot_state = load_session_snapshot_state(window.storage, window.session_id)
+    except Exception as exc:
+        abort_performance_session_resume(window)
+        operation_error = getattr(window, "_operation_error", None)
+        if callable(operation_error):
+            operation_error(window.tr("continue_performance_session_failed"), exc)
+        else:
+            logger.exception("Session snapshot restore failed")
+        return False
+    window.trades = snapshot_state.trades
+    window.events = snapshot_state.events
+    window._trade_by_id = snapshot_state.trade_by_id
+    window._event_by_id = snapshot_state.event_by_id
+    _render_state(window).mark_events_changed()
+    if snapshot_state.cursor_bar_index is not None:
+        window.cursor = snapshot_state.cursor_bar_index
+        window.follow_latest = bool(snapshot_state.follow_latest)
+        window.replay_controller.load_state(window.cursor, False, window.follow_latest)
+        _render_state(window).mark_cursor_changed()
+    window._sync_equity_curve()
+    window._refresh_tables(include_heavy=False)
+    analysis_refresh = getattr(window, "analysis_refresh_controller", None)
+    if analysis_refresh is not None and hasattr(analysis_refresh, "schedule"):
+        analysis_refresh.schedule()
+    window._render(force=True)
+    window._log(f"已恢复交易={len(window.trades)}，事件={len(window.events)}")
+    if getattr(window, "_session_resume_rollback", None) is not None:
+        complete_performance_session_resume(window)
+    else:
+        window.restoring_session_id = None
+    return True
 
 
 def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
@@ -274,6 +339,13 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
         logger.error("数据加载失败：%s", message)
     elif "在线刷新失败" in message or "缓存不可用" in message:
         logger.warning("数据加载警告：%s", message)
+    if load_failed and getattr(window, "_session_resume_rollback", None) is not None:
+        abort_performance_session_resume(window)
+        lifecycle = getattr(window, "task_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.fail("market_data_load", message)
+        window.status.setText(message)
+        return
     if dynamic_switch and not dynamic_success:
         previous_interval = getattr(window, "_pending_switch_from_interval", None)
         if previous_interval and hasattr(window.intervalBox, "setCurrentText"):
@@ -287,6 +359,9 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
         window._render(force=True)
         window.status.setText(window.tr("dynamic_switch_failed"))
         window._log(window.tr("dynamic_switch_failed"))
+        lifecycle = getattr(window, "task_lifecycle", None)
+        if lifecycle is not None:
+            lifecycle.fail("market_data_load", message)
         return
     anchor_time = getattr(window, "_pending_time_anchor_bjt", None)
     visible_span_seconds = getattr(window, "_pending_view_time_span_seconds", None)
@@ -296,6 +371,7 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
     incoming_attrs = dict(getattr(frame, "attrs", {}))
     window.df = frame.reset_index(drop=True) if isinstance(frame, pd.DataFrame) else pd.DataFrame()
     window.df.attrs.update(incoming_attrs)
+    window._market_data_generation = int(getattr(window, "_market_data_generation", 0)) + 1
     _render_state(window).mark_market_data_changed()
     window._last_marker_sync_key = None
     window._last_multi_timeframe_refresh_key = None
@@ -343,7 +419,10 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
         window._trade_by_id.clear()
         window._event_by_id.clear()
         _render_state(window).mark_events_changed()
-        window._refresh_tables()
+        window._refresh_tables(include_heavy=False)
+        clear_analysis_views = getattr(window, "_clear_analysis_views", None)
+        if callable(clear_analysis_views):
+            clear_analysis_views()
 
     try:
         window.vb_price.disableAutoRange()
@@ -368,21 +447,11 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
 
     if window.restore_snapshot_pending and window.session_id:
         window.restore_snapshot_pending = False
-        snapshot_state = load_session_snapshot_state(window.storage, window.session_id)
-        window.trades = snapshot_state.trades
-        window.events = snapshot_state.events
-        window._trade_by_id = snapshot_state.trade_by_id
-        window._event_by_id = snapshot_state.event_by_id
-        _render_state(window).mark_events_changed()
-        if snapshot_state.cursor_bar_index is not None:
-            window.cursor = snapshot_state.cursor_bar_index
-            window.follow_latest = bool(snapshot_state.follow_latest)
-            window.replay_controller.load_state(window.cursor, False, window.follow_latest)
-            _render_state(window).mark_cursor_changed()
-        window._sync_equity_curve()
-        window._refresh_tables()
-        window._render(force=True)
-        window._log(f"已恢复交易={len(window.trades)}，事件={len(window.events)}")
+        if not restore_session_snapshot(window):
+            lifecycle = getattr(window, "task_lifecycle", None)
+            if lifecycle is not None:
+                lifecycle.fail("market_data_load", "session snapshot restore failed")
+            return
     if window.market_dirty:
         window._show_market_dirty_feedback()
         if hasattr(window, "multiTimeframePanel"):
@@ -401,6 +470,12 @@ def on_loaded(window, frame: pd.DataFrame, message: str) -> None:
             0,
             lambda interval=queued_interval: window.on_interval_changed_for_dynamic_switch(interval),
         )
+    lifecycle = getattr(window, "task_lifecycle", None)
+    if lifecycle is not None:
+        if load_failed:
+            lifecycle.fail("market_data_load", message)
+        else:
+            lifecycle.complete("market_data_load")
 
 
 def persist_loaded_market_data(window) -> None:
@@ -453,4 +528,5 @@ __all__ = [
     "on_market_params_changed",
     "on_multi_timeframe_load_failed",
     "persist_loaded_market_data",
+    "restore_session_snapshot",
 ]

@@ -5,6 +5,7 @@ import json
 import pytest
 
 import app_config
+import app_settings
 from app_settings import build_app_settings_update, load_app_settings, save_app_settings
 
 
@@ -88,3 +89,39 @@ def test_broken_theme_settings_are_backed_up_and_defaulted(tmp_path, monkeypatch
 
     assert loaded["name"] == app_config.DEFAULT_THEME["name"]
     assert list(tmp_path.glob("theme_settings.*.broken.json"))
+
+
+def test_app_settings_interrupted_replace_keeps_previous_complete_file(tmp_path, monkeypatch):
+    path = tmp_path / "app_settings.json"
+    save_app_settings({"language": "zh_CN"}, path)
+    previous = path.read_text(encoding="utf-8")
+
+    def fail_replace(_source, _target):
+        raise OSError("replace interrupted")
+
+    monkeypatch.setattr(app_settings.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace interrupted"):
+        save_app_settings({"language": "en_US"}, path)
+
+    assert path.read_text(encoding="utf-8") == previous
+    assert list(tmp_path.glob(".app_settings.json.*.tmp")) == []
+
+
+def test_theme_settings_interrupted_replace_keeps_previous_complete_file(tmp_path, monkeypatch):
+    path = tmp_path / "theme_settings.json"
+    monkeypatch.setattr(app_config, "THEME_CONFIG_PATH", path)
+    app_config.save_theme_settings(app_config.DEFAULT_THEME)
+    previous = path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        app_config.os,
+        "replace",
+        lambda _source, _target: (_ for _ in ()).throw(OSError("replace interrupted")),
+    )
+
+    with pytest.raises(OSError, match="replace interrupted"):
+        app_config.save_theme_settings({**app_config.DEFAULT_THEME, "name": "changed"})
+
+    assert path.read_text(encoding="utf-8") == previous
+    assert list(tmp_path.glob(".theme_settings.json.*.tmp")) == []

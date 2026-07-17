@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
-import numpy as np
 import pandas as pd
+
+try:
+    from research.bootstrap import bootstrap_mean_ci
+except ImportError:  # pragma: no cover - package import path
+    from .research.bootstrap import bootstrap_mean_ci
 
 
 RET_COLUMNS = [
@@ -36,17 +41,22 @@ def _parse_tags(value: Any) -> list[str]:
     return tags or ["UNTAGGED"]
 
 
-def _bootstrap_mean_ci(series: pd.Series, draws: int = 1000) -> tuple[float | None, float | None]:
+def _bootstrap_mean_ci(
+    series: pd.Series,
+    draws: int = 1000,
+    cancelled: Callable[[], bool] | None = None,
+) -> dict | None:
     values = pd.to_numeric(series, errors="coerce").dropna().to_numpy(dtype=float)
     if not len(values):
-        return None, None
-    rng = np.random.default_rng(42)
-    samples = rng.choice(values, size=(draws, len(values)), replace=True).mean(axis=1)
-    low, high = np.quantile(samples, [0.025, 0.975])
-    return float(low), float(high)
+        return None
+    return bootstrap_mean_ci(values, n_boot=draws, ci=0.95, cancelled=cancelled)
 
 
-def build_event_study_summary(events: pd.DataFrame, features: pd.DataFrame) -> pd.DataFrame:
+def build_event_study_summary(
+    events: pd.DataFrame,
+    features: pd.DataFrame,
+    cancelled: Callable[[], bool] | None = None,
+) -> pd.DataFrame:
     base_columns = ["label_tag", "event_type", "side", "sample_count"]
     if events.empty or features.empty or "event_id" not in events.columns or "event_id" not in features.columns:
         return pd.DataFrame(columns=base_columns)
@@ -86,9 +96,15 @@ def build_event_study_summary(events: pd.DataFrame, features: pd.DataFrame) -> p
             row[f"{col}_q25"] = float(series.quantile(0.25)) if len(series) else None
             row[f"{col}_q75"] = float(series.quantile(0.75)) if len(series) else None
             row[f"{col}_win_rate_pct"] = float((series > 0).mean() * 100.0) if len(series) else None
-            low, high = _bootstrap_mean_ci(series)
-            row[f"{col}_mean_ci95_low"] = low
-            row[f"{col}_mean_ci95_high"] = high
+            bootstrap = _bootstrap_mean_ci(series, cancelled=cancelled)
+            row[f"{col}_mean_ci95_low"] = bootstrap["ci_low"] if bootstrap else None
+            row[f"{col}_mean_ci95_high"] = bootstrap["ci_high"] if bootstrap else None
+            if bootstrap:
+                row["bootstrap_random_seed"] = bootstrap["random_seed"]
+                row["bootstrap_simulation_count"] = bootstrap["simulation_count"]
+                row["bootstrap_confidence"] = bootstrap["confidence"]
+                row["bootstrap_method_version"] = bootstrap["method_version"]
+                row["bootstrap_application_version"] = bootstrap["application_version"]
         rows.append(row)
     result = pd.DataFrame(rows).sort_values(["label_tag", "event_type", "side"]).reset_index(drop=True)
     result["multiple_testing_warning"] = (

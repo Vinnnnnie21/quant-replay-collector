@@ -5,6 +5,7 @@ import itertools
 import json
 import math
 import operator
+from collections.abc import Callable
 
 import pandas as pd
 
@@ -45,9 +46,14 @@ def _condition_mask(data: pd.DataFrame, conditions: list[dict]) -> pd.Series:
     return mask
 
 
-def _rule_metrics(data: pd.DataFrame, conditions: list[dict], label: str) -> dict:
+def _rule_metrics(
+    data: pd.DataFrame,
+    conditions: list[dict],
+    label: str,
+    cancelled: Callable[[], bool] | None = None,
+) -> dict:
     values = pd.to_numeric(data[_condition_mask(data, conditions)].get(label), errors="coerce").dropna()
-    ci = bootstrap_mean_ci(values)
+    ci = bootstrap_mean_ci(values, cancelled=cancelled)
     positive, negative = values[values > 0], values[values < 0]
     profit_factor = float(positive.sum() / abs(negative.sum())) if len(negative) and negative.sum() != 0 else math.nan
     mean = float(values.mean()) if len(values) else math.nan
@@ -103,6 +109,7 @@ def search_rules(
     embargo_bars: int = 0,
     horizon_bars: int = 10,
     max_degradation_ratio: float = 0.5,
+    cancelled: Callable[[], bool] | None = None,
 ) -> pd.DataFrame:
     if features.empty or labels.empty or label not in labels.columns:
         return pd.DataFrame()
@@ -127,8 +134,8 @@ def search_rules(
             break
     rows = []
     for conditions in candidates:
-        train_metrics = _rule_metrics(train, conditions, label)
-        test_metrics = _rule_metrics(test, conditions, label)
+        train_metrics = _rule_metrics(train, conditions, label, cancelled)
+        test_metrics = _rule_metrics(test, conditions, label, cancelled)
         train_score = train_metrics["mean_return"] * math.sqrt(train_metrics["sample_count"]) if math.isfinite(train_metrics["mean_return"]) else math.nan
         test_score = test_metrics["mean_return"] * math.sqrt(test_metrics["sample_count"]) if math.isfinite(test_metrics["mean_return"]) else math.nan
         degradation = (

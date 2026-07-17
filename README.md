@@ -103,14 +103,14 @@ $env:QT_QPA_PLATFORM='windows'
 
 ## 安装与启动 / Installation and startup
 
-QRC 面向 Windows 桌面环境。建议使用仓库内的虚拟环境：
+QRC 面向 64 位 Windows 和 Python 3.13。建议使用仓库内的虚拟环境和已验证的锁定依赖：
 
-QRC is designed for the Windows desktop environment. A repository-local virtual environment is recommended:
+QRC supports 64-bit Windows with Python 3.13. Use a repository-local virtual environment and the verified dependency lock:
 
 ```powershell
 git clone https://github.com/Vinnnnnie21/quant-replay-collector.git
 cd quant-replay-collector
-python -m venv .venv
+py -3.13 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\start.bat
@@ -130,6 +130,25 @@ You can also run the package entry point directly:
 
 ```powershell
 .\.venv\Scripts\python.exe -m quant_collector_app
+```
+
+### Windows desktop shortcut
+
+Build the Windows executable, then create a current-user desktop shortcut named `QRC.lnk`:
+
+```powershell
+cd quant_collector_app
+.\build_windows.bat
+cd ..
+.\scripts\create_desktop_shortcut.ps1 -TargetPath .\quant_collector_app\dist\QRC.exe
+```
+
+The shortcut installer does not require administrator access and does not write to the registry. Use `-DryRun` to inspect `TargetPath`, `WorkingDirectory`, shortcut path and icon selection without creating a file. The application window uses `quant_collector_app/assets/app_logo.png` on dark themes and the transparent `quant_collector_app/assets/app_logo_light.png` on light themes. The packaged executable and shortcut use the fixed multi-size Windows icon at `quant_collector_app/assets/app_icon.ico`, generated from the dark-theme logo.
+
+To replace the logos later, overwrite both PNG variants. Regenerate the Windows icon after changing the dark-theme logo:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\generate_app_icon.py --source quant_collector_app\assets\app_logo.png --output quant_collector_app\assets\app_icon.ico
 ```
 
 ## 数据与研究边界 / Data and research boundaries

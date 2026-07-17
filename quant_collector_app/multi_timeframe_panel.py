@@ -9,6 +9,7 @@ import pandas as pd
 from PySide6 import QtCore, QtWidgets
 
 try:
+    from cancellation import CancellationToken
     from app_i18n import tr
     from app_logger import get_logger
     from market_data import KlineLoader, LoadRequest, interval_to_ms
@@ -19,6 +20,7 @@ try:
         normalize_context_frame,
     )
 except ImportError:  # pragma: no cover - package import path
+    from .cancellation import CancellationToken
     from .app_i18n import tr
     from .app_logger import get_logger
     from .market_data import KlineLoader, LoadRequest, interval_to_ms
@@ -124,25 +126,53 @@ def translate_volatility_regime(regime: str | None, language: str) -> str:
     )
 
 
-class _MultiTimeframeLoadWorker(QtCore.QObject):
+class MultiTimeframeLoadWorker(QtCore.QObject):
     finished = QtCore.Signal(str, object, object)
+    cancelled = QtCore.Signal(str)
 
-    def __init__(self):
+    def __init__(self, loader: Any | None = None):
         super().__init__()
-        self.loader = KlineLoader()
+        self.loader = loader or KlineLoader()
+        self.cancellation_token = CancellationToken()
+
+    @QtCore.Slot()
+    def request_stop(self) -> None:
+        self.cancellation_token.request()
+
+    @QtCore.Slot()
+    def observe_startup_cancellation(self) -> None:
+        """Close a startup race only after the worker event loop is live."""
+
+        if self.cancellation_token.is_requested():
+            QtCore.QThread.currentThread().quit()
+
+    def _finish_if_stopped(self, request_id: str) -> bool:
+        if not self.cancellation_token.is_requested():
+            return False
+        self.cancelled.emit(request_id)
+        return True
 
     @QtCore.Slot(object)
     def load(self, payload: dict[str, Any]) -> None:
         request_id = str(payload["request_id"])
+        if self._finish_if_stopped(request_id):
+            return
         frames: dict[str, pd.DataFrame] = {}
         failures: dict[str, str] = {}
         for request in payload["requests"]:
             try:
-                frame, message = self.loader.load(request)
+                frame, message = self.loader.load(
+                    request,
+                    cancelled=self.cancellation_token.is_requested,
+                )
+                if self._finish_if_stopped(request_id):
+                    return
                 if frame.empty:
                     failures[request.interval] = message or "No HTF bars returned."
                 else:
-                    frames[request.interval] = frame
+                    frames[request.interval] = normalize_context_frame(frame, request.interval)
+                    if self._finish_if_stopped(request_id):
+                        return
             except Exception as exc:
                 logger.exception("Higher-timeframe context loading failed for %s %s.", request.symbol, request.interval)
                 failures[request.interval] = f"{type(exc).__name__}: {exc}"
@@ -153,9 +183,16 @@ class MultiTimeframePanel(QtWidgets.QWidget):
     requestLoad = QtCore.Signal(object)
     loadFailed = QtCore.Signal(str, str)
 
-    def __init__(self, language: str = "zh_CN", parent=None, start_worker: bool = True):
+    def __init__(
+        self,
+        language: str = "zh_CN",
+        parent=None,
+        start_worker: bool = True,
+        lifecycle: Any | None = None,
+    ):
         super().__init__(parent)
         self.language = language
+        self._lifecycle = lifecycle
         self._context_frames: dict[str, pd.DataFrame] = {}
         self._context_errors: dict[str, str] = {}
         self._latest_context: dict[str, dict[str, Any]] = {}
@@ -163,17 +200,41 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         self._last_summary_context_key: tuple[Any, ...] | None = None
         self._configured_primary: str | None = None
         self._active_request_id: str | None = None
+        self._pending_request: dict[str, Any] | None = None
+        self._discard_active_result = False
         self._last_request_args: tuple[Any, ...] | None = None
         self._primary_row: pd.Series | dict[str, Any] | None = None
         self._worker_thread: QtCore.QThread | None = None
-        self._worker: _MultiTimeframeLoadWorker | None = None
+        self._worker: MultiTimeframeLoadWorker | None = None
+        self._cancellation_token: CancellationToken | None = None
+        self._lifecycle_terminal_pending = False
         self._build_ui()
         if start_worker:
-            self._worker_thread = QtCore.QThread(self)
-            self._worker = _MultiTimeframeLoadWorker()
+            # Keep the worker thread outside the QWidget QObject tree. Window
+            # stylesheet repolish and parent teardown must never own QThread;
+            # finished/deleteLater/destroyed below provide the sole lifetime.
+            self._worker_thread = QtCore.QThread()
+            self._worker = MultiTimeframeLoadWorker()
+            self._cancellation_token = self._worker.cancellation_token
             self._worker.moveToThread(self._worker_thread)
             self.requestLoad.connect(self._worker.load, QtCore.Qt.QueuedConnection)
             self._worker.finished.connect(self._on_loaded)
+            self._worker.cancelled.connect(self._on_cancelled)
+            self._worker_thread.started.connect(
+                self._worker.observe_startup_cancellation,
+                QtCore.Qt.QueuedConnection,
+            )
+            self._worker.destroyed.connect(self._on_worker_destroyed)
+            self._worker_thread.finished.connect(self._worker.deleteLater)
+            self._worker_thread.finished.connect(
+                self._on_worker_thread_finished,
+                QtCore.Qt.QueuedConnection,
+            )
+            self._worker_thread.finished.connect(
+                self._worker_thread.deleteLater,
+                QtCore.Qt.QueuedConnection,
+            )
+            self._worker_thread.destroyed.connect(self._on_worker_thread_destroyed)
             self._worker_thread.start()
         self.retranslate_ui(language)
 
@@ -284,18 +345,46 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         ]
 
     def request_context_load(self, symbol: str, primary_interval: str, start_dt_bjt, end_dt_bjt) -> None:
+        if self._shutdown_in_progress():
+            return
         self._last_request_args = (symbol, primary_interval, start_dt_bjt, end_dt_bjt)
         requests = self.build_load_requests(symbol, primary_interval, start_dt_bjt, end_dt_bjt)
         self._context_frames = {}
         self._context_errors = {}
         self._latest_context = {}
         if not requests:
+            self._pending_request = None
+            self._discard_active_result = self._active_request_id is not None
             self.summaryText.setPlainText(tr("multi_timeframe_no_selection", self.language))
             return
-        self._active_request_id = uuid.uuid4().hex
+        payload = {"request_id": uuid.uuid4().hex, "requests": requests}
         self.summaryText.setPlainText(tr("multi_timeframe_loading", self.language))
         if self._worker is not None:
-            self.requestLoad.emit({"request_id": self._active_request_id, "requests": requests})
+            if self._active_request_id is not None:
+                self._pending_request = payload
+                return
+            if self._lifecycle is not None:
+                if not self._lifecycle.start(
+                    "multi_timeframe_load",
+                    request_stop=self.request_stop,
+                ):
+                    return
+            self._active_request_id = str(payload["request_id"])
+            self._discard_active_result = False
+            self.requestLoad.emit(payload)
+
+    def _shutdown_in_progress(self) -> bool:
+        return bool(self._lifecycle is not None and self._lifecycle.shutdown_in_progress)
+
+    def _launch_pending_request(self) -> bool:
+        if self._pending_request is None or self._shutdown_in_progress():
+            return False
+        payload = self._pending_request
+        self._pending_request = None
+        self._active_request_id = str(payload["request_id"])
+        self._discard_active_result = False
+        self.requestLoad.emit(payload)
+        return True
 
     def _on_selection_changed(self, _checked: bool) -> None:
         if self._last_request_args is not None:
@@ -305,11 +394,55 @@ class MultiTimeframePanel(QtWidgets.QWidget):
     def _on_loaded(self, request_id: str, frames: dict[str, pd.DataFrame], failures: dict[str, str]) -> None:
         if request_id != self._active_request_id:
             return
+        if self._worker_cancellation_requested():
+            self._finish_cancelled_request()
+            return
+        if self._launch_pending_request():
+            return
+        discard_result = self._discard_active_result
+        self._discard_active_result = False
+        self._active_request_id = None
+        if discard_result:
+            if self._lifecycle is not None:
+                self._lifecycle.complete("multi_timeframe_load")
+            return
         self.set_context_frames(frames, failures)
         if self._primary_row is not None:
             self.refresh_for_primary_row(self._primary_row)
         for interval, error in failures.items():
             self.loadFailed.emit(interval, error)
+        if self._lifecycle is not None:
+            if failures and not frames:
+                detail = "; ".join(f"{interval}: {error}" for interval, error in failures.items())
+                self._lifecycle.fail("multi_timeframe_load", detail)
+            else:
+                self._lifecycle.complete("multi_timeframe_load")
+
+    @QtCore.Slot(str)
+    def _on_cancelled(self, request_id: str) -> None:
+        if request_id != self._active_request_id:
+            return
+        if self._launch_pending_request():
+            return
+        self._finish_cancelled_request()
+
+    def _worker_cancellation_requested(self) -> bool:
+        is_requested = getattr(self._cancellation_token, "is_requested", None)
+        return bool(callable(is_requested) and is_requested())
+
+    def _finish_cancelled_request(self) -> None:
+        self._active_request_id = None
+        self._discard_active_result = False
+        thread = self._worker_thread
+        if (
+            self._worker_cancellation_requested()
+            and thread is not None
+            and thread.isRunning()
+        ):
+            self._lifecycle_terminal_pending = True
+            return
+        if self._lifecycle is not None:
+            self._lifecycle.complete("multi_timeframe_load")
 
     def set_context_frames(
         self,
@@ -329,7 +462,8 @@ class MultiTimeframePanel(QtWidgets.QWidget):
             self.summaryText.setPlainText(f"{tr('multi_timeframe_load_failed', self.language)}\n{detail}")
 
     def mark_stale(self) -> None:
-        self._active_request_id = None
+        self._pending_request = None
+        self._discard_active_result = self._active_request_id is not None
         self._context_frames = {}
         self._context_errors = {}
         self._latest_context = {}
@@ -337,6 +471,32 @@ class MultiTimeframePanel(QtWidgets.QWidget):
         self._last_summary_context_key = None
         self._primary_row = None
         self.summaryText.setPlainText(tr("multi_timeframe_stale", self.language))
+
+    def request_stop(self) -> None:
+        self._pending_request = None
+        request = getattr(self._cancellation_token, "request", None)
+        if callable(request):
+            request()
+
+    @QtCore.Slot()
+    def _on_worker_thread_finished(self) -> None:
+        thread = self._worker_thread
+        if self._lifecycle_terminal_pending and self._lifecycle is not None:
+            self._lifecycle.complete("multi_timeframe_load")
+        self._lifecycle_terminal_pending = False
+        destroyed = getattr(thread, "destroyed", None)
+        if destroyed is None or not hasattr(destroyed, "connect"):
+            self._worker = None
+            self._worker_thread = None
+
+    @QtCore.Slot()
+    def _on_worker_destroyed(self) -> None:
+        self._worker = None
+
+    @QtCore.Slot()
+    def _on_worker_thread_destroyed(self) -> None:
+        self._worker_thread = None
+        self._cancellation_token = None
 
     def refresh_for_primary_row(self, primary_row: pd.Series | dict[str, Any]) -> dict[str, dict[str, Any]]:
         self._primary_row = primary_row.copy() if hasattr(primary_row, "copy") else dict(primary_row)
@@ -420,13 +580,20 @@ class MultiTimeframePanel(QtWidgets.QWidget):
             lines.extend(f"  {interval}: {error}" for interval, error in self._context_errors.items())
         self.summaryText.setPlainText("\n".join(lines).rstrip())
 
-    def shutdown(self) -> None:
-        if self._worker_thread is not None and self._worker_thread.isRunning():
+    def shutdown(self) -> bool:
+        self.request_stop()
+        if self._worker_thread is None:
+            return self._worker is None
+        if self._worker_thread.isRunning():
             self._worker_thread.quit()
-            self._worker_thread.wait(1000)
+        # start() is asynchronous. A thread reference with isRunning()==False
+        # may still be about to enter its event loop, so only finished (which
+        # clears the reference) is allowed to report a safe stop.
+        return False
 
 
 __all__ = [
+    "MultiTimeframeLoadWorker",
     "MultiTimeframePanel",
     "translate_sync_status",
     "translate_trend_regime",

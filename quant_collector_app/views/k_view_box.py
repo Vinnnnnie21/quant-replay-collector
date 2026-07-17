@@ -10,9 +10,12 @@ class KViewBox(pg.ViewBox):
     dragFinished = QtCore.Signal()
 
     def __init__(self):
-        super().__init__()
+        # The application never exposes pyqtgraph's native context menu.  Pass
+        # this at construction time so ViewBoxMenu is never allocated; creating
+        # and later disabling it caused a Windows native access violation after
+        # repeated layout construction.
+        super().__init__(enableMenu=False)
         self.setMouseEnabled(x=True, y=True)
-        self.setMenuEnabled(False)
         # True once the user has manually zoomed the price (Y) axis; while set,
         # the render loop stops auto-fitting Y so the manual zoom is preserved.
         self.yManual = False

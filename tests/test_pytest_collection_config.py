@@ -18,7 +18,15 @@ def test_pytest_collection_excludes_runtime_and_release_directories():
         "Backup",
         ".codex-backups",
         ".pytest_tmp*",
+        ".test-artifacts",
         "quant_collector_app/data",
         "quant_collector_app/logs",
     ):
         assert value in text
+
+
+def test_pytest_writes_default_cache_and_temp_files_under_one_directory():
+    text = Path("pytest.ini").read_text(encoding="utf-8")
+
+    assert "--basetemp=.test-artifacts/pytest-tmp" in text
+    assert "cache_dir = .test-artifacts/pytest-cache" in text

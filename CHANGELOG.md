@@ -1,5 +1,50 @@
 # Changelog
 
+## v1.5.1 - 2026-07-17
+
+### Added
+
+- Added one background-task lifecycle for market loading, multi-timeframe loading, analysis refresh, export and premium sampling, with cooperative safe shutdown and a visible saving state.
+- Added atomic settings writes, 14-day daily database backups and verified pre-migration backups.
+- Added strict K-line and event-window research quality gates. Collection-time sorting, deduplication and invalid-row removal remain allowed only with an auditable quality report.
+- Added deterministic, resource-bounded bootstrap and permutation statistics with seed, simulation, confidence, batching and budget metadata in manifests and reports.
+- Added a reproducible 270,000-bar performance benchmark and a Windows desktop smoke checklist.
+- Added transaction-safe trade-data management by performance session, individual trade or replay-time range, with deletion previews, typed second confirmation and account-equity rebuilding.
+- Added replay-page continuation of an existing performance session without cloning its `session_id`.
+- Added nullable TP/SL inputs that preserve `None` through trade creation and session save/restore.
+- Added the `QRC` Windows desktop entry, multi-size application icon and current-user shortcut script.
+
+### Changed
+
+- Multi-timeframe loading now uses single-flight scheduling: active work is retained, intermediate requests are merged, stale pending work is discarded and shutdown cancels cooperatively.
+- CSV export is chunked and cancellable. Complete exports are built in a staging directory, published with recoverable directory replacement and protected against transient Windows ACL or file-handle cleanup failures.
+- Daily backups, large market-data preparation, analysis refresh and export remain outside the Qt UI thread; SQLite market writes use bounded batches.
+- Analysis refresh returns a bounded worker-built performance payload, rejects stale revisions and reuses cached results for trade filters. The UI receives at most 2,000 equity display points.
+- Historical performance reads now run in a revisioned worker, and the trade table renders bounded 200-row pages instead of creating Qt items for every trade.
+- Analysis, export and daily-backup controllers finalize task lifecycles only after `QThread.finished`; shutdown requests cancellation and returns to Qt instead of waiting without a bound.
+- Script-mode and package-mode self-checks now use the formal entry-logic report writer. Internal report calculation failures stop the export instead of producing a fallback success report.
+- Session UI mapping and other MainWindow coordination were moved behind focused adapters without changing replay or storage contracts.
+- The supported release environment is now enforced in CI as Windows/Python 3.13 with an exact dependency lock.
+- Value/date inputs ignore mouse-wheel changes while their parent scroll areas continue scrolling; light-theme scrollbars use a more visible global palette.
+- The header uses the QRC logo beside the application name and version. Window, header and native Windows title-bar colors follow the active light or dark theme.
+
+### Fixed
+
+- Research entry points now reject out-of-order, duplicate, invalid-timestamp and non-finite K-line or event-window input instead of silently sorting or deduplicating it.
+- Event-window export reads now have deterministic repository ordering while the research quality gate still rejects real duplicates and reversals.
+- Export cancellation can no longer publish half-written CSV files or mix new files into a previous successful export.
+- Qt/pyqtgraph object ownership and cleanup were tightened to prevent intermittent native access violations during repeated layout, theme and close cycles.
+- A one-point equity or PnL curve is now visibly rendered, and the chart explains empty or replay-deferred states instead of showing an unexplained blank area.
+- Historical performance now reads its session K-lines in a cancellable background worker, builds a continuous replay-market-time equity curve and never falls back to or mutates the current player state.
+- Historical-session revisions reject late worker results, and missing session K-lines produce an explicit recover-session message instead of a blank chart.
+- Deleting current-session trades synchronizes in-memory trades, events, indexes, markers, tables and analysis; deleting historical-session trades leaves the current player unchanged.
+
+### Compatibility and boundaries
+
+- No live-trading or exchange-order API was added.
+- Simulated trading, fees, slippage, PnL, TP/SL, backtesting rules, research features, future-data isolation, SQLite schema and export schemas retain their existing meaning.
+- Current-session snapshot handoff, cancellation inside an active SQLite call and visible-desktop performance remain explicit follow-up verification risks.
+
 ## v1.5.0 - 2026-07-11
 
 ### Added
