@@ -599,6 +599,7 @@ def build_main_window_ui(self) -> None:
     self.tradeManagementStart.setCalendarPopup(True)
     self.tradeManagementStart.setDisplayFormat("yyyy-MM-dd HH:mm")
     replay_time_zone = QtCore.QTimeZone(b"Asia/Shanghai")
+    self.tradeManagementStart.setTimeZone(replay_time_zone)
     self.tradeManagementStart.setDateTime(
         QtCore.QDateTime(self.startDate.date(), QtCore.QTime(0, 0), replay_time_zone)
     )
@@ -606,6 +607,7 @@ def build_main_window_ui(self) -> None:
     self.tradeManagementEnd.setObjectName("tradeManagementEnd")
     self.tradeManagementEnd.setCalendarPopup(True)
     self.tradeManagementEnd.setDisplayFormat("yyyy-MM-dd HH:mm")
+    self.tradeManagementEnd.setTimeZone(replay_time_zone)
     self.tradeManagementEnd.setDateTime(
         QtCore.QDateTime(
             self.endDate.date().addDays(1), QtCore.QTime(0, 0), replay_time_zone
