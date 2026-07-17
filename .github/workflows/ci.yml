@@ -22,21 +22,31 @@ jobs:
       - name: Compile application
         run: python -m compileall quant_collector_app scripts
       - name: Run tests
-        run: >
-          python -m pytest -q
-          --basetemp "$env:RUNNER_TEMP\qrc-pytest-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          -o "cache_dir=$env:RUNNER_TEMP\qrc-pytest-cache-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
-          --junitxml=pytest-results.xml
-      - name: Report test failures
-        if: failure() && hashFiles('pytest-results.xml') != ''
         shell: pwsh
         run: |
-          [xml]$report = Get-Content -LiteralPath pytest-results.xml -Raw
-          foreach ($case in $report.SelectNodes('//testcase[failure or error]')) {
-            $failure = if ($case.failure) { $case.failure } else { $case.error }
-            $message = "$($case.classname)::$($case.name): $($failure.message)"
+          $baseTemp = Join-Path $env:RUNNER_TEMP "qrc-pytest-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $cacheDir = Join-Path $env:RUNNER_TEMP "qrc-pytest-cache-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          $outputPath = Join-Path $env:RUNNER_TEMP "qrc-pytest-output-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT.log"
+          python -m pytest -q --basetemp $baseTemp -o "cache_dir=$cacheDir" --junitxml=pytest-results.xml 2>&1 |
+            Tee-Object -FilePath $outputPath
+          exit $LASTEXITCODE
+      - name: Report test failures
+        if: failure()
+        shell: pwsh
+        run: |
+          if (Test-Path -LiteralPath pytest-results.xml) {
+            [xml]$report = Get-Content -LiteralPath pytest-results.xml -Raw
+            foreach ($case in $report.SelectNodes('//testcase[failure or error]')) {
+              $failure = if ($case.failure) { $case.failure } else { $case.error }
+              $message = "$($case.classname)::$($case.name): $($failure.message)"
+              $escaped = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+              Write-Output "::error title=Pytest failure::$escaped"
+            }
+          } else {
+            $outputPath = Join-Path $env:RUNNER_TEMP "qrc-pytest-output-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT.log"
+            $message = (Get-Content -LiteralPath $outputPath -Tail 120) -join "`n"
             $escaped = $message.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
-            Write-Output "::error title=Pytest failure::$escaped"
+            Write-Output "::error title=Pytest output::$escaped"
           }
       - name: Run core self check
         run: python quant_collector_app/self_check.py --core
