@@ -4,7 +4,9 @@
 
 `v1.5.2` is a language-consistency hotfix. Chinese mode now uses Chinese interface text and English mode uses English interface text throughout replay, analysis, settings and backtest views. Dynamic status, progress, validation, warning and table text is translated through the same resources, and English no longer falls back to Chinese for a missing key.
 
-The Windows executable now bundles `translations/zh_CN.json` and `translations/en_US.json`, preventing packaged builds from displaying raw keys such as `trading_replay` or `trade_actions`. Canonical technical identifiers such as symbols, intervals, API names and stored enum values remain unchanged. This release does not change trading, replay, accounting, SQLite data, saved sessions or research algorithms.
+The Windows executable now bundles `translations/zh_CN.json` and `translations/en_US.json`, preventing packaged builds from displaying raw keys such as `trading_replay` or `trade_actions`. Canonical technical identifiers such as symbols, intervals, API names and stored enum values remain unchanged.
+
+The refreshed v1.5.2 build also keeps a workspace-installed EXE on the same `quant_collector_app/data` database as source mode, rather than creating an empty profile beside the EXE. Standalone portable builds continue to use an executable-local data directory. Trade data management can now permanently delete a selected performance session and its owned records in one transaction. K-lines and data-quality reports are retained, all session catalogs refresh after deletion, and display numbering remains continuous within the same symbol, interval and replay range.
 
 Clean release commands:
 

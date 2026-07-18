@@ -9,7 +9,7 @@ pytest.importorskip("PySide6")
 pytest.importorskip("pandas")
 pytest.importorskip("pyqtgraph")
 
-from main_app import MainWindow, QtCore, QtWidgets
+from main_app import MainWindow, QtCore, QtGui, QtWidgets
 
 
 class _Storage:
@@ -156,7 +156,7 @@ class _SessionTradeTable:
         self.rows = []
 
     def setRowCount(self, count):
-        self.rows = [[None] * 10 for _ in range(count)]
+        self.rows = [[None] * 11 for _ in range(count)]
 
     def setItem(self, row, column, item):
         self.rows[row][column] = item
@@ -169,7 +169,13 @@ class _SessionTradeTable:
 
 
 class _SessionStorage(_RangeStorage):
+    def __init__(self, *, allow_delete: bool = False):
+        super().__init__(allow_delete=allow_delete)
+        self.session_deleted = False
+
     def list_performance_sessions(self):
+        if self.session_deleted:
+            return []
         return [
             {
                 "session_id": "sess_history",
@@ -198,10 +204,53 @@ class _SessionStorage(_RangeStorage):
                 "entry_price": 100.0,
                 "exit_price": 102.0,
                 "quantity": 10.0,
+                "return_pct": 2.0,
                 "pnl": 20.0,
             }
         ]
 
+    def preview_performance_session_deletion(self, session_id):
+        assert session_id == "sess_history"
+        self.preview_calls += 1
+        return {
+            "sessions": 1,
+            "trades": 1,
+            "trade_events": 2,
+            "event_windows": 82,
+            "event_features": 2,
+            "account_equity": 1,
+            "research_records": 0,
+            "trade_ids": ["trd_history"],
+            "event_ids": ["evt_open", "evt_close"],
+            "session_ids": [session_id],
+        }
+
+    def delete_performance_session(self, session_id):
+        assert session_id == "sess_history"
+        self.delete_calls += 1
+        if not self.allow_delete:
+            raise AssertionError("delete must not run")
+        deleted = self.preview_performance_session_deletion(session_id)
+        self.session_deleted = True
+        return deleted
+
+
+class _EmptyPerformanceSessionStorage(_SessionStorage):
+    def preview_performance_session_deletion(self, session_id):
+        assert session_id == "sess_history"
+        self.preview_calls += 1
+        return {
+            "sessions": 1,
+            "trades": 0,
+            "trade_events": 0,
+            "event_windows": 0,
+            "event_features": 0,
+            "account_equity": 0,
+            "research_records": 0,
+            "trade_ids": [],
+            "event_ids": [],
+            "session_ids": [session_id],
+        }
 
 def _range_window_stub(*, allow_delete: bool = False):
     return SimpleNamespace(
@@ -221,12 +270,14 @@ def _range_window_stub(*, allow_delete: bool = False):
         endDate=object(),
         playing=True,
         _analysis_workspace=None,
+        theme_settings={"green": "#168a5b", "red": "#d64545"},
         _log=lambda _message: None,
         tr=lambda key: {
             "clear_trade_records_phrase": "清空交易数据",
             "delete_trade_range_phrase": "删除时间段交易数据",
             "delete_selected_trade_phrase": "删除这笔交易样本",
             "delete_session_trade_phrase": "DELETE TRADE",
+            "delete_performance_session_phrase": "DELETE SESSION",
             "trade_data_management_preview_message": (
                 "scope={scope}; trades={trades}; events={events}; "
                 "windows={windows}; features={features}; sessions={sessions}"
@@ -411,17 +462,44 @@ def test_trade_management_session_catalog_lists_only_selected_session_trades():
     first = window.tradeManagementSessionTradeTable.rows[0]
     assert first[0].data(QtCore.Qt.UserRole) == "trd_history"
     assert [item.text() for item in first] == [
-        "trd_history",
         "BTCUSDT",
         "多",
+        "2",
+        "20",
+        "trd_history",
         "2026-01-01T00:01:00+08:00",
         "2026-01-01T00:02:00+08:00",
         "100",
         "102",
         "10",
-        "20",
         "已平仓",
     ]
+    assert first[2].foreground().color() == QtGui.QColor("#168a5b")
+    assert first[3].foreground().color() == QtGui.QColor("#168a5b")
+
+
+def test_trade_management_session_table_colors_losses_red():
+    window = _range_window_stub()
+    window.storage = _SessionStorage()
+    window.storage.list_trade_samples_for_session = lambda *_args, **_kwargs: [
+        {
+            "trade_id": "trd_loss",
+            "session_id": "sess_history",
+            "symbol": "BTCUSDT",
+            "side": "SHORT",
+            "return_pct": -1.5,
+            "pnl": -15.0,
+        }
+    ]
+    window.tradeManagementSessionBox = _SessionBox()
+    window.tradeManagementSessionBox.addItem("history", "sess_history")
+    window.tradeManagementSessionTradeTable = _SessionTradeTable()
+
+    MainWindow.load_trade_management_session_trades(window)
+
+    row = window.tradeManagementSessionTradeTable.rows[0]
+    assert row[2].foreground().color() == QtGui.QColor("#d64545")
+    assert row[3].foreground().color() == QtGui.QColor("#d64545")
 
 
 def test_delete_session_trade_requires_preview_and_exact_phrase_before_delete(monkeypatch):
@@ -447,6 +525,152 @@ def test_delete_session_trade_requires_preview_and_exact_phrase_before_delete(mo
     assert window.storage.preview_calls == 1
     assert window.storage.delete_calls == 1
     assert window.session_id == "sess_current"
+
+
+def test_delete_performance_session_requires_two_confirmations(monkeypatch):
+    window = _range_window_stub(allow_delete=True)
+    window.storage = _SessionStorage(allow_delete=True)
+    window.tradeManagementSessionBox = _SessionBox()
+    window.tradeManagementSessionTradeTable = _SessionTradeTable()
+    MainWindow.refresh_trade_management_sessions(window)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.Yes,
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("DELETE SESSION", True),
+    )
+
+    MainWindow.confirm_delete_performance_session(window)
+
+    assert window.storage.delete_calls == 1
+    assert window.session_id == "sess_current"
+    assert window.cursor == 37
+    assert window.symbolBox.currentText() == "ETHUSDT"
+    assert window.intervalBox.currentText() == "5m"
+
+
+def test_delete_empty_performance_session_removes_catalog_entry_after_two_confirmations(
+    monkeypatch,
+):
+    window = _range_window_stub(allow_delete=True)
+    window.storage = _EmptyPerformanceSessionStorage(allow_delete=True)
+    window.tradeManagementSessionBox = _SessionBox()
+    window.tradeManagementSessionTradeTable = _SessionTradeTable()
+    MainWindow.refresh_trade_management_sessions(window)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.Yes,
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("DELETE SESSION", True),
+    )
+
+    MainWindow.confirm_delete_performance_session(window)
+
+    assert window.storage.delete_calls == 1
+    assert window.tradeManagementSessionBox.items == []
+    assert window.session_id == "sess_current"
+    assert window.cursor == 37
+
+
+def test_delete_current_performance_session_detaches_without_recreating_it(monkeypatch):
+    window = _range_window_stub(allow_delete=True)
+    window.storage = _SessionStorage(allow_delete=True)
+    window.tradeManagementSessionBox = _SessionBox()
+    window.tradeManagementSessionTradeTable = _SessionTradeTable()
+    MainWindow.refresh_trade_management_sessions(window)
+    window.session_id = "sess_history"
+    window.trades = [{"trade_id": "trd_history"}]
+    window.events = [{"event_id": "evt_open"}, {"event_id": "evt_close"}]
+    window._trade_by_id = {"trd_history": window.trades[0]}
+    window._event_by_id = {row["event_id"]: row for row in window.events}
+    window.undo_stack = [object()]
+    window.redo_stack = [object()]
+    window._analysis_performance_payload = object()
+    calls = []
+    window.persist_session_state = lambda: calls.append("persist")
+    window._chart_render_state = lambda: SimpleNamespace(
+        mark_events_changed=lambda: calls.append("events")
+    )
+    window._sync_markers = lambda: calls.append("markers")
+    window._refresh_tables = lambda: calls.append("tables")
+    window._render = lambda **_kwargs: calls.append("render")
+    window._render_dirty = False
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.Yes,
+    )
+    monkeypatch.setattr(QtWidgets.QMessageBox, "information", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("DELETE SESSION", True),
+    )
+
+    MainWindow.confirm_delete_performance_session(window)
+
+    assert window.session_id is None
+    assert window.trades == []
+    assert window.events == []
+    assert window._trade_by_id == {}
+    assert window._event_by_id == {}
+    assert window.undo_stack == []
+    assert window.redo_stack == []
+    assert window._analysis_performance_payload is None
+    assert "persist" not in calls
+    assert calls == ["events", "markers", "tables", "render"]
+    assert window.cursor == 37
+    assert window.symbolBox.currentText() == "ETHUSDT"
+    assert window.intervalBox.currentText() == "5m"
+
+
+def test_delete_performance_session_cancelled_at_preview_does_not_delete(monkeypatch):
+    window = _range_window_stub()
+    window.storage = _SessionStorage()
+    window.tradeManagementSessionBox = _SessionBox()
+    window.tradeManagementSessionTradeTable = _SessionTradeTable()
+    MainWindow.refresh_trade_management_sessions(window)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.Cancel,
+    )
+
+    MainWindow.confirm_delete_performance_session(window)
+
+    assert window.storage.delete_calls == 0
+
+
+def test_delete_performance_session_wrong_phrase_does_not_delete(monkeypatch):
+    window = _range_window_stub()
+    window.storage = _SessionStorage()
+    window.tradeManagementSessionBox = _SessionBox()
+    window.tradeManagementSessionTradeTable = _SessionTradeTable()
+    MainWindow.refresh_trade_management_sessions(window)
+    monkeypatch.setattr(
+        QtWidgets.QMessageBox,
+        "warning",
+        lambda *args, **kwargs: QtWidgets.QMessageBox.Yes,
+    )
+    monkeypatch.setattr(
+        QtWidgets.QInputDialog,
+        "getText",
+        lambda *args, **kwargs: ("wrong", True),
+    )
+
+    MainWindow.confirm_delete_performance_session(window)
+
+    assert window.storage.delete_calls == 0
 
 
 def test_delete_trade_range_with_no_matches_stops_before_confirmation(monkeypatch):

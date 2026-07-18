@@ -137,6 +137,7 @@ from controllers.trade_record_controller import (
     confirm_clear_trade_records as apply_clear_trade_records,
     confirm_delete_selected_trade as apply_delete_selected_trade,
     confirm_delete_session_trade as apply_delete_session_trade,
+    confirm_delete_performance_session as apply_delete_performance_session,
     confirm_delete_trade_range as apply_delete_trade_range,
     preview_trade_data_range as apply_preview_trade_data_range,
     refresh_trade_management_sessions as apply_refresh_trade_management_sessions,
@@ -840,6 +841,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def confirm_delete_session_trade(self):
         apply_delete_session_trade(self)
+
+    def confirm_delete_performance_session(self):
+        apply_delete_performance_session(self)
 
     def preview_trade_data_range(self):
         return apply_preview_trade_data_range(self)

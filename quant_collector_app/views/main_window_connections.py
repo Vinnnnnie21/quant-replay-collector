@@ -87,6 +87,9 @@ def connect_main_window_signals(window) -> None:
         window.btnDeleteSelectedTrade.clicked.connect(window.confirm_delete_selected_trade)
     if hasattr(window, "btnDeleteSessionTrade"):
         window.btnDeleteSessionTrade.clicked.connect(window.confirm_delete_session_trade)
+        window.btnDeletePerformanceSession.clicked.connect(
+            window.confirm_delete_performance_session
+        )
         window.tradeManagementSessionBox.currentIndexChanged.connect(
             window.load_trade_management_session_trades
         )

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from app_config import EVENT_WINDOW_POST_BARS, EVENT_WINDOW_PRE_BARS
+from services.session_service import list_performance_session_options
 from storage import StorageManager
 
 
@@ -351,8 +352,214 @@ def test_trade_management_session_list_is_narrow_and_scoped_to_selected_session(
         "entry_price",
         "exit_price",
         "quantity",
+        "return_pct",
         "pnl",
     }
+
+
+def test_delete_performance_session_removes_its_trades_and_keeps_other_session(tmp_path):
+    storage = make_storage(tmp_path)
+    for session_id in ("sess_target", "sess_other"):
+        storage.upsert_session(
+            {
+                "session_id": session_id,
+                "initial_equity": 10_000.0,
+                "trade_notional": 1_000.0,
+            }
+        )
+    for sequence, pnl in enumerate((10.0, -5.0), start=1):
+        insert_closed_managed_bundle(
+            storage,
+            trade_id=f"trd_target_{sequence}",
+            session_id="sess_target",
+            entry_time=f"2026-01-01T00:0{sequence}:00+08:00",
+            exit_time=f"2026-01-01T00:1{sequence}:00+08:00",
+            net_pnl_quote=pnl,
+        )
+    insert_closed_managed_bundle(
+        storage,
+        trade_id="trd_other",
+        session_id="sess_other",
+        entry_time="2026-01-01T00:03:00+08:00",
+        exit_time="2026-01-01T00:13:00+08:00",
+        net_pnl_quote=20.0,
+    )
+    other_equity = [
+        {
+            "session_id": "sess_other",
+            "sequence_no": 1,
+            "trade_id": "trd_other",
+            "equity_after": 10_020.0,
+        }
+    ]
+    storage.replace_equity_curve("sess_other", other_equity)
+    before_other_equity = storage.fetch_table(
+        "account_equity", "session_id=?", ("sess_other",)
+    )
+
+    preview = storage.preview_performance_session_deletion("sess_target")
+    deleted = storage.delete_performance_session("sess_target")
+
+    assert preview["trades"] == 2
+    assert preview["session_ids"] == ["sess_target"]
+    assert deleted["trades"] == 2
+    assert storage.fetch_table("trades", "session_id=?", ("sess_target",)) == []
+    assert storage.fetch_table("trade_events", "session_id=?", ("sess_target",)) == []
+    assert storage.fetch_table("event_windows", "session_id=?", ("sess_target",)) == []
+    assert storage.fetch_table("event_features", "session_id=?", ("sess_target",)) == []
+    assert storage.fetch_table("account_equity", "session_id=?", ("sess_target",)) == []
+    assert storage.fetch_table("sessions", "session_id=?", ("sess_target",)) == []
+    assert storage.fetch_trade("trd_other") is not None
+    assert (
+        storage.fetch_table("account_equity", "session_id=?", ("sess_other",))
+        == before_other_equity
+    )
+
+
+def test_delete_empty_performance_session_removes_session_but_keeps_market_data(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.upsert_session({"session_id": "sess_empty", "symbol": SYMBOL, "interval": INTERVAL})
+    storage.upsert_session({"session_id": "sess_keep", "symbol": SYMBOL, "interval": INTERVAL})
+    with storage.connect() as conn:
+        conn.execute(
+            "INSERT INTO klines (symbol, interval, open_time_utc_ms) VALUES (?, ?, ?)",
+            (SYMBOL, INTERVAL, 1),
+        )
+        conn.execute(
+            "INSERT INTO data_quality_reports (report_id, symbol, interval) VALUES (?, ?, ?)",
+            ("report_keep", SYMBOL, INTERVAL),
+        )
+
+    deleted = storage.delete_performance_session("sess_empty")
+
+    assert deleted["sessions"] == 1
+    assert storage.get_session("sess_empty") is None
+    assert storage.get_session("sess_keep") is not None
+    assert len(storage.fetch_table("klines")) == 1
+    assert len(storage.fetch_table("data_quality_reports")) == 1
+
+
+def test_delete_performance_session_compacts_same_range_display_sequence(tmp_path):
+    storage = make_storage(tmp_path)
+    common = {
+        "symbol": SYMBOL,
+        "interval": INTERVAL,
+        "start_date_bjt": "2026-04-01",
+        "end_date_bjt": "2026-05-01",
+    }
+    for session_id, saved_day in (
+        ("sess_first", "03"),
+        ("sess_middle", "02"),
+        ("sess_last", "01"),
+    ):
+        storage.upsert_session(
+            {
+                **common,
+                "session_id": session_id,
+                "last_saved_at": f"2026-07-{saved_day}T00:00:00+08:00",
+            }
+        )
+
+    before = list_performance_session_options(storage)
+    storage.delete_performance_session("sess_middle")
+    after = list_performance_session_options(storage)
+
+    assert [option.session_id for option in before] == [
+        "sess_first",
+        "sess_middle",
+        "sess_last",
+    ]
+    assert before[1].display_name.endswith("#2")
+    assert before[2].display_name.endswith("#3")
+    assert [option.session_id for option in after] == ["sess_first", "sess_last"]
+    assert "#" not in after[0].display_name
+    assert after[1].display_name.endswith("#2")
+
+
+def test_delete_performance_session_removes_all_session_owned_research_records(tmp_path):
+    storage = make_storage(tmp_path)
+    for session_id in ("sess_target", "sess_keep"):
+        storage.upsert_session({"session_id": session_id})
+    with storage.connect() as conn:
+        for suffix, session_id in (("target", "sess_target"), ("keep", "sess_keep")):
+            sample_id = f"sample_{suffix}"
+            annotation_id = f"annotation_{suffix}"
+            conn.execute(
+                """
+                INSERT INTO observation_universe (
+                    sample_id, session_id, source_type, symbol, interval, bar_index,
+                    user_action, created_at
+                ) VALUES (?, ?, 'USER_EVENT', ?, ?, 1, 'HOLD', ?)
+                """,
+                (sample_id, session_id, SYMBOL, INTERVAL, NOW),
+            )
+            conn.execute(
+                """
+                INSERT INTO strategy_samples (
+                    strategy_sample_id, sample_id, experiment_id, feature_version,
+                    label_version, dataset_hash, sample_role, created_at
+                ) VALUES (?, ?, 'experiment', 'feature-v1', 'label-v1', 'hash',
+                          'USER_ACTION', ?)
+                """,
+                (f"strategy_{suffix}", sample_id, NOW),
+            )
+            conn.execute(
+                """
+                INSERT INTO event_context_features (
+                    context_feature_id, sample_id, session_id, feature_version,
+                    symbol, interval, bar_index, lookback_bars, feature_name,
+                    feature_value, created_at
+                ) VALUES (?, ?, ?, 'feature-v1', ?, ?, 1, 20, 'range_pct', 1.0, ?)
+                """,
+                (f"context_{suffix}", sample_id, session_id, SYMBOL, INTERVAL, NOW),
+            )
+            conn.execute(
+                """
+                INSERT INTO research_outcome_labels (
+                    outcome_label_id, sample_id, session_id, label_version,
+                    symbol, interval, bar_index, horizon_bars, pricing_basis, created_at
+                ) VALUES (?, ?, ?, 'label-v1', ?, ?, 1, 5, 'next_open', ?)
+                """,
+                (f"outcome_{suffix}", sample_id, session_id, SYMBOL, INTERVAL, NOW),
+            )
+            conn.execute(
+                """
+                INSERT INTO entry_annotations (annotation_id, observation_id, session_id)
+                VALUES (?, ?, NULL)
+                """,
+                (annotation_id, sample_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO entry_annotation_history (
+                    annotation_id, revision_no, operation, session_id, snapshot_json
+                ) VALUES (?, 1, 'CREATE', NULL, '{}')
+                """,
+                (annotation_id,),
+            )
+
+    deleted = storage.delete_performance_session("sess_target")
+
+    assert deleted["research_records"] == 6
+    for table in (
+        "observation_universe",
+        "event_context_features",
+        "research_outcome_labels",
+    ):
+        assert storage.fetch_table(table, "session_id=?", ("sess_target",)) == []
+        assert len(storage.fetch_table(table, "session_id=?", ("sess_keep",))) == 1
+    assert storage.fetch_table("entry_annotations", "annotation_id=?", ("annotation_target",)) == []
+    assert len(storage.fetch_table("entry_annotations", "annotation_id=?", ("annotation_keep",))) == 1
+    assert storage.fetch_table(
+        "entry_annotation_history", "annotation_id=?", ("annotation_target",)
+    ) == []
+    assert len(
+        storage.fetch_table(
+            "entry_annotation_history", "annotation_id=?", ("annotation_keep",)
+        )
+    ) == 1
+    assert storage.fetch_table("strategy_samples", "sample_id=?", ("sample_target",)) == []
+    assert len(storage.fetch_table("strategy_samples", "sample_id=?", ("sample_keep",))) == 1
 
 
 def test_trade_management_range_matches_exit_event_but_not_position_only_overlap(tmp_path):
@@ -556,6 +763,51 @@ def test_delete_trade_samples_rolls_back_all_tables_when_sqlite_aborts_mid_trans
 
     after = {
         table: storage.fetch_table(table, "session_id=?", (SESSION_ID,))
+        for table in before
+    }
+    assert after == before
+
+
+def test_delete_performance_session_rolls_back_on_sqlite_error(tmp_path):
+    storage = make_storage(tmp_path)
+    storage.upsert_session({"session_id": "sess_rollback"})
+    for sequence in (1, 2):
+        insert_closed_managed_bundle(
+            storage,
+            trade_id=f"trd_session_rollback_{sequence}",
+            session_id="sess_rollback",
+            entry_time=f"2026-01-01T00:0{sequence}:00+08:00",
+            exit_time=f"2026-01-01T00:1{sequence}:00+08:00",
+            net_pnl_quote=10.0,
+        )
+    before = {
+        table: storage.fetch_table(table, "session_id=?", ("sess_rollback",))
+        for table in (
+            "sessions",
+            "trades",
+            "trade_events",
+            "event_windows",
+            "event_features",
+            "account_equity",
+        )
+    }
+    with storage.connect() as conn:
+        conn.execute(
+            """
+            CREATE TRIGGER abort_session_trade_sample_delete
+            BEFORE DELETE ON trades
+            WHEN OLD.trade_id = 'trd_session_rollback_2'
+            BEGIN
+                SELECT RAISE(ABORT, 'session rollback test');
+            END
+            """
+        )
+
+    with pytest.raises(Exception, match="session rollback test"):
+        storage.delete_performance_session("sess_rollback")
+
+    after = {
+        table: storage.fetch_table(table, "session_id=?", ("sess_rollback",))
         for table in before
     }
     assert after == before

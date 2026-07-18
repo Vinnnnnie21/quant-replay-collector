@@ -121,6 +121,7 @@ def list_trade_samples_for_session(
             COALESCE(entry_fill_price, entry_price_proxy) AS entry_price,
             COALESCE(exit_fill_price, exit_price_proxy) AS exit_price,
             quantity,
+            COALESCE(net_return_pct, final_return_pct, gross_return_pct) AS return_pct,
             COALESCE(net_pnl_quote, gross_pnl_quote) AS pnl
         FROM trades
         WHERE session_id = ?
@@ -139,6 +140,10 @@ def preview_delete_trade_samples(
     """Return bounded deletion counts for existing selected trades."""
 
     _select_trade_ids(conn, trade_ids)
+    return _preview_selected_trade_samples(conn)
+
+
+def _preview_selected_trade_samples(conn) -> dict[str, Any]:
     trade_rows = conn.execute(
         f"""
         SELECT t.trade_id, t.session_id
@@ -254,6 +259,10 @@ def delete_trade_samples(
     """Delete selected trade samples and rebuild affected session equity."""
 
     preview = preview_delete_trade_samples(conn, trade_ids)
+    return _delete_selected_trade_samples(conn, preview)
+
+
+def _delete_selected_trade_samples(conn, preview: dict[str, Any]) -> dict[str, Any]:
     if not preview["trade_ids"]:
         return preview
     conn.execute(
@@ -303,6 +312,163 @@ def delete_trade_samples(
     return preview
 
 
+def preview_performance_session_deletion(conn, session_id: str) -> dict[str, Any]:
+    """Preview removal of one saved performance session and its trade records."""
+
+    session = str(session_id or "").strip()
+    exists = int(
+        conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE session_id = ?",
+            (session,),
+        ).fetchone()[0]
+    )
+    counts = {
+        table: int(
+            conn.execute(
+                f"SELECT COUNT(*) FROM {table} WHERE session_id = ?",
+                (session,),
+            ).fetchone()[0]
+        )
+        for table in TRADE_SAMPLE_TABLES
+    }
+    trade_rows = conn.execute(
+        "SELECT trade_id FROM trades WHERE session_id = ? ORDER BY trade_id",
+        (session,),
+    ).fetchall()
+    event_rows = conn.execute(
+        "SELECT event_id FROM trade_events WHERE session_id = ? ORDER BY event_id",
+        (session,),
+    ).fetchall()
+    research_counts = {
+        "observation_universe": int(
+            conn.execute(
+                "SELECT COUNT(*) FROM observation_universe WHERE session_id = ?",
+                (session,),
+            ).fetchone()[0]
+        ),
+        "strategy_samples": int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM strategy_samples
+                WHERE sample_id IN (
+                    SELECT sample_id FROM observation_universe WHERE session_id = ?
+                )
+                """,
+                (session,),
+            ).fetchone()[0]
+        ),
+        "event_context_features": int(
+            conn.execute(
+                "SELECT COUNT(*) FROM event_context_features WHERE session_id = ?",
+                (session,),
+            ).fetchone()[0]
+        ),
+        "research_outcome_labels": int(
+            conn.execute(
+                "SELECT COUNT(*) FROM research_outcome_labels WHERE session_id = ?",
+                (session,),
+            ).fetchone()[0]
+        ),
+        "entry_annotations": int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM entry_annotations
+                WHERE session_id = ?
+                   OR observation_id IN (
+                       SELECT sample_id FROM observation_universe WHERE session_id = ?
+                   )
+                """,
+                (session, session),
+            ).fetchone()[0]
+        ),
+        "entry_annotation_history": int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM entry_annotation_history
+                WHERE session_id = ?
+                   OR annotation_id IN (
+                       SELECT annotation_id
+                       FROM entry_annotations
+                       WHERE session_id = ?
+                          OR observation_id IN (
+                              SELECT sample_id
+                              FROM observation_universe
+                              WHERE session_id = ?
+                          )
+                   )
+                """,
+                (session, session, session),
+            ).fetchone()[0]
+        ),
+    }
+    return {
+        "sessions": exists,
+        "trades": counts["trades"],
+        "trade_events": counts["trade_events"],
+        "event_windows": counts["event_windows"],
+        "event_features": counts["event_features"],
+        "account_equity": counts["account_equity"],
+        "research_records": sum(research_counts.values()),
+        "research_counts": research_counts,
+        "trade_ids": [str(row["trade_id"]) for row in trade_rows],
+        "event_ids": [str(row["event_id"]) for row in event_rows],
+        "session_ids": [session] if exists else [],
+    }
+
+
+def delete_performance_session(conn, session_id: str) -> dict[str, Any]:
+    """Delete one performance session and its trade records in the caller transaction."""
+
+    session = str(session_id or "").strip()
+    preview = preview_performance_session_deletion(conn, session)
+    if not preview["sessions"]:
+        return preview
+    conn.execute(
+        """
+        DELETE FROM strategy_samples
+        WHERE sample_id IN (
+            SELECT sample_id FROM observation_universe WHERE session_id = ?
+        )
+        """,
+        (session,),
+    )
+    conn.execute("DELETE FROM event_context_features WHERE session_id = ?", (session,))
+    conn.execute("DELETE FROM research_outcome_labels WHERE session_id = ?", (session,))
+    conn.execute(
+        """
+        DELETE FROM entry_annotation_history
+        WHERE session_id = ?
+           OR annotation_id IN (
+               SELECT annotation_id
+               FROM entry_annotations
+               WHERE session_id = ?
+                  OR observation_id IN (
+                      SELECT sample_id FROM observation_universe WHERE session_id = ?
+                  )
+           )
+        """,
+        (session, session, session),
+    )
+    conn.execute(
+        """
+        DELETE FROM entry_annotations
+        WHERE session_id = ?
+           OR observation_id IN (
+               SELECT sample_id FROM observation_universe WHERE session_id = ?
+           )
+        """,
+        (session, session),
+    )
+    conn.execute("DELETE FROM observation_universe WHERE session_id = ?", (session,))
+    for table in TRADE_SAMPLE_TABLES:
+        conn.execute(f"DELETE FROM {table} WHERE session_id = ?", (session,))
+    conn.execute("DELETE FROM sessions WHERE session_id = ?", (session,))
+    return preview
+
+
 def preview_all_trade_sample_deletion(conn) -> dict[str, Any]:
     counts = {
         table: int(conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
@@ -336,6 +502,8 @@ __all__ = [
     "list_trade_samples_for_session",
     "preview_delete_trade_samples",
     "delete_trade_samples",
+    "preview_performance_session_deletion",
+    "delete_performance_session",
     "preview_all_trade_sample_deletion",
     "clear_all_trade_samples",
     "TRADE_SAMPLE_TABLES",

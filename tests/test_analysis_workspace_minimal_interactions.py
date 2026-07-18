@@ -1025,6 +1025,55 @@ def test_analysis_performance_sessions_use_the_shared_narrow_session_catalog(tmp
         app.processEvents()
 
 
+def test_analysis_performance_session_catalog_removes_deleted_session_and_compacts_names(
+    tmp_path,
+):
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = PerformanceHost()
+    storage = StorageManager(tmp_path / "delete_catalog.db")
+    common = {
+        "symbol": "BTCUSDT",
+        "interval": "5m",
+        "start_date_bjt": "2026-04-01",
+        "end_date_bjt": "2026-05-01",
+    }
+    for session_id, saved_day in (
+        ("session_first", "03"),
+        ("session_middle", "02"),
+        ("session_last", "01"),
+    ):
+        storage.upsert_session(
+            {
+                **common,
+                "session_id": session_id,
+                "last_saved_at": f"2026-07-{saved_day}T00:00:00+08:00",
+            }
+        )
+    host.storage = storage
+    host.task_lifecycle = BackgroundTaskLifecycle()
+    dialog = AnalysisWorkspace(host)
+
+    try:
+        assert dialog.performanceSessionBox.itemText(
+            dialog.performanceSessionBox.findData("session_middle")
+        ).endswith("#2")
+        assert dialog.performanceSessionBox.itemText(
+            dialog.performanceSessionBox.findData("session_last")
+        ).endswith("#3")
+
+        storage.delete_performance_session("session_middle")
+        dialog.refresh_performance_session_catalog()
+
+        assert dialog.performanceSessionBox.findData("session_middle") == -1
+        last_index = dialog.performanceSessionBox.findData("session_last")
+        assert last_index >= 0
+        assert dialog.performanceSessionBox.itemText(last_index).endswith("#2")
+    finally:
+        dialog.close()
+        host.close()
+        app.processEvents()
+
+
 def test_historical_performance_selection_reads_and_computes_off_ui_thread(tmp_path):
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
     host = PerformanceHost()

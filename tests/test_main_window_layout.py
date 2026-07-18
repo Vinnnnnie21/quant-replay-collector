@@ -350,8 +350,14 @@ def test_main_window_layout_builds_existing_primary_widgets():
     assert host.dangerActions.isHidden()
     assert isinstance(host.tradeManagementSessionBox, QtWidgets.QComboBox)
     assert isinstance(host.tradeManagementSessionTradeTable, QtWidgets.QTableWidget)
-    assert host.tradeManagementSessionTradeTable.columnCount() == 10
+    assert host.tradeManagementSessionTradeTable.columnCount() == 11
+    assert [
+        host.tradeManagementSessionTradeTable.horizontalHeaderItem(index).text()
+        for index in range(4)
+    ] == ["品种", "方向", "净收益率（%）", "净盈亏"]
     assert host.btnDeleteSessionTrade.property("role") == "dangerGhostButton"
+    assert host.btnDeletePerformanceSession.property("role") == "dangerGhostButton"
+    assert host.btnDeletePerformanceSession.text() == "删除该绩效会话"
     assert isinstance(host.tradeManagementStart, QtWidgets.QDateTimeEdit)
     assert isinstance(host.tradeManagementEnd, QtWidgets.QDateTimeEdit)
     assert bytes(host.tradeManagementStart.dateTime().timeZone().id()) == b"Asia/Shanghai"
