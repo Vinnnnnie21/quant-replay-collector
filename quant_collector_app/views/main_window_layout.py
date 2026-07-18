@@ -597,19 +597,20 @@ def build_main_window_ui(self) -> None:
     self.tradeManagementSessionBox = QtWidgets.QComboBox()
     self.tradeManagementSessionBox.setObjectName("tradeManagementSessionBox")
     danger_actions_l.addWidget(self.tradeManagementSessionBox)
-    self.tradeManagementSessionTradeTable = QtWidgets.QTableWidget(0, 10)
+    self.tradeManagementSessionTradeTable = QtWidgets.QTableWidget(0, 11)
     self.tradeManagementSessionTradeTable.setObjectName("tradeManagementSessionTradeTable")
     self.tradeManagementSessionTradeTable.setHorizontalHeaderLabels(
         [
-            self.tr("ui.trade"),
             self.tr("symbol"),
             self.tr("ui.side"),
+            self.tr("ui.net_return_pct"),
+            self.tr("ui.net_pnl"),
+            self.tr("ui.trade"),
             self.tr("ui.entry_time"),
             self.tr("ui.exit_time"),
             self.tr("ui.entry_price"),
             self.tr("ui.exit_price"),
             self.tr("ui.quantity"),
-            self.tr("ui.total_pnl"),
             self.tr("ui.status"),
         ]
     )
@@ -629,8 +630,13 @@ def build_main_window_ui(self) -> None:
         self.tr("delete_selected_trade_title")
     )
     self.btnDeleteSessionTrade.setProperty("role", "dangerGhostButton")
+    self.btnDeletePerformanceSession = QtWidgets.QPushButton(
+        self.tr("delete_performance_session_title")
+    )
+    self.btnDeletePerformanceSession.setProperty("role", "dangerGhostButton")
     danger_actions_l.addWidget(self.tradeManagementSessionTradeTable)
     danger_actions_l.addWidget(self.btnDeleteSessionTrade)
+    danger_actions_l.addWidget(self.btnDeletePerformanceSession)
 
     self.tradeManagementRangeLabel = QtWidgets.QLabel(
         self.tr("trade_data_management_range_group")
@@ -1579,6 +1585,7 @@ def build_main_window_ui(self) -> None:
         (self.btnToggleDanger, "trade_data_management_title", ""),
         (self.tradeManagementSessionLabel, "trade_data_management_session_group", ""),
         (self.btnDeleteSessionTrade, "delete_selected_trade_title", ""),
+        (self.btnDeletePerformanceSession, "delete_performance_session_title", ""),
         (self.tradeManagementRangeLabel, "trade_data_management_range_group", ""),
         (self.tradeManagementStartLabel, "ui.start", ""),
         (self.tradeManagementEndLabel, "ui.end", ""),
@@ -1649,8 +1656,9 @@ def build_main_window_ui(self) -> None:
 
     for table, keys in (
         (self.tradeManagementSessionTradeTable, (
-            "ui.trade", "symbol", "ui.side", "ui.entry_time", "ui.exit_time",
-            "ui.entry_price", "ui.exit_price", "ui.quantity", "ui.total_pnl", "ui.status",
+            "symbol", "ui.side", "ui.net_return_pct", "ui.net_pnl", "ui.trade",
+            "ui.entry_time", "ui.exit_time", "ui.entry_price", "ui.exit_price",
+            "ui.quantity", "ui.status",
         )),
         (self.openTradesTable, (
             "ui.trade_id", "ui.side", "ui.entry_time", "ui.proxy_price", "ui.fill_price",

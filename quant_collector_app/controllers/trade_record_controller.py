@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 try:
     from app_logger import get_logger
@@ -22,15 +22,16 @@ logger = get_logger(__name__)
 
 
 _SESSION_TRADE_COLUMNS = (
-    "trade_id",
     "symbol",
     "side",
+    "return_pct",
+    "pnl",
+    "trade_id",
     "entry_time",
     "exit_time",
     "entry_price",
     "exit_price",
     "quantity",
-    "pnl",
     "status",
 )
 
@@ -41,6 +42,17 @@ def _display_cell(value) -> str:
     if isinstance(value, float):
         return f"{value:g}"
     return str(value)
+
+
+def _set_profit_loss_color(window, item: QtWidgets.QTableWidgetItem, value) -> None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return
+    theme = getattr(window, "theme_settings", {}) or {}
+    color = theme.get("green") if number > 0 else theme.get("red") if number < 0 else None
+    if color:
+        item.setForeground(QtGui.QBrush(QtGui.QColor(str(color))))
 
 
 def load_trade_management_session_trades(window) -> list[dict]:
@@ -69,6 +81,8 @@ def load_trade_management_session_trades(window) -> list[dict]:
             else:
                 text = _display_cell(value)
             item = QtWidgets.QTableWidgetItem(text)
+            if field in {"return_pct", "pnl"}:
+                _set_profit_loss_color(window, item, value)
             if column == 0:
                 item.setData(QtCore.Qt.UserRole, str(row.get("trade_id") or ""))
                 item.setData(QtCore.Qt.UserRole + 1, dict(row))
@@ -155,6 +169,8 @@ def _format_deletion_preview(window, preview: dict, *, scope: str) -> str:
         equity=int(preview.get("account_equity", 0)),
         session_count=len(preview.get("session_ids") or ()),
         sessions=sessions,
+        sessions_deleted=int(preview.get("sessions", 0)),
+        research_records=int(preview.get("research_records", 0)),
     )
 
 
@@ -233,6 +249,20 @@ def _delete_confirmed_trade_samples(
     *,
     operation: str,
 ) -> dict | None:
+    return _execute_confirmed_deletion(
+        window,
+        lambda: window.storage.delete_trade_samples(trade_ids),
+        operation=operation,
+    )
+
+
+def _execute_confirmed_deletion(
+    window,
+    delete_action,
+    *,
+    operation: str,
+    result_handler=None,
+) -> dict | None:
     if _trade_management_busy(window):
         QtWidgets.QMessageBox.warning(
             window,
@@ -242,13 +272,14 @@ def _delete_confirmed_trade_samples(
         return None
     window._trade_transaction_active = True
     try:
-        deleted = window.storage.delete_trade_samples(trade_ids)
+        deleted = delete_action()
     except Exception as exc:
         window._operation_error(window.tr("trade_data_management_delete_failed"), exc)
         return None
     finally:
         window._trade_transaction_active = False
-    _apply_deleted_trade_samples(window, deleted)
+    handler = result_handler or _apply_deleted_trade_samples
+    handler(window, deleted)
     if hasattr(window, "tradeManagementSessionBox"):
         refresh_trade_management_sessions(window)
     logger.info(
@@ -484,6 +515,90 @@ def confirm_delete_session_trade(window) -> None:
     _delete_confirmed_trade_samples(window, [trade_id], operation="session_trade")
 
 
+def _apply_deleted_performance_session(window, deleted: dict) -> None:
+    session_ids = [str(value) for value in deleted.get("session_ids") or ()]
+    current_session_id = str(getattr(window, "session_id", "") or "")
+    if current_session_id and current_session_id in session_ids:
+        window.trades.clear()
+        window.events.clear()
+        window._trade_by_id.clear()
+        window._event_by_id.clear()
+        window.undo_stack.clear()
+        window.redo_stack.clear()
+        window._analysis_performance_payload = None
+        window.session_id = None
+        if hasattr(window, "restoring_session_id"):
+            window.restoring_session_id = None
+        _render_state(window).mark_events_changed()
+        window._sync_markers()
+        window._refresh_tables()
+        window._render_dirty = True
+        window._render(force=True)
+    workspace = getattr(window, "_analysis_workspace", None)
+    refresh_catalog = getattr(workspace, "refresh_performance_session_catalog", None)
+    if callable(refresh_catalog):
+        refresh_catalog()
+    _invalidate_analysis_workspace(window, session_ids)
+    refresh_replay = getattr(window, "refresh_replay_performance_sessions", None)
+    if callable(refresh_replay):
+        refresh_replay()
+
+
+def confirm_delete_performance_session(window) -> None:
+    """Delete the selected performance session, including an empty session."""
+
+    if _trade_management_busy(window):
+        QtWidgets.QMessageBox.warning(
+            window,
+            window.tr("trade_data_management_title"),
+            window.tr("trade_data_management_busy"),
+        )
+        return
+    session_id = str(window.tradeManagementSessionBox.currentData() or "")
+    if not session_id:
+        QtWidgets.QMessageBox.warning(
+            window,
+            window.tr("delete_performance_session_title"),
+            window.tr("trade_data_management_select_session"),
+        )
+        return
+    try:
+        preview = window.storage.preview_performance_session_deletion(session_id)
+    except Exception as exc:
+        window._operation_error(window.tr("trade_data_management_preview_failed"), exc)
+        return
+    if not preview.get("sessions"):
+        QtWidgets.QMessageBox.information(
+            window,
+            window.tr("delete_performance_session_title"),
+            window.tr("trade_data_management_session_missing"),
+        )
+        return
+    scope = window.tr("delete_performance_session_scope").format(session_id=session_id)
+    response = QtWidgets.QMessageBox.warning(
+        window,
+        window.tr("delete_performance_session_title"),
+        _format_deletion_preview(window, preview, scope=scope),
+        QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+        QtWidgets.QMessageBox.Cancel,
+    )
+    if response != QtWidgets.QMessageBox.Yes:
+        return
+    if not _confirm_phrase(
+        window,
+        title_key="delete_performance_session_title",
+        prompt_key="delete_performance_session_phrase_prompt",
+        phrase_key="delete_performance_session_phrase",
+    ):
+        return
+    _execute_confirmed_deletion(
+        window,
+        lambda: window.storage.delete_performance_session(session_id),
+        operation="performance_session",
+        result_handler=_apply_deleted_performance_session,
+    )
+
+
 def _render_state(window) -> RenderState:
     getter = getattr(window, "_chart_render_state", None)
     if callable(getter):
@@ -585,6 +700,7 @@ __all__ = [
     "confirm_delete_selected_trade",
     "confirm_delete_trade_range",
     "confirm_delete_session_trade",
+    "confirm_delete_performance_session",
     "preview_trade_data_range",
     "refresh_trade_management_sessions",
     "load_trade_management_session_trades",

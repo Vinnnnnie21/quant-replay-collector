@@ -224,6 +224,26 @@ class StorageManager:
         with self.connect() as conn:
             return trade_management_repository.delete_trade_samples(conn, trade_ids)
 
+    def preview_performance_session_deletion(
+        self,
+        session_id: str,
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            return trade_management_repository.preview_performance_session_deletion(
+                conn,
+                session_id,
+            )
+
+    def delete_performance_session(
+        self,
+        session_id: str,
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            return trade_management_repository.delete_performance_session(
+                conn,
+                session_id,
+            )
+
     def insert_trade(self, row: dict[str, Any]):
         with self.connect() as conn:
             self._insert_trade_row(conn, row)

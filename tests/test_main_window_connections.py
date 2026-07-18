@@ -67,6 +67,7 @@ class _DummyWindow(QtWidgets.QWidget):
             "btnDeleteTradeRange",
             "btnDeleteSelectedTrade",
             "btnDeleteSessionTrade",
+            "btnDeletePerformanceSession",
             "btnContinuePerformanceSession",
             "btnToggleDanger",
             "btnApplyEventMeta",
@@ -136,6 +137,7 @@ class _DummyWindow(QtWidgets.QWidget):
     def confirm_delete_trade_range(self): self._record("confirm_delete_trade_range")
     def confirm_delete_selected_trade(self): self._record("confirm_delete_selected_trade")
     def confirm_delete_session_trade(self): self._record("confirm_delete_session_trade")
+    def confirm_delete_performance_session(self): self._record("confirm_delete_performance_session")
     def load_trade_management_session_trades(self): self._record("load_trade_management_session_trades")
     def continue_performance_session(self): self._record("continue_performance_session")
     def apply_labels_to_selected_event(self): self._record("apply_labels_to_selected_event")
@@ -266,6 +268,7 @@ def test_visible_main_window_buttons_are_wired_or_stateful(dummy_window):
         "btnDeleteTradeRange",
         "btnDeleteSelectedTrade",
         "btnDeleteSessionTrade",
+        "btnDeletePerformanceSession",
         "btnContinuePerformanceSession",
         "btnApplyEventMeta",
     )

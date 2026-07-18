@@ -580,6 +580,18 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             self.performanceSessionBox.addItem(option.display_name, option.session_id)
         self.performanceSessionBox.blockSignals(False)
 
+    def refresh_performance_session_catalog(self) -> None:
+        """Reload saved sessions while preserving a still-existing selection."""
+
+        selected_session_id = str(self.performanceSessionBox.currentData() or "")
+        self._populate_performance_sessions()
+        selected_index = self.performanceSessionBox.findData(selected_session_id)
+        if selected_index >= 0:
+            self.performanceSessionBox.blockSignals(True)
+            self.performanceSessionBox.setCurrentIndex(selected_index)
+            self.performanceSessionBox.blockSignals(False)
+        self._refresh_performance_workspace()
+
     def _on_performance_trade_marker_clicked(self, _item, points, _event=None) -> None:
         if not points:
             return

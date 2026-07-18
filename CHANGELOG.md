@@ -8,11 +8,15 @@
 - Prevented English mode from falling back to Chinese when a translation is unavailable.
 - Localized dynamic research-table columns, backtest validation errors, walk-forward warnings, trade state and performance output.
 - Bundled both translation JSON files into the Windows executable so packaged builds match source-mode language behavior.
+- Made a workspace-installed Windows executable reuse `quant_collector_app/data` instead of creating a disconnected database beside the EXE; standalone portable builds keep their executable-local data directory.
+- Added transaction-safe deletion of an entire performance session, including its owned trades, events, equity and research records, while retaining K-lines and data-quality reports.
+- Refreshed replay, analysis and trade-management session catalogs after deletion and regenerated continuous display numbering for remaining sessions in the same market range.
+- Reordered the trade-management table around symbol, side, return and PnL, with signed return and PnL values using the existing gain/loss colours.
 
 ### Compatibility and boundaries
 
 - Technical identifiers such as symbols, intervals, API names and research field identifiers retain their canonical values.
-- Trading, replay, accounting, SQLite schema, saved sessions and research algorithms are unchanged.
+- Trading, replay, accounting, SQLite schema and research algorithms are unchanged. Existing saved sessions are only removed through the explicit two-step performance-session deletion action.
 
 ## v1.5.1 - 2026-07-17
 

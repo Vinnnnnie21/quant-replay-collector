@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import warnings
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
@@ -66,18 +67,60 @@ BINANCE_TOP_MARKET_CAP_SYMBOLS = [
 UTC = dt.timezone.utc
 BJT = dt.timezone(dt.timedelta(hours=8), name="Asia/Shanghai")
 
-def _resolve_root_dir() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent
+
+@dataclass(frozen=True)
+class ApplicationPaths:
+    root_dir: Path
+    data_dir: Path
+    cache_dir: Path
+    export_dir: Path
+    log_dir: Path
+    backup_dir: Path
 
 
-ROOT_DIR = _resolve_root_dir()
-DATA_DIR = ROOT_DIR / "data"
-CACHE_DIR = DATA_DIR / "cache"
-EXPORT_DIR = DATA_DIR / "exports"
-LOG_DIR = ROOT_DIR / "logs"
-BACKUP_DIR = (ROOT_DIR if getattr(sys, "frozen", False) else ROOT_DIR.parent) / "backups"
+def resolve_application_paths(
+    *,
+    module_file: str | Path,
+    executable: str | Path,
+    frozen: bool,
+) -> ApplicationPaths:
+    module_dir = Path(module_file).resolve().parent
+    if frozen:
+        executable_dir = Path(executable).resolve().parent
+        workspace_app_dir = executable_dir.parent / "quant_collector_app"
+        is_workspace_build = (
+            (workspace_app_dir / "__init__.py").is_file()
+            and (workspace_app_dir / "app_config.py").is_file()
+        )
+        root_dir = workspace_app_dir if is_workspace_build else executable_dir
+        uses_workspace_layout = is_workspace_build
+    else:
+        root_dir = module_dir
+        uses_workspace_layout = True
+
+    data_dir = root_dir / "data"
+    backup_root = root_dir.parent if uses_workspace_layout else root_dir
+    return ApplicationPaths(
+        root_dir=root_dir,
+        data_dir=data_dir,
+        cache_dir=data_dir / "cache",
+        export_dir=data_dir / "exports",
+        log_dir=root_dir / "logs",
+        backup_dir=backup_root / "backups",
+    )
+
+
+APPLICATION_PATHS = resolve_application_paths(
+    module_file=__file__,
+    executable=sys.executable,
+    frozen=bool(getattr(sys, "frozen", False)),
+)
+ROOT_DIR = APPLICATION_PATHS.root_dir
+DATA_DIR = APPLICATION_PATHS.data_dir
+CACHE_DIR = APPLICATION_PATHS.cache_dir
+EXPORT_DIR = APPLICATION_PATHS.export_dir
+LOG_DIR = APPLICATION_PATHS.log_dir
+BACKUP_DIR = APPLICATION_PATHS.backup_dir
 DB_PATH = DATA_DIR / "quant_replay.db"
 THEME_CONFIG_PATH = DATA_DIR / "theme_settings.json"
 

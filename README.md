@@ -145,6 +145,8 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\create_desktop
 
 The explicit `ExecutionPolicy Bypass` applies only to this script process, so it works on systems that block direct `.ps1` execution without changing the user's policy. The shortcut installer does not require administrator access and does not write to the registry. Use `-DryRun` to inspect `TargetPath`, `WorkingDirectory`, shortcut path and icon selection without creating a file. The application window uses `quant_collector_app/assets/app_logo.png` on dark themes and the transparent `quant_collector_app/assets/app_logo_light.png` on light themes. The packaged executable and shortcut use the fixed multi-size Windows icon at `quant_collector_app/assets/app_icon.ico`, generated from the dark-theme logo.
 
+When the executable is installed under this workspace's `dist` directory, it reuses `quant_collector_app/data` so the desktop shortcut and source launcher see the same saved sessions. A standalone copied executable remains portable and stores its data beside the executable.
+
 To replace the logos later, overwrite both PNG variants. Regenerate the Windows icon after changing the dark-theme logo:
 
 ```powershell
