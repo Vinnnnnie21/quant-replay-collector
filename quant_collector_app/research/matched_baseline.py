@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .market_episodes import EpisodeResolver
 
 import numpy as np
 import pandas as pd
@@ -206,8 +209,31 @@ def select_matched_controls(
     user_sample_id: str,
     match_pool: pd.DataFrame,
     spec: MatchedBaselineSpec | None = None,
+    *,
+    episode_service: EpisodeResolver | None = None,
+    episode_grouping_version_id: str | None = None,
 ) -> pd.DataFrame:
     spec = spec or MatchedBaselineSpec()
+    resolved_pool = _attach_episode_ids(
+        match_pool,
+        episode_service=episode_service,
+        episode_grouping_version_id=episode_grouping_version_id,
+    )
+    return _select_matched_controls_from_pool(
+        user_sample_id,
+        resolved_pool,
+        spec,
+        episode_grouping_version_id=episode_grouping_version_id,
+    )
+
+
+def _select_matched_controls_from_pool(
+    user_sample_id: str,
+    match_pool: pd.DataFrame,
+    spec: MatchedBaselineSpec,
+    *,
+    episode_grouping_version_id: str | None,
+) -> pd.DataFrame:
     selected = match_pool[match_pool["sample_id"].astype(str) == str(user_sample_id)]
     if selected.empty:
         raise ValueError(f"Missing user sample in match pool: {user_sample_id}")
@@ -229,13 +255,24 @@ def select_matched_controls(
         & non_user_trade
         & eligible_control
     ].copy()
+    if episode_grouping_version_id is not None:
+        user_episode_id = str(user["episode_id"])
+        candidates = candidates[candidates["episode_id"] != user_episode_id]
     for feature in spec.categorical_features:
         if feature in candidates.columns and feature in user.index and pd.notna(user[feature]):
             candidates = candidates[candidates[feature] == user[feature]]
     if candidates.empty:
-        return pd.DataFrame(
-            columns=["user_sample_id", "control_sample_id", "context_distance", "distance_contributions_json"]
-        )
+        columns = [
+            "user_sample_id",
+            "control_sample_id",
+            "context_distance",
+            "distance_contributions_json",
+        ]
+        if episode_grouping_version_id is not None:
+            columns.extend(
+                ["episode_id", "episode_grouping_version_id"]
+            )
+        return pd.DataFrame(columns=columns)
     scaling_params = _distance_scaling_params(pd.concat([selected, candidates], ignore_index=True), spec)
     distance_rows = candidates.apply(
         lambda row: _context_distance_details(user, row, spec, scaling_params),
@@ -252,7 +289,45 @@ def select_matched_controls(
     candidates = candidates.head(int(spec.controls_per_sample)).copy()
     candidates.insert(0, "user_sample_id", str(user_sample_id))
     candidates.insert(1, "control_sample_id", candidates["sample_id"].astype(str))
+    if episode_grouping_version_id is not None:
+        candidates["episode_grouping_version_id"] = episode_grouping_version_id
     return candidates.reset_index(drop=True)
+
+
+def _attach_episode_ids(
+    match_pool: pd.DataFrame,
+    *,
+    episode_service: EpisodeResolver | None,
+    episode_grouping_version_id: str | None,
+) -> pd.DataFrame:
+    if episode_service is None:
+        if episode_grouping_version_id is not None:
+            raise ValueError(
+                "episode_service is required with episode_grouping_version_id"
+            )
+        return match_pool
+    if not episode_grouping_version_id:
+        raise ValueError(
+            "episode_grouping_version_id is required with episode_service"
+        )
+    sample_ids = tuple(
+        match_pool["sample_id"].astype(str).drop_duplicates().tolist()
+    )
+    assignments = episode_service.resolve_episode_ids(
+        episode_grouping_version_id,
+        sample_ids,
+    )
+    episode_by_sample = {
+        assignment.sample_id: assignment.episode_id
+        for assignment in assignments
+    }
+    resolved = match_pool.copy()
+    resolved["episode_id"] = resolved["sample_id"].astype(str).map(
+        episode_by_sample
+    )
+    if resolved["episode_id"].isna().any():
+        raise ValueError("episode resolver omitted one or more matched samples")
+    return resolved
 
 
 def compare_user_vs_controls(
@@ -444,9 +519,16 @@ def summarize_matched_baseline(
     random_seed: int | None = DEFAULT_RANDOM_SEED,
     horizon_bars: int | None = None,
     pricing_basis: str | None = "next_open",
+    episode_service: EpisodeResolver | None = None,
+    episode_grouping_version_id: str | None = None,
 ) -> dict[str, Any]:
     spec = spec or MatchedBaselineSpec()
     pool = build_match_pool(observations, context_features)
+    pool = _attach_episode_ids(
+        pool,
+        episode_service=episode_service,
+        episode_grouping_version_id=episode_grouping_version_id,
+    )
     user_rows = pool[
         (pd.to_numeric(pool.get("is_user_trade", 0), errors="coerce").fillna(0) == 1)
         | pool["user_action"].astype(str).str.upper().isin(USER_ACTIONS)
@@ -455,7 +537,12 @@ def summarize_matched_baseline(
     match_frames: list[pd.DataFrame] = []
     match_counts: dict[str, int] = {}
     for sample_id in user_ids:
-        selected = select_matched_controls(sample_id, pool, spec)
+        selected = _select_matched_controls_from_pool(
+            sample_id,
+            pool,
+            spec,
+            episode_grouping_version_id=episode_grouping_version_id,
+        )
         match_counts[sample_id] = int(len(selected))
         if not selected.empty:
             match_frames.append(selected)
@@ -514,6 +601,7 @@ def summarize_matched_baseline(
         "warnings": warnings,
         "conclusion_strength": "insufficient_evidence" if insufficient else "descriptive_statistical_evidence",
         "not_trading_signal": True,
+        "episode_grouping_version_id": episode_grouping_version_id,
     }
 
 

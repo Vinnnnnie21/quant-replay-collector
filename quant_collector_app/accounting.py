@@ -19,7 +19,12 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
 
 def _closed_sort_key(trade: dict[str, Any]) -> tuple[str, str]:
     return (
-        str(trade.get("updated_at") or trade.get("exit_real_time_bjt") or trade.get("exit_bar_time_bjt") or ""),
+        str(
+            trade.get("exit_bar_time_bjt")
+            or trade.get("exit_real_time_bjt")
+            or trade.get("updated_at")
+            or ""
+        ),
         str(trade.get("trade_id") or ""),
     )
 
@@ -172,7 +177,11 @@ def build_equity_curve(
                 "equity_after": equity,
                 "equity_return_pct": (net / before * 100.0) if before else 0.0,
                 "drawdown_pct": drawdown_pct,
-                "created_at": trade.get("updated_at") or trade.get("exit_real_time_bjt") or trade.get("exit_bar_time_bjt"),
+                "created_at": (
+                    trade.get("exit_bar_time_bjt")
+                    or trade.get("exit_real_time_bjt")
+                    or trade.get("updated_at")
+                ),
             }
         )
     return rows

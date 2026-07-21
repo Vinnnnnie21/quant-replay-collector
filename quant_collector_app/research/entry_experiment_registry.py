@@ -97,6 +97,10 @@ def _normalized_split_summary(config: dict[str, Any], metrics: dict[str, Any]) -
         "purged_count": int(raw.get("purged_count", 0) or 0),
         "embargoed_count": int(raw.get("embargoed_count", 0) or 0),
         "episode_leakage_count": int(raw.get("episode_leakage_count", 0) or 0),
+        "episode_grouping_version_id": raw.get(
+            "episode_grouping_version_id",
+            config.get("episode_grouping_version_id"),
+        ),
         "horizon_bars": raw.get("horizon_bars") or _nested(config, "split_config", "horizon_bars"),
         "embargo_bars": raw.get("embargo_bars", config.get("embargo_bars", _nested(config, "split_config", "embargo_bars"))),
     }
@@ -187,6 +191,9 @@ def save_experiment_manifest(
         "purged_count": split_summary.get("purged_count", 0),
         "embargoed_count": split_summary.get("embargoed_count", 0),
         "episode_leakage_count": split_summary.get("episode_leakage_count", 0),
+        "episode_grouping_version_id": split_summary.get(
+            "episode_grouping_version_id"
+        ),
         "embargo_bars": split_summary.get("embargo_bars", config.get("embargo_bars")),
         "model_type": config.get("model_type") or _nested(config, "model_config", "model_type"),
         "model_params": model_params,
@@ -212,6 +219,7 @@ def save_experiment_manifest(
         "git_commit",
         "annotation_counts",
         "experiment_note",
+        "episode_grouping_version_id",
     ):
         if optional_field in config:
             manifest[optional_field] = config.get(optional_field)
@@ -405,10 +413,18 @@ def _numeric_metrics(metrics: dict[str, Any]) -> dict[str, float]:
 
 
 def _split_signature(manifest: dict[str, Any]) -> Any:
-    return manifest.get("split_config") or {
+    split_config = manifest.get("split_config") or {
         "split_method": manifest.get("split_method"),
         "embargo_bars": manifest.get("embargo_bars"),
     }
+    return {
+        "split_config": split_config,
+        "episode_grouping_version_id": manifest.get(
+            "episode_grouping_version_id"
+        ),
+    }
+
+
 def validate_experiment_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(manifest, dict):
         raise ValueError("manifest must be a mapping")

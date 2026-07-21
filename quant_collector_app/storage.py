@@ -2,40 +2,78 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Iterable
+from typing import TYPE_CHECKING, Any, Iterable
+
+if TYPE_CHECKING:
+    try:
+        from research.setups import (
+            Setup,
+            SetupVersion,
+            SetupVersionSpec,
+            SetupWithVersion,
+        )
+    except ImportError:  # pragma: no cover - package import path
+        from .research.setups import (
+            Setup,
+            SetupVersion,
+            SetupVersionSpec,
+            SetupWithVersion,
+        )
+    try:
+        from research.market_episodes import EpisodeAuditRecord, EpisodeGrouping
+    except ImportError:  # pragma: no cover - package import path
+        from .research.market_episodes import EpisodeAuditRecord, EpisodeGrouping
 
 try:
     from app_config import BACKUP_DIR, DB_PATH
     from database_backup import backup_database_before_upgrade
-    from errors import DatabaseError
+    from errors import DatabaseError, DatabaseSchemaTooNewError
 except ImportError:  # pragma: no cover - package import path
     from .app_config import BACKUP_DIR, DB_PATH
     from .database_backup import backup_database_before_upgrade
-    from .errors import DatabaseError
+    from .errors import DatabaseError, DatabaseSchemaTooNewError
 try:
     from storage_core.connection import connect_db, require_rowcount
     from storage_core import migrations
     from storage_core import event_repository
+    from storage_core import episode_repository
+    from storage_core import entry_behavior_repository
+    from storage_core import entry_outcome_repository
+    from storage_core import entry_review_repository
+    from storage_core import exit_review_repository
+    from storage_core import exit_outcome_repository
+    from storage_core import exit_candidate_repository
     from storage_core import market_repository
     from storage_core import premium_repository
     from storage_core import research_repository
+    from storage_core import setup_repository
     from storage_core import session_repository
+    from storage_core import snapshot_repository
     from storage_core import trade_management_repository
     from storage_core import trade_repository
 except ImportError:  # pragma: no cover - package import path
     from .storage_core.connection import connect_db, require_rowcount
     from .storage_core import migrations
     from .storage_core import event_repository
+    from .storage_core import episode_repository
+    from .storage_core import entry_behavior_repository
+    from .storage_core import entry_outcome_repository
+    from .storage_core import entry_review_repository
+    from .storage_core import exit_review_repository
+    from .storage_core import exit_outcome_repository
+    from .storage_core import exit_candidate_repository
     from .storage_core import market_repository
     from .storage_core import premium_repository
     from .storage_core import research_repository
+    from .storage_core import setup_repository
     from .storage_core import session_repository
+    from .storage_core import snapshot_repository
     from .storage_core import trade_management_repository
     from .storage_core import trade_repository
 
 
 class StorageManager:
-    SCHEMA_VERSION = 6
+    SCHEMA_VERSION = 19
     MANUAL_RESEARCH_TABLES = (
         "account_equity",
         "event_features",
@@ -60,6 +98,46 @@ class StorageManager:
         "research_outcome_labels",
         "entry_annotations",
         "entry_annotation_history",
+        "setups",
+        "setup_versions",
+        "episode_grouping_versions",
+        "market_episodes",
+        "market_episode_memberships",
+        "market_episode_audit",
+        "entry_decision_events",
+        "entry_original_actions",
+        "entry_review_batches",
+        "entry_review_batch_items",
+        "entry_judgment_versions",
+        "entry_review_reveals",
+        "entry_similarity_audits",
+        "entry_candidate_scans",
+        "entry_candidate_scores",
+        "entry_candidate_batches",
+        "entry_candidate_batch_items",
+        "entry_candidate_exclusions",
+        "entry_behavior_experiments",
+        "entry_behavior_model_versions",
+        "entry_outcome_comparisons",
+        "entry_outcome_matches",
+        "exit_behavior_experiments",
+        "exit_behavior_model_versions",
+        "exit_decision_events",
+        "exit_position_snapshots",
+        "exit_account_pressure_snapshots",
+        "exit_original_actions",
+        "exit_review_batches",
+        "exit_review_batch_items",
+        "exit_judgment_versions",
+        "exit_review_reveals",
+        "exit_candidate_scans",
+        "exit_candidate_scores",
+        "exit_candidate_batches",
+        "exit_candidate_batch_items",
+        "exit_candidate_exclusions",
+        "exit_outcome_comparisons",
+        "exit_outcome_matches",
+        "research_snapshots",
     }
     TRADE_COLUMNS = [
         "trade_id", "session_id", "symbol", "interval", "side", "status",
@@ -94,9 +172,13 @@ class StorageManager:
         with self.connect() as conn:
             version = migrations.schema_version(conn)
         if version > self.SCHEMA_VERSION:
-            raise RuntimeError(
-                f"Database schema version {version} is newer than supported version {self.SCHEMA_VERSION}."
+            raise DatabaseSchemaTooNewError(
+                database_schema_version=version,
+                supported_schema_version=self.SCHEMA_VERSION,
+                database_path=self.db_path,
             )
+        if version == self.SCHEMA_VERSION:
+            return
         if existed_before_init and version < self.SCHEMA_VERSION:
             backup_database_before_upgrade(
                 self.db_path,
@@ -104,16 +186,36 @@ class StorageManager:
                 from_version=version,
                 to_version=self.SCHEMA_VERSION,
             )
-        # Version 0 databases predate migration metadata. The v1 repair is
-        # idempotent and also completes partially upgraded legacy databases.
-        self._migrate_to_v1()
-        if version < 2:
-            self._migrate_to_v2()
-        self._migrate_to_v3()
-        self._migrate_to_v4()
-        self._migrate_to_v5()
-        self._migrate_to_v6()
+        migration_steps = (
+            (1, migrations.migrate_to_v1),
+            (2, migrations.migrate_to_v2),
+            (3, migrations.migrate_to_v3),
+            (4, migrations.migrate_to_v4),
+            (5, migrations.migrate_to_v5),
+            (6, migrations.migrate_to_v6),
+            (7, migrations.migrate_to_v7),
+            (8, migrations.migrate_to_v8),
+            (9, migrations.migrate_to_v9),
+            (10, migrations.migrate_to_v10),
+            (11, migrations.migrate_to_v11),
+            (12, migrations.migrate_to_v12),
+            (13, migrations.migrate_to_v13),
+            (14, migrations.migrate_to_v14),
+            (15, migrations.migrate_to_v15),
+            (16, migrations.migrate_to_v16),
+            (17, migrations.migrate_to_v17),
+            (18, migrations.migrate_to_v18),
+            (19, migrations.migrate_to_v19),
+        )
         with self.connect() as conn:
+            for target_version, migrate in migration_steps:
+                # Legacy databases sometimes carry a later user_version while
+                # missing an earlier table.  Preserve the established repair
+                # pass for every step except v2, whose historical migration is
+                # only safe for pre-v2 databases.
+                if target_version != 2 or version < 2:
+                    migrate(conn)
+            research_repository.ensure_entry_annotation_storage(conn)
             migrations.set_schema_version(conn, self.SCHEMA_VERSION)
 
     def _migrate_to_v1(self):
@@ -140,6 +242,58 @@ class StorageManager:
         with self.connect() as conn:
             migrations.migrate_to_v6(conn)
             research_repository.ensure_entry_annotation_storage(conn)
+
+    def _migrate_to_v7(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v7(conn)
+
+    def _migrate_to_v8(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v8(conn)
+
+    def _migrate_to_v9(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v9(conn)
+
+    def _migrate_to_v10(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v10(conn)
+
+    def _migrate_to_v11(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v11(conn)
+
+    def _migrate_to_v12(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v12(conn)
+
+    def _migrate_to_v13(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v13(conn)
+
+    def _migrate_to_v14(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v14(conn)
+
+    def _migrate_to_v15(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v15(conn)
+
+    def _migrate_to_v16(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v16(conn)
+
+    def _migrate_to_v17(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v17(conn)
+
+    def _migrate_to_v18(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v18(conn)
+
+    def _migrate_to_v19(self):
+        with self.connect() as conn:
+            migrations.migrate_to_v19(conn)
 
     def schema_version(self) -> int:
         with self.connect() as conn:
@@ -264,6 +418,19 @@ class StorageManager:
         with self.connect() as conn:
             event_repository.insert_event(conn, row)
 
+    def list_trade_events_for_session(
+        self,
+        session_id: str,
+        *,
+        event_types: tuple[str, ...] = (),
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return event_repository.list_events_for_session(
+                conn,
+                session_id,
+                event_types=event_types,
+            )
+
     def update_event_labels(self, event_id: str, label_tags: list[str], note: str):
         with self.connect() as conn:
             event_repository.update_event_labels(conn, event_id, label_tags, note)
@@ -382,6 +549,53 @@ class StorageManager:
                 start_time_utc_ms=start_time_utc_ms,
                 end_time_utc_ms=end_time_utc_ms,
                 cancelled=cancelled,
+            )
+
+    def fetch_kline_ancillary_rows_for_range(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start_time_utc_ms: int,
+        end_time_utc_ms: int,
+        cancelled: Callable[[], bool] | None = None,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return market_repository.fetch_kline_ancillary_rows_for_range(
+                conn,
+                symbol=symbol,
+                interval=interval,
+                start_time_utc_ms=start_time_utc_ms,
+                end_time_utc_ms=end_time_utc_ms,
+                cancelled=cancelled,
+            )
+
+    def audit_kline_ancillary_completeness(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start_time_utc_ms: int,
+        end_time_utc_ms: int,
+    ) -> dict[str, Any]:
+        with self.connect() as conn:
+            return market_repository.audit_kline_ancillary_completeness(
+                conn,
+                symbol=symbol,
+                interval=interval,
+                start_time_utc_ms=start_time_utc_ms,
+                end_time_utc_ms=end_time_utc_ms,
+            )
+
+    def list_kline_series_ranges(
+        self,
+        *,
+        ancillary_incomplete_only: bool = False,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return market_repository.list_kline_series_ranges(
+                conn,
+                ancillary_incomplete_only=ancillary_incomplete_only,
             )
 
     def save_data_quality_report(self, row: dict[str, Any]) -> None:
@@ -548,6 +762,104 @@ class StorageManager:
         with self.connect() as conn:
             return research_repository.list_strategy_profiles(conn)
 
+    def create_setup_with_version(
+        self,
+        *,
+        setup: Setup,
+        version: SetupVersion,
+        creation_token: str,
+        semantic_fingerprint: str,
+    ) -> SetupWithVersion:
+        with self.connect() as conn:
+            return setup_repository.create_setup_with_version(
+                conn,
+                setup=setup,
+                version=version,
+                creation_token=creation_token,
+                semantic_fingerprint=semantic_fingerprint,
+            )
+
+    def get_setup_version(
+        self,
+        setup_version_id: str,
+    ) -> SetupVersion | None:
+        with self.connect() as conn:
+            return setup_repository.get_setup_version(
+                conn,
+                setup_version_id,
+            )
+
+    def create_setup_version(
+        self,
+        *,
+        setup_version_id: str,
+        setup_id: str,
+        based_on_version_id: str,
+        spec: SetupVersionSpec,
+        semantic_fingerprint: str,
+        creation_key: str,
+        created_at: str,
+    ) -> SetupVersion:
+        with self.connect() as conn:
+            return setup_repository.create_setup_version(
+                conn,
+                setup_version_id=setup_version_id,
+                setup_id=setup_id,
+                based_on_version_id=based_on_version_id,
+                spec=spec,
+                semantic_fingerprint=semantic_fingerprint,
+                creation_key=creation_key,
+                created_at=created_at,
+            )
+
+    def list_setup_versions(
+        self,
+        setup_id: str,
+    ) -> tuple[SetupVersion, ...]:
+        with self.connect() as conn:
+            return setup_repository.list_setup_versions(conn, setup_id)
+
+    def get_setup(self, setup_id: str) -> Setup | None:
+        with self.connect() as conn:
+            return setup_repository.get_setup(conn, setup_id)
+
+    def list_setups(
+        self,
+        *,
+        include_archived: bool = False,
+    ) -> tuple[Setup, ...]:
+        with self.connect() as conn:
+            return setup_repository.list_setups(
+                conn,
+                include_archived=include_archived,
+            )
+
+    def rename_setup(
+        self,
+        setup_id: str,
+        display_name: str,
+        updated_at: str,
+    ) -> Setup | None:
+        with self.connect() as conn:
+            return setup_repository.rename_setup(
+                conn,
+                setup_id,
+                display_name,
+                updated_at,
+            )
+
+    def archive_setup(
+        self,
+        setup_id: str,
+        archived_at: str,
+    ) -> Setup | None:
+        with self.connect() as conn:
+            return setup_repository.archive_setup(
+                conn,
+                setup_id,
+                archived_at,
+            )
+
     def save_observation_sample(self, row: dict[str, Any]) -> None:
         with self.connect() as conn:
             research_repository.save_observation_sample(conn, row)
@@ -564,9 +876,701 @@ class StorageManager:
                 profile_id=profile_id,
             )
 
+    def save_episode_grouping(self, grouping: EpisodeGrouping) -> None:
+        with self.connect() as conn:
+            episode_repository.save_episode_grouping(conn, grouping)
+
+    def get_episode_grouping(self, grouping_version_id: str) -> EpisodeGrouping | None:
+        with self.connect() as conn:
+            return episode_repository.get_episode_grouping(conn, grouping_version_id)
+
+    def save_episode_revision(
+        self,
+        grouping: EpisodeGrouping,
+        audit: EpisodeAuditRecord,
+    ) -> None:
+        with self.connect() as conn:
+            episode_repository.save_episode_revision(conn, grouping, audit)
+
+    def list_episode_audit(
+        self,
+        grouping_version_id: str,
+    ) -> tuple[EpisodeAuditRecord, ...]:
+        with self.connect() as conn:
+            return episode_repository.list_episode_audit(conn, grouping_version_id)
+
+    def insert_entry_decision_event(
+        self,
+        *,
+        event: dict[str, Any],
+        original_action: dict[str, Any],
+    ) -> bool:
+        with self.connect() as conn:
+            return entry_review_repository.insert_decision_event_with_original_action(
+                conn,
+                event=event,
+                original_action=original_action,
+            )
+
+    def get_entry_decision_event_by_source(
+        self,
+        *,
+        source_sample_id: str,
+        setup_version_id: str,
+        grouping_version_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return entry_review_repository.get_decision_event_by_source(
+                conn,
+                source_sample_id=source_sample_id,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+            )
+
+    def list_pending_entry_decision_events(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return entry_review_repository.list_pending_decision_events(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                limit=limit,
+            )
+
+    def list_actual_open_episode_member_ids(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+        limit: int,
+    ) -> tuple[str, ...]:
+        with self.connect() as conn:
+            return entry_review_repository.list_actual_open_episode_member_ids(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+                limit=limit,
+            )
+
+    def create_entry_review_batch(
+        self,
+        *,
+        batch: dict[str, Any],
+        items: Iterable[dict[str, Any]],
+    ) -> None:
+        with self.connect() as conn:
+            entry_review_repository.create_batch(
+                conn,
+                batch=batch,
+                items=items,
+            )
+
+    def get_entry_review_batch_item(
+        self,
+        *,
+        batch_id: str,
+        blind_item_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return entry_review_repository.get_batch_item(
+                conn,
+                batch_id=batch_id,
+                blind_item_id=blind_item_id,
+            )
+
+    def insert_entry_judgment(self, row: dict[str, Any]) -> bool:
+        with self.connect() as conn:
+            return entry_review_repository.insert_judgment(conn, row)
+
+    def list_entry_judgments(
+        self,
+        decision_event_id: str,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return entry_review_repository.list_judgments(
+                conn,
+                decision_event_id,
+            )
+
+    def get_entry_review_reveal(
+        self,
+        decision_event_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return entry_review_repository.get_reveal(
+                conn,
+                decision_event_id,
+            )
+
+    def insert_entry_review_reveal(self, row: dict[str, Any]) -> bool:
+        with self.connect() as conn:
+            return entry_review_repository.insert_reveal(conn, row)
+
+    def get_entry_original_action(
+        self,
+        decision_event_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return entry_review_repository.get_original_action(
+                conn,
+                decision_event_id,
+            )
+
+    def get_entry_decision_event(
+        self,
+        decision_event_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return entry_review_repository.get_decision_event(
+                conn,
+                decision_event_id,
+            )
+
+    def list_entry_setup_links(
+        self,
+        *,
+        source_sample_id: str,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return exit_review_repository.list_entry_setup_links(
+                conn,
+                source_sample_id=source_sample_id,
+            )
+
+    def get_exit_decision_event_by_source(
+        self,
+        *,
+        source_sample_id: str,
+        review_setup_version_id: str,
+        grouping_version_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return exit_review_repository.get_decision_event_by_source(
+                conn,
+                source_sample_id=source_sample_id,
+                review_setup_version_id=review_setup_version_id,
+                grouping_version_id=grouping_version_id,
+            )
+
+    def insert_exit_decision_event(
+        self,
+        *,
+        event: dict[str, Any],
+        position: dict[str, Any],
+        account_pressure: dict[str, Any],
+        original_action: dict[str, Any],
+    ) -> bool:
+        with self.connect() as conn:
+            return exit_review_repository.insert_decision_event_bundle(
+                conn,
+                event=event,
+                position=position,
+                account_pressure=account_pressure,
+                original_action=original_action,
+            )
+
+    def list_pending_exit_decision_events(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return exit_review_repository.list_pending_decision_events(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                limit=limit,
+            )
+
+    def list_actual_close_episode_member_ids(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+        limit: int,
+    ) -> tuple[str, ...]:
+        with self.connect() as conn:
+            return exit_review_repository.list_actual_close_episode_member_ids(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+                limit=limit,
+            )
+
+    def create_exit_review_batch(
+        self,
+        *,
+        batch: dict[str, Any],
+        items: Iterable[dict[str, Any]],
+    ) -> None:
+        with self.connect() as conn:
+            exit_review_repository.create_batch(
+                conn,
+                batch=batch,
+                items=items,
+            )
+
+    def get_exit_review_batch_item(
+        self,
+        *,
+        batch_id: str,
+        blind_item_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return exit_review_repository.get_batch_item(
+                conn,
+                batch_id=batch_id,
+                blind_item_id=blind_item_id,
+            )
+
+    def insert_exit_judgment(self, row: dict[str, Any]) -> bool:
+        with self.connect() as conn:
+            return exit_review_repository.insert_judgment(conn, row)
+
+    def list_exit_judgments(
+        self,
+        decision_event_id: str,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return exit_review_repository.list_judgments(
+                conn,
+                decision_event_id,
+            )
+
+    def get_exit_review_reveal(
+        self,
+        decision_event_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return exit_review_repository.get_reveal(
+                conn,
+                decision_event_id,
+            )
+
+    def insert_exit_review_reveal(self, row: dict[str, Any]) -> bool:
+        with self.connect() as conn:
+            return exit_review_repository.insert_reveal(conn, row)
+
+    def get_exit_original_action(
+        self,
+        decision_event_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return exit_review_repository.get_original_action(
+                conn,
+                decision_event_id,
+            )
+
+    def save_exit_candidate_scan(
+        self,
+        *,
+        scan: dict[str, Any],
+        candidates: Iterable[dict[str, Any]],
+    ) -> None:
+        with self.connect() as conn:
+            exit_candidate_repository.save_scan(
+                conn,
+                scan=scan,
+                candidates=candidates,
+            )
+
+    def list_confirmed_exit_candidate_references(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return exit_candidate_repository.list_confirmed_references(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+            )
+
+    def list_exit_candidate_observations(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return exit_candidate_repository.list_open_position_observations(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+                limit=limit,
+            )
+
+    def get_exit_candidate_scan(self, scan_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return exit_candidate_repository.get_scan(conn, scan_id)
+
+    def create_exit_candidate_batch(
+        self,
+        *,
+        batch: dict[str, Any],
+        items: Iterable[dict[str, Any]],
+    ) -> None:
+        with self.connect() as conn:
+            exit_candidate_repository.create_batch(
+                conn,
+                batch=batch,
+                items=items,
+            )
+
+    def get_exit_candidate_audit_for_event(
+        self,
+        decision_event_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return exit_candidate_repository.get_audit_for_event(
+                conn,
+                decision_event_id,
+            )
+
+    def exclude_exit_candidate(self, row: dict[str, Any]) -> bool:
+        with self.connect() as conn:
+            return exit_candidate_repository.insert_exclusion(conn, row)
+
+    def list_exit_candidate_exclusions(self) -> tuple[str, ...]:
+        with self.connect() as conn:
+            return exit_candidate_repository.list_exclusions(conn)
+
+    def list_batched_exit_candidate_ids(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+    ) -> tuple[str, ...]:
+        with self.connect() as conn:
+            return exit_candidate_repository.list_batched_ids(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+            )
+
+    def save_entry_similarity_audit(self, row: dict[str, Any]) -> bool:
+        with self.connect() as conn:
+            return entry_review_repository.insert_similarity_audit(conn, row)
+
+    def get_entry_similarity_audit(
+        self,
+        result_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return entry_review_repository.get_similarity_audit(conn, result_id)
+
+    def list_revealed_entry_decision_events(
+        self,
+        *,
+        setup_version_id: str,
+        direction: str,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return entry_review_repository.list_revealed_decision_events(
+                conn,
+                setup_version_id=setup_version_id,
+                direction=direction,
+                limit=limit,
+            )
+
+    def list_confirmed_entry_reference_events(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return entry_review_repository.list_confirmed_entry_reference_events(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+            )
+
+    def list_entry_candidate_observations(
+        self,
+        *,
+        setup_version_id: str,
+        limit: int = 5_000,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return research_repository.list_entry_candidate_observations(
+                conn,
+                setup_version_id=setup_version_id,
+                limit=limit,
+            )
+
+    def save_entry_candidate_scan(
+        self,
+        *,
+        scan: dict[str, Any],
+        candidates: Iterable[dict[str, Any]],
+    ) -> None:
+        with self.connect() as conn:
+            entry_review_repository.save_candidate_scan(
+                conn,
+                scan=scan,
+                candidates=candidates,
+            )
+
+    def get_entry_candidate_scan(self, scan_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return entry_review_repository.get_candidate_scan(conn, scan_id)
+
+    def create_entry_candidate_batch(
+        self,
+        *,
+        batch: dict[str, Any],
+        items: Iterable[dict[str, Any]],
+    ) -> None:
+        with self.connect() as conn:
+            entry_review_repository.create_candidate_batch(
+                conn,
+                batch=batch,
+                items=items,
+            )
+
+    def get_entry_candidate_audit_for_event(
+        self,
+        decision_event_id: str,
+    ) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            return entry_review_repository.get_candidate_audit_for_event(
+                conn,
+                decision_event_id,
+            )
+
+    def exclude_entry_candidate(self, row: dict[str, Any]) -> bool:
+        with self.connect() as conn:
+            return entry_review_repository.insert_candidate_exclusion(conn, row)
+
+    def list_entry_candidate_exclusions(self) -> tuple[str, ...]:
+        with self.connect() as conn:
+            return entry_review_repository.list_candidate_exclusions(conn)
+
+    def list_batched_entry_candidate_ids(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+    ) -> tuple[str, ...]:
+        with self.connect() as conn:
+            return entry_review_repository.list_batched_candidate_ids(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+            )
+
+    def list_entry_behavior_training_events(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return entry_behavior_repository.list_training_events(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+            )
+
+    def list_behavior_training_events(
+        self,
+        *,
+        target: Any,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return entry_behavior_repository.list_training_events(
+                conn,
+                target=target,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+            )
+
+    def save_entry_behavior_training_result(self, result: Any) -> None:
+        with self.connect() as conn:
+            entry_behavior_repository.save_training_result(conn, result)
+
+    def save_behavior_training_result(self, result: Any) -> None:
+        with self.connect() as conn:
+            entry_behavior_repository.save_training_result(conn, result)
+
+    def get_entry_behavior_training_result(
+        self,
+        experiment_id: str,
+    ) -> Any | None:
+        with self.connect() as conn:
+            return entry_behavior_repository.get_training_result(
+                conn,
+                experiment_id,
+            )
+
+    def get_behavior_training_result(
+        self,
+        experiment_id: str,
+        *,
+        target: Any,
+    ) -> Any | None:
+        with self.connect() as conn:
+            return entry_behavior_repository.get_training_result(
+                conn,
+                experiment_id,
+                target=target,
+            )
+
+    def get_entry_behavior_model_version(
+        self,
+        model_version_id: str,
+    ) -> Any | None:
+        with self.connect() as conn:
+            return entry_behavior_repository.get_model_version(
+                conn,
+                model_version_id,
+            )
+
+    def get_behavior_model_version(
+        self,
+        model_version_id: str,
+        *,
+        target: Any,
+    ) -> Any | None:
+        with self.connect() as conn:
+            return entry_behavior_repository.get_model_version(
+                conn,
+                model_version_id,
+                target=target,
+            )
+
+    def list_entry_behavior_model_versions(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+    ) -> tuple[Any, ...]:
+        with self.connect() as conn:
+            return entry_behavior_repository.list_model_versions(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+            )
+
+    def list_behavior_model_versions(
+        self,
+        *,
+        target: Any,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+    ) -> tuple[Any, ...]:
+        with self.connect() as conn:
+            return entry_behavior_repository.list_model_versions(
+                conn,
+                target=target,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+            )
+
+    def list_entry_outcome_events(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return entry_outcome_repository.list_eligible_events(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+            )
+
+    def save_entry_outcome_result(self, result: Any) -> None:
+        with self.connect() as conn:
+            entry_outcome_repository.save_result(conn, result)
+
+    def get_entry_outcome_result(self, comparison_id: str) -> Any | None:
+        with self.connect() as conn:
+            return entry_outcome_repository.get_result(conn, comparison_id)
+
+    def list_exit_outcome_events(
+        self,
+        *,
+        setup_version_id: str,
+        grouping_version_id: str,
+        direction: str,
+    ) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            return exit_outcome_repository.list_eligible_events(
+                conn,
+                setup_version_id=setup_version_id,
+                grouping_version_id=grouping_version_id,
+                direction=direction,
+            )
+
+    def save_exit_outcome_result(self, result: Any) -> None:
+        with self.connect() as conn:
+            exit_outcome_repository.save_result(conn, result)
+
+    def get_exit_outcome_result(self, comparison_id: str) -> Any | None:
+        with self.connect() as conn:
+            return exit_outcome_repository.get_result(conn, comparison_id)
+
     def save_strategy_sample(self, row: dict[str, Any]) -> None:
         with self.connect() as conn:
             research_repository.save_strategy_sample(conn, row)
+
+    def save_research_snapshot(self, snapshot) -> None:
+        with self.connect() as conn:
+            snapshot_repository.save_snapshot(conn, snapshot)
+
+    def save_research_snapshot_with_publish(self, snapshot, publish):
+        with self.connect() as conn:
+            snapshot_repository.save_snapshot(conn, snapshot)
+            return publish()
+
+    def get_research_snapshot(self, snapshot_id: str):
+        with self.connect() as conn:
+            return snapshot_repository.get_snapshot(conn, snapshot_id)
+
+    def get_research_snapshot_by_content_hash(self, content_hash: str):
+        with self.connect() as conn:
+            return snapshot_repository.get_snapshot_by_content_hash(
+                conn,
+                content_hash,
+            )
+
+    def list_research_snapshots(self, setup_version_id: str):
+        with self.connect() as conn:
+            return snapshot_repository.list_snapshots(conn, setup_version_id)
 
     def list_strategy_samples_for_experiment(self, experiment_id: str) -> list[dict[str, Any]]:
         with self.connect() as conn:

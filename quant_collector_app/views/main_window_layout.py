@@ -326,7 +326,7 @@ def build_main_window_ui(self) -> None:
     central.setObjectName("appRoot")
     self.setCentralWidget(central)
     root = QtWidgets.QVBoxLayout(central)
-    root.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
+    root.setContentsMargins(SPACING["sm"], SPACING["sm"], SPACING["sm"], SPACING["sm"])
     root.setSpacing(SPACING["md"])
 
     # ---------- Header ----------
@@ -341,12 +341,16 @@ def build_main_window_ui(self) -> None:
 
     self.headerLogoLabel = QtWidgets.QLabel()
     self.headerLogoLabel.setProperty("role", "headerLogo")
-    apply_header_logo(self.headerLogoLabel, getattr(self, "theme_settings", None))
-    header_l.addWidget(self.headerLogoLabel)
     self.headerTitleLabel = QtWidgets.QLabel(f"Quant Replay Collector v{APP_VERSION}")
     self.headerTitleLabel.setProperty("role", "appTitle")
     self.headerTitleLabel.setMinimumWidth(190)
     self.headerTitleLabel.setSizePolicy(QtWidgets.QSizePolicy.Minimum, QtWidgets.QSizePolicy.Preferred)
+    apply_header_logo(
+        self.headerLogoLabel,
+        getattr(self, "theme_settings", None),
+        size=self.headerTitleLabel.fontMetrics().height(),
+    )
+    header_l.addWidget(self.headerLogoLabel)
     header_l.addWidget(self.headerTitleLabel)
 
     self.headerMetricLabels = {}
@@ -1062,7 +1066,11 @@ def build_main_window_ui(self) -> None:
     event_filters.addWidget(self.eventFilterTag)
     event_filters.addWidget(self.eventFilterSide)
     event_filters.addWidget(self.eventFilterType)
-    self.eventTab = QtWidgets.QWidget()
+    self.legacyResearchCompatContainer = QtWidgets.QWidget(
+        self.replayWorkspace
+    )
+    self.legacyResearchCompatContainer.hide()
+    self.eventTab = QtWidgets.QWidget(self.legacyResearchCompatContainer)
     event_tab_layout = QtWidgets.QVBoxLayout(self.eventTab)
     event_tab_layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
     event_tab_layout.setSpacing(SPACING["sm"])
@@ -1084,7 +1092,9 @@ def build_main_window_ui(self) -> None:
     ])
     self._setup_table(self.equityTable)
 
-    self.eventStudyTable = QtWidgets.QTableWidget()
+    self.eventStudyTable = QtWidgets.QTableWidget(
+        self.legacyResearchCompatContainer
+    )
     self.eventStudyTable.setColumnCount(9)
     self.eventStudyTable.setHorizontalHeaderLabels([
         self.tr("ui.tags"), self.tr("ui.event"), self.tr("ui.side"),
@@ -1113,16 +1123,22 @@ def build_main_window_ui(self) -> None:
     )
     self.tradeResultsStack.addWidget(self.emptyTradeResults)
     self.tradeResultsStack.addWidget(trade_tabs)
-    event_research_tabs = QtWidgets.QTabWidget()
-    self.eventResearchTabs = event_research_tabs
-    event_research_tabs.addTab(_table_box(self.eventStudyTable), self.tr("ui.event_statistics"))
-    event_research_tabs.addTab(self.eventTab, self.tr("ui.event_list"))
-    self.eventResearchStack = QtWidgets.QStackedWidget()
-    self.emptyEventStudy = _empty_state(
-        self.tr("ui.empty.no_event_study"), self.tr("ui.empty.event_study_body")
+    self.decisionResearchRedirect = _empty_state(
+        self.tr("decision_research.redirect.title"),
+        self.tr("decision_research.redirect.body"),
     )
-    self.eventResearchStack.addWidget(self.emptyEventStudy)
-    self.eventResearchStack.addWidget(event_research_tabs)
+    self.btnOpenDecisionResearch = QtWidgets.QPushButton()
+    self.btnOpenDecisionResearch.setProperty("role", "primaryButton")
+    self.decisionResearchRedirect.layout().insertWidget(
+        self.decisionResearchRedirect.layout().count() - 1,
+        self.btnOpenDecisionResearch,
+        alignment=QtCore.Qt.AlignCenter,
+    )
+    bind_text(
+        self.btnOpenDecisionResearch,
+        "decision_research.redirect.open",
+        self.tr,
+    )
     self.equityStack = _stacked_empty_table(
         self.tr("ui.empty.no_account_returns"),
         self.tr("ui.empty.account_returns_body"),
@@ -1143,7 +1159,10 @@ def build_main_window_ui(self) -> None:
     bottom_tabs.addTab(self.tradeResultsStack, self.tr("ui.positions_and_trades"))
     bottom_tabs.addTab(self.equityStack, self.tr("ui.account_returns"))
     bottom_tabs.addTab(self.performanceStack, self.tr("ui.performance_statistics"))
-    bottom_tabs.addTab(self.eventResearchStack, self.tr("event_study"))
+    bottom_tabs.addTab(
+        self.decisionResearchRedirect,
+        self.tr("decision_research.redirect.title"),
+    )
     bottom_tabs.addTab(self.datasetStack, self.tr("ui.sample_overview"))
 
     self.centerSplitter.addWidget(chart_panel)
@@ -1691,12 +1710,14 @@ def build_main_window_ui(self) -> None:
     for tab_widget, page, key in (
         (trade_tabs, trade_tabs.widget(0), "current_positions"),
         (trade_tabs, trade_tabs.widget(1), "ui.trade_history"),
-        (event_research_tabs, event_research_tabs.widget(0), "ui.event_statistics"),
-        (event_research_tabs, event_research_tabs.widget(1), "ui.event_list"),
         (bottom_tabs, self.tradeResultsStack, "ui.positions_and_trades"),
         (bottom_tabs, self.equityStack, "ui.account_returns"),
         (bottom_tabs, self.performanceStack, "ui.performance_statistics"),
-        (bottom_tabs, self.eventResearchStack, "event_study"),
+        (
+            bottom_tabs,
+            self.decisionResearchRedirect,
+            "decision_research.redirect.title",
+        ),
         (bottom_tabs, self.datasetStack, "ui.sample_overview"),
         (tabs, trade_scroll, "ui.trade"),
         (tabs, overview_scroll, "ui.status"),
@@ -1709,7 +1730,11 @@ def build_main_window_ui(self) -> None:
         (self.positionEmptyState, "ui.empty.no_position", "ui.empty.position_status_body"),
         (self.recentEventsEmptyState, "ui.empty.no_events", "ui.empty.events_body"),
         (self.emptyTradeResults, "ui.empty.no_trade_samples", "ui.empty.trade_samples_body"),
-        (self.emptyEventStudy, "ui.empty.no_event_study", "ui.empty.event_study_body"),
+        (
+            self.decisionResearchRedirect,
+            "decision_research.redirect.title",
+            "decision_research.redirect.body",
+        ),
         (self.equityStack.widget(0), "ui.empty.no_account_returns", "ui.empty.account_returns_body"),
         (self.emptyPerformance, "ui.empty.no_performance", "ui.empty.performance_body"),
         (self.emptyDataset, "ui.empty.no_sample_overview", "ui.empty.sample_overview_body"),

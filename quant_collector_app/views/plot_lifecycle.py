@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pyqtgraph as pg
-from PySide6 import QtWidgets
+from PySide6 import QtCore, QtWidgets
 
 
 def prepare_plot_for_shutdown(plot: pg.PlotItem) -> None:
@@ -26,14 +26,27 @@ def close_parent_owned_graphics_view(view: QtWidgets.QGraphicsView) -> bool:
 
     pyqtgraph's GraphicsView.close() clears the scene immediately. On Windows,
     that can race the accepted parent-window teardown after PlotItem cleanup.
-    Detaching the scene leaves its QObject parent responsible for destruction.
+    Calling the Qt base implementation first keeps the parent-owned scene
+    available for leave events emitted while the native window is closing.
+    Detach it on the next Qt event-loop turn, leaving the QObject parent
+    responsible for final destruction without retaining graphics state between
+    windows. The one-turn delay also covers native leave events queued by close.
     """
 
     view.centralWidget = None
     view.currentItem = None
     view.closed = True
-    view.setScene(None)
-    return bool(QtWidgets.QGraphicsView.close(view))
+    closed = bool(QtWidgets.QGraphicsView.close(view))
+
+    def detach_scene() -> None:
+        try:
+            view.setScene(None)
+        except RuntimeError:
+            # The parent may already have destroyed the C++ view.
+            return
+
+    QtCore.QTimer.singleShot(0, detach_scene)
+    return closed
 
 
 __all__ = ["close_parent_owned_graphics_view", "prepare_plot_for_shutdown"]

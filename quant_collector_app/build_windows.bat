@@ -1,5 +1,6 @@
 @echo off
 setlocal EnableExtensions
+set "PYTHONNOUSERSITE=1"
 
 cd /d "%~dp0" || (
     echo Failed to enter application folder.
@@ -21,16 +22,31 @@ if errorlevel 1 (
     exit /b 1
 )
 
+%PYTHON_CMD% "%~dp0..\scripts\write_windows_version_info.py" ^
+    --version-file "build\qrc-version-info.txt" ^
+    --batch-file "build\qrc-release-env.bat" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    echo Windows release metadata generation failed.
+    echo See log: %LOG_FILE%
+    pause
+    exit /b 1
+)
+set "PYTHONUSERBASE=%CD%\build\isolated-python-user"
+call "build\qrc-release-env.bat"
+
 if /I "%~1"=="--check" (
     echo build_windows.bat check OK.
     echo Application folder: %CD%
     echo Log file: %LOG_FILE%
     echo Python command: %PYTHON_CMD%
+    echo Version: %QRC_VERSION%
+    echo Windows file version: %QRC_WINDOWS_FILE_VERSION%
+    echo Package name: %QRC_PACKAGE_NAME%
     exit /b 0
 )
 
 echo Installing and checking dependencies...
-%PYTHON_CMD% -m pip install -r requirements.txt >> "%LOG_FILE%" 2>&1
+%PYTHON_CMD% -m pip install -r ..\requirements-lock.txt >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
     echo Dependency installation failed.
     echo See log: %LOG_FILE%
@@ -44,9 +60,13 @@ if exist "assets\app_icon.ico" set "ICON_ARG=--icon=assets\app_icon.ico --add-da
 %PYTHON_CMD% -m PyInstaller ^
     --noconfirm ^
     --clean ^
-    --onefile ^
+    --onedir ^
     --windowed ^
     --name QRC ^
+    --version-file=build\qrc-version-info.txt ^
+    --exclude-module=pytest ^
+    --exclude-module=pyarrow.tests ^
+    --exclude-module=sklearn.datasets ^
     --paths "%CD%" ^
     --add-data=translations;translations ^
     %ICON_ARG% main_app.py >> "%LOG_FILE%" 2>&1
@@ -58,7 +78,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-%PYTHON_CMD% "%~dp0..\scripts\verify_frozen_archive.py" "dist\QRC.exe" >> "%LOG_FILE%" 2>&1
+%PYTHON_CMD% "%~dp0..\scripts\prune_windows_package.py" --root "dist\QRC" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    echo Build pruning failed.
+    echo See log: %LOG_FILE%
+    pause
+    exit /b 1
+)
+
+%PYTHON_CMD% "%~dp0..\scripts\verify_frozen_archive.py" "dist\QRC\QRC.exe" >> "%LOG_FILE%" 2>&1
 if errorlevel 1 (
     echo Build verification failed: required application modules are missing.
     echo See log: %LOG_FILE%
@@ -67,7 +95,16 @@ if errorlevel 1 (
 )
 
 echo.
-echo Build completed: %CD%\dist\QRC.exe
+%PYTHON_CMD% "%~dp0..\scripts\write_release_manifest.py" --root "dist\QRC" --entrypoint "QRC.exe" >> "%LOG_FILE%" 2>&1
+if errorlevel 1 (
+    echo Release manifest generation failed.
+    echo See log: %LOG_FILE%
+    pause
+    exit /b 1
+)
+
+echo Build completed: %CD%\dist\QRC\QRC.exe
+echo Release package name: %QRC_PACKAGE_NAME%
 if not exist "assets\app_icon.ico" echo App icon not found; QRC.exe uses the default executable icon.
 echo Build log: %LOG_FILE%
 pause
@@ -75,6 +112,11 @@ endlocal
 exit /b 0
 
 :find_python
+if exist "..\.venv\Scripts\python.exe" (
+    set "PYTHON_CMD=..\.venv\Scripts\python.exe"
+    exit /b 0
+)
+
 where py >nul 2>nul
 if not errorlevel 1 (
     set "PYTHON_CMD=py -3"

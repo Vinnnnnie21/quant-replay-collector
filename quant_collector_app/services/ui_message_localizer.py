@@ -9,6 +9,12 @@ from collections.abc import Callable
 Translator = Callable[[str], str]
 
 
+_INTERNAL_ERROR_PREFIX = re.compile(
+    r"^(?:(?:[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception))|"
+    r"(?:[A-Z][A-Z0-9_]{2,}))\s*:\s*(.*)$"
+)
+
+
 _EXACT_KEYS = {
     "Checking cache.": "worker.market.checking_cache",
     "Exact-name cache is incomplete for the requested time range; checking coverage index.": "worker.market.checking_coverage",
@@ -87,6 +93,18 @@ def localize_worker_message(message: str, translator: Translator) -> str:
     return text
 
 
+def sanitize_worker_error_detail(message: str) -> str:
+    """Hide implementation exception types and stable internal error codes."""
+
+    detail = str(message or "").strip()
+    for _unused in range(3):
+        match = _INTERNAL_ERROR_PREFIX.fullmatch(detail)
+        if match is None:
+            break
+        detail = match.group(1).strip()
+    return detail or "—"
+
+
 def _localize_error_detail(value: str, translator: Translator) -> str:
     exact_keys = {
         "网络请求超时，请检查网络或稍后重试。": "worker.market.error.timeout",
@@ -98,4 +116,4 @@ def _localize_error_detail(value: str, translator: Translator) -> str:
     return value
 
 
-__all__ = ["localize_worker_message"]
+__all__ = ["localize_worker_message", "sanitize_worker_error_detail"]

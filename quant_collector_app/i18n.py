@@ -7,6 +7,16 @@ from pathlib import Path
 
 TRANSLATION_DIR = Path(__file__).resolve().parent / "translations"
 SUPPORTED_LANGUAGES = {"zh_CN", "en_US"}
+DISPLAY_NAME_KEYS = {
+    "Setup": "display_name.setup",
+    "Setup version": "display_name.setup_version",
+    "episode": "display_name.episode",
+    "ENTRY": "display_name.entry",
+    "REJECT": "display_name.reject",
+    "EXIT_NOW": "display_name.exit_now",
+    "HOLD": "display_name.hold",
+    "entry ATR20": "display_name.entry_atr20",
+}
 
 
 @lru_cache(maxsize=2)
@@ -30,3 +40,12 @@ def tr(key: str, language: str = "zh_CN", default: str | None = None) -> str:
 
 def has_translation(key: str, language: str = "zh_CN") -> bool:
     return key in load_translations(language)
+
+
+def display_name(identifier: str, language: str = "zh_CN") -> str:
+    """Translate a stable internal identifier only at the presentation edge."""
+
+    key = DISPLAY_NAME_KEYS.get(str(identifier))
+    if key is None:
+        return str(identifier)
+    return tr(key, language, str(identifier))

@@ -53,6 +53,7 @@ class ExportDirectoryPublisher:
         self._cleanup_warnings: list[str] = []
         self.staging_dir: Path | None = None
         self.backup_dir: Path | None = None
+        self._newly_published_dir: Path | None = None
 
     @property
     def has_deferred_cleanup(self) -> bool:
@@ -125,6 +126,24 @@ class ExportDirectoryPublisher:
             self._remove_directory_with_retry(self.staging_dir)
         self.staging_dir = None
 
+    def rollback_new_publication(self) -> None:
+        """Remove a newly created final directory when a later commit fails.
+
+        Replacements are intentionally excluded because their previous directory
+        has already passed through the publisher's own rollback protocol.  The
+        snapshot workflow uses unique final names, so a successful first rename
+        can be safely removed if its SQLite identity does not commit.
+        """
+
+        published = self._newly_published_dir
+        if published is None:
+            return
+        if published.exists() and not self._remove_directory_with_retry(published):
+            raise ExportPublishError(
+                "new export directory could not be removed after transaction failure"
+            )
+        self._newly_published_dir = None
+
     def publish(self) -> Path:
         staging = self.staging_dir
         if staging is None or not staging.is_dir():
@@ -133,6 +152,7 @@ class ExportDirectoryPublisher:
         if not self.final_dir.exists():
             self._rename(staging, self.final_dir)
             self.staging_dir = None
+            self._newly_published_dir = self.final_dir
             _validate_export_directory(self.final_dir)
             return self.final_dir
 
@@ -184,7 +204,7 @@ def _validate_export_directory(directory: Path) -> dict:
         record = files.get(table_name)
         if not isinstance(record, dict) or not isinstance(record.get("csv"), str):
             raise ExportPublishError(f"export manifest is missing CSV for table: {table_name}")
-    reference_keys = {"csv", "parquet", "json", "markdown", "manifest", "report"}
+    reference_keys = {"csv", "parquet", "json", "markdown", "manifest", "report", "png"}
     for record in files.values():
         if not isinstance(record, dict):
             continue

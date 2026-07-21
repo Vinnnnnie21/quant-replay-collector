@@ -219,7 +219,7 @@ def retranslate_main_window_ui(window) -> None:
                 window.tr("ui.positions_and_trades"),
                 window.tr("ui.account_returns"),
                 window.tr("ui.performance_statistics"),
-                window.tr("event_study"),
+                window.tr("decision_research.redirect.title"),
                 window.tr("ui.sample_overview"),
             )
         ):
@@ -229,10 +229,6 @@ def retranslate_main_window_ui(window) -> None:
         for index, text in enumerate((window.tr("current_positions"), window.tr("closed_trades"))):
             if index < window.tradeResultsTabs.count():
                 window.tradeResultsTabs.setTabText(index, text)
-    if hasattr(window, "eventResearchTabs"):
-        for index, text in enumerate((window.tr("event_study"), window.tr("events"))):
-            if index < window.eventResearchTabs.count():
-                window.eventResearchTabs.setTabText(index, text)
     window.multiTimeframePanel.retranslate_ui(window.current_language)
     if hasattr(window, "backtestPanel") and hasattr(window.backtestPanel, "retranslate_ui"):
         window.backtestPanel.retranslate_ui()
@@ -307,9 +303,6 @@ def apply_main_window_theme(window, theme: dict) -> None:
     if app is not None:
         apply_application_icon(app, tokens, window)
     apply_windows_title_bar_theme(window, tokens)
-    header_logo = getattr(window, "headerLogoLabel", None)
-    if header_logo is not None:
-        apply_header_logo(header_logo, tokens)
     pal = QtGui.QPalette()
     pal.setColor(QtGui.QPalette.Window, QtGui.QColor(tokens["bg_primary"]))
     pal.setColor(QtGui.QPalette.WindowText, QtGui.QColor(tokens["text_primary"]))
@@ -341,6 +334,17 @@ def apply_main_window_theme(window, theme: dict) -> None:
         app.setPalette(pal)
 
     window.setStyleSheet(build_app_qss(window.theme_settings))
+    header_logo = getattr(window, "headerLogoLabel", None)
+    if header_logo is not None:
+        title_label = getattr(window, "headerTitleLabel", None)
+        if title_label is not None:
+            title_label.ensurePolished()
+        logo_size = (
+            title_label.fontMetrics().height()
+            if title_label is not None
+            else header_logo.height()
+        )
+        apply_header_logo(header_logo, tokens, size=logo_size)
     # A window-level stylesheet does not reliably paint QPushButton backgrounds in
     # deep trees on Fusion; set the fill via a LOCAL stylesheet on each role button.
     apply_role_button_styles(window, window.theme_settings)
@@ -374,8 +378,10 @@ def apply_main_window_theme(window, theme: dict) -> None:
         pass
     window.premiumPlot.showGrid(x=True, y=True, alpha=grid_alpha)
     analysis_workspace = getattr(window, "_analysis_workspace", None)
-    if analysis_workspace is not None and hasattr(analysis_workspace, "_apply_plot_theme"):
-        analysis_workspace._apply_plot_theme()
+    if analysis_workspace is not None:
+        apply_workspace_theme = getattr(analysis_workspace, "apply_theme", None)
+        if callable(apply_workspace_theme):
+            apply_workspace_theme(window.theme_settings)
     premium_item = window.premiumPlot.getPlotItem() if hasattr(window.premiumPlot, "getPlotItem") else None
     if premium_item is not None:
         for side in ("left", "bottom", "right", "top"):

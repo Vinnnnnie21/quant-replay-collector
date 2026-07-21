@@ -9,6 +9,26 @@ from PySide6 import QtCore, QtGui, QtWidgets
 
 
 HEADER_LOGO_SIZE = 18
+WINDOWS_APP_USER_MODEL_ID = "QuantReplayCollector.QRC"
+
+
+def _set_current_process_app_user_model_id(value: str) -> int:
+    """Call the Windows shell API without importing platform code elsewhere."""
+
+    import ctypes
+
+    return int(ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(value))
+
+
+def configure_windows_taskbar_identity(*, platform_name: str = sys.platform) -> bool:
+    """Set the stable Windows taskbar grouping identity before Qt creates windows."""
+
+    if platform_name != "win32":
+        return False
+    try:
+        return _set_current_process_app_user_model_id(WINDOWS_APP_USER_MODEL_ID) == 0
+    except (AttributeError, ImportError, OSError):
+        return False
 
 
 def _application_asset_path(filename: str) -> Path:
@@ -47,11 +67,9 @@ def apply_application_icon(
     theme: dict | None = None,
     window: QtWidgets.QWidget | None = None,
 ) -> bool:
-    """Apply the theme logo to the application and optional active window."""
+    """Apply the stable multi-size icon to the application and active window."""
 
-    path = application_logo_path(theme)
-    if not path.is_file():
-        path = application_icon_path()
+    path = application_icon_path()
     if not path.is_file():
         return False
     icon = QtGui.QIcon(str(path))
@@ -90,8 +108,10 @@ def apply_header_logo(
 
 __all__ = [
     "HEADER_LOGO_SIZE",
+    "WINDOWS_APP_USER_MODEL_ID",
     "application_icon_path",
     "application_logo_path",
     "apply_application_icon",
     "apply_header_logo",
+    "configure_windows_taskbar_identity",
 ]

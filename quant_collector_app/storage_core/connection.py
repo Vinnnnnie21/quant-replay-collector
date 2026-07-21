@@ -27,6 +27,9 @@ def connect_db(db_path: str):
         if "locked" in str(exc).lower():
             raise DatabaseError("Database is temporarily busy. Please retry after the current save completes.") from exc
         raise DatabaseError(f"SQLite operation failed: {exc}") from exc
+    except sqlite3.Error as exc:
+        conn.rollback()
+        raise DatabaseError(f"SQLite operation failed: {exc}") from exc
     except Exception:
         conn.rollback()
         raise

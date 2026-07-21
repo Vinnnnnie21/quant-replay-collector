@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.6.0 - 2026-07-21
+
+- Finalize the local decision-research workflows and Windows release packaging.
+- Keep the database schema version independent from the application version.
+
+## v1.6.0-rc.2 - 2026-07-20
+
+- 修复决策研究工作区在窄窗口和 Setup 编辑状态下的滚动与布局。
+- 接通真实开仓/平仓事件、独立行情片段和不可变研究草稿的生产装配。
+- 增加启动阶段计时、高版本数据库友好拒绝、onedir 清单校验和安全快捷方式流程。
+
+## v1.6.0-rc.1 - 2026-07-19
+
+### Added
+
+- Added one versioned decision-research workspace for entry and full-exit review, with blinded judgments, three-timeframe context, cancellable ancillary-data backfill, candidate retrieval, behavior-model experiments, matched outcome comparisons and immutable research snapshots.
+- Added immutable Setup versions, market-episode grouping, entry/exit review audit records and schema 19 additive migrations. Existing schema 6 databases are backed up before upgrade and legacy K-lines retain `NULL` ancillary fields.
+- Added reproducible elastic-net behavior models and episode-level matched posterior comparisons. Decision-time features remain separate from future outcomes, and all formal reports retain insufficient and non-significant results.
+
+### Release-candidate boundaries
+
+- Similarity and behavior scores describe historical selection patterns; they are not trading signals, win rates or profit probabilities.
+- Strategy cards stop at behavior profiles, exploratory hypotheses or hypotheses awaiting prospective validation. This release does not place live orders or produce a tradable strategy.
+- Legacy v1.5.2 replay data and exported research remain readable. New decision-research records use immutable version identifiers and stable English machine keys.
+
 ## v1.5.2 - 2026-07-17
 
 ### Fixed

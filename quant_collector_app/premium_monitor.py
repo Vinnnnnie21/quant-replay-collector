@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime
 
-import requests
 from PySide6 import QtCore
 
 from app_config import BJT
@@ -12,6 +11,8 @@ P2P_HEADERS = {"Content-Type": "application/json", "User-Agent": "Mozilla/5.0"}
 
 
 def get_binance_p2p_price(trade_type: str):
+    import requests
+
     url = "https://p2p.binance.com/bapi/c2c/v2/friendly/c2c/adv/search"
     data = {
         "asset": "USDT",
@@ -38,6 +39,8 @@ def get_binance_p2p_price(trade_type: str):
 
 
 def get_usd_cny_primary():
+    import requests
+
     url = "https://api.frankfurter.dev/v1/latest?base=USD&symbols=CNY"
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()
@@ -49,6 +52,8 @@ def get_usd_cny_primary():
 
 
 def get_usd_cny_backup():
+    import requests
+
     url = "https://open.er-api.com/v6/latest/USD"
     resp = requests.get(url, timeout=10)
     resp.raise_for_status()

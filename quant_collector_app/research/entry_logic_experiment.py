@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .market_episodes import EpisodeResolver
 
 import numpy as np
 import pandas as pd
@@ -84,6 +87,8 @@ def run_entry_logic_experiment(
     top_k: int = 10,
     review_queue_config: dict[str, Any] | None = None,
     experiment_config: dict[str, Any] | None = None,
+    episode_service: EpisodeResolver | None = None,
+    episode_grouping_version_id: str | None = None,
 ) -> dict[str, Any]:
     """Run an entry-logic similarity experiment without outcome-label training.
 
@@ -108,7 +113,12 @@ def run_entry_logic_experiment(
     unlabeled_dataset = _build_unlabeled_dataset(features, annotations, feature_cols)
     dataset = build_pu_dataset(features, annotations, feature_cols)
 
-    split = _build_temporal_split(labeled_dataset, merged_split_config)
+    split = _build_temporal_split(
+        labeled_dataset,
+        merged_split_config,
+        episode_service=episode_service,
+        episode_grouping_version_id=episode_grouping_version_id,
+    )
     split_summary = summarize_split(split)
     warnings.extend(split_summary.get("warnings", []))
 
@@ -179,6 +189,10 @@ def run_entry_logic_experiment(
         threshold=threshold,
         warnings=warnings,
     )
+    if episode_grouping_version_id is not None:
+        manifest_config["episode_grouping_version_id"] = (
+            episode_grouping_version_id
+        )
     manifest_config["annotation_counts"] = _annotation_counts(annotations)
     legacy_manifest = save_experiment_manifest(
         manifest_path,
@@ -324,7 +338,13 @@ def _build_unlabeled_dataset(
     return candidates[[column for column in keep_cols if column in candidates.columns]].reset_index(drop=True).copy()
 
 
-def _build_temporal_split(labeled_df: pd.DataFrame, split_config: dict[str, Any]) -> SplitResult:
+def _build_temporal_split(
+    labeled_df: pd.DataFrame,
+    split_config: dict[str, Any],
+    *,
+    episode_service: EpisodeResolver | None = None,
+    episode_grouping_version_id: str | None = None,
+) -> SplitResult:
     if not isinstance(labeled_df, pd.DataFrame):
         raise ValueError("labeled_df must be a pandas DataFrame")
     if len(labeled_df) < 3:
@@ -342,9 +362,19 @@ def _build_temporal_split(labeled_df: pd.DataFrame, split_config: dict[str, Any]
             test_ratio=test_ratio,
             horizon_bars=int(config.get("horizon_bars", DEFAULT_SPLIT_CONFIG["horizon_bars"])),
             embargo_bars=int(config.get("embargo_bars", DEFAULT_SPLIT_CONFIG["embargo_bars"])),
-            episode_gap_bars=config.get("episode_gap_bars"),
+            episode_gap_bars=(
+                None
+                if episode_service is not None
+                else config.get("episode_gap_bars")
+            ),
+            episode_service=episode_service,
+            episode_grouping_version_id=episode_grouping_version_id,
         )
     if method == "chronological":
+        if episode_service is not None or episode_grouping_version_id is not None:
+            raise ValueError(
+                "persisted episode grouping requires purged_chronological split"
+            )
         legacy = chronological_train_val_test_split(labeled_df, train_ratio, validation_ratio, test_ratio)
         train = legacy["train"].reset_index(drop=True).copy()
         validation = legacy["val"].reset_index(drop=True).copy()

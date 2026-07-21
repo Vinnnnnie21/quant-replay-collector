@@ -22,10 +22,71 @@ from performance_analysis import (
 )
 from ui_style import COLORS, SPACING, normalize_theme_settings
 from controllers.entry_annotation_controller import EntryAnnotationController
+from controllers.entry_blind_review_controller import EntryBlindReviewController
+from controllers.exit_blind_review_controller import ExitBlindReviewController
+from controllers.entry_candidate_scan_controller import EntryCandidateScanController
+from controllers.exit_candidate_scan_controller import ExitCandidateScanController
+from controllers.entry_behavior_training_controller import (
+    EntryBehaviorTrainingController,
+)
+from controllers.entry_outcome_comparison_controller import (
+    EntryOutcomeComparisonController,
+)
+from controllers.research_snapshot_controller import (
+    ResearchSnapshotController,
+    ResearchSnapshotPublishRequest,
+)
 from controllers.historical_performance_controller import HistoricalPerformanceController
 from services.entry_research_service import EntryResearchService
+from services.entry_blind_review import (
+    EntryBlindReviewService,
+    supports_entry_blind_review_storage,
+)
+from services.exit_blind_review import (
+    ExitBlindReviewService,
+    supports_exit_blind_review_storage,
+)
+from services.entry_structural_similarity import (
+    EntryStructuralSimilarityService,
+    supports_entry_similarity_storage,
+)
+from services.entry_candidate_generation import (
+    EntryCandidateGenerationService,
+    supports_entry_candidate_storage,
+)
+from services.exit_candidate_generation import (
+    ExitCandidateGenerationService,
+    supports_exit_candidate_storage,
+)
+from services.entry_behavior_training import (
+    EntryBehaviorTrainingService,
+    supports_entry_behavior_training_storage,
+)
+from services.entry_outcome_comparison import (
+    EntryOutcomeComparisonService,
+    supports_entry_outcome_storage,
+)
+from services.exit_outcome_comparison import (
+    ExitOutcomeComparisonService,
+    supports_exit_outcome_storage,
+)
+from services.research_snapshots import (
+    ResearchSnapshotService,
+    supports_research_snapshot_storage,
+)
+from services.decision_research_coordinator import (
+    DecisionResearchCoordinator,
+    DecisionResearchRequest,
+    ResearchSnapshotInputAssembler,
+)
 from services.analysis_refresh import PerformanceWorkspacePayload
+from services.research_data_availability import ResearchRangeRequest
 from services.session_service import list_performance_session_options
+from research.research_snapshot import (
+    ResearchSnapshotDraft,
+    ResearchSnapshotInput,
+)
+from research.setups import SetupLibrary
 from views.performance_trade_table import (
     PerformanceTradeRow,
     PerformanceTradeTableModel,
@@ -36,6 +97,13 @@ from views.plot_lifecycle import (
     prepare_plot_for_shutdown,
 )
 from views.wheel_guard import install_no_wheel_on_value_inputs
+from views.decision_research_workspace import DecisionResearchWorkspace
+from views.episode_correction_dialog import (
+    EpisodeMergeRequest,
+    EpisodeSplitRequest,
+    request_episode_correction,
+)
+from startup import mark_startup_stage
 
 
 logger = get_logger(__name__)
@@ -199,6 +267,9 @@ class AnalysisWorkspace(QtWidgets.QDialog):
     def __init__(self, app_window, parent=None, *, embedded: bool = False):
         super().__init__(parent or app_window)
         self.app_window = app_window
+        self._theme_settings = normalize_theme_settings(
+            getattr(app_window, "theme_settings", None)
+        )
         self.embedded = bool(embedded)
         if self.embedded:
             self.setWindowFlags(QtCore.Qt.Widget)
@@ -223,7 +294,142 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self._historical_performance_empty_states: dict[str, str] = {}
         self._historical_performance_requested_session_id: str | None = None
         self._performance_trade_rows: tuple[dict, ...] = ()
+        self._research_backfill_controller = getattr(
+            app_window,
+            "research_backfill_controller",
+            None,
+        )
         storage = getattr(app_window, "storage", None)
+        self.setup_library = (
+            SetupLibrary(storage)
+            if storage is not None
+            and all(
+                hasattr(storage, method)
+                for method in (
+                    "create_setup_with_version",
+                    "get_setup",
+                    "get_setup_version",
+                    "list_setups",
+                    "list_setup_versions",
+                )
+            )
+            else None
+        )
+        self.decision_research_coordinator = (
+            DecisionResearchCoordinator(storage)
+            if self.setup_library is not None
+            else None
+        )
+        self.research_snapshot_input_assembler = (
+            ResearchSnapshotInputAssembler(storage)
+            if self.decision_research_coordinator is not None
+            else None
+        )
+        self._decision_research_contexts = {"entry": None, "exit": None}
+        self.entry_blind_review_controller = (
+            EntryBlindReviewController(EntryBlindReviewService(storage))
+            if supports_entry_blind_review_storage(storage)
+            else None
+        )
+        self.exit_blind_review_controller = (
+            ExitBlindReviewController(ExitBlindReviewService(storage))
+            if supports_exit_blind_review_storage(storage)
+            else None
+        )
+        self.entry_similarity_service = (
+            EntryStructuralSimilarityService(storage)
+            if supports_entry_similarity_storage(storage)
+            else None
+        )
+        self.entry_candidate_service = (
+            EntryCandidateGenerationService(storage)
+            if supports_entry_candidate_storage(storage)
+            else None
+        )
+        self.entry_candidate_controller = (
+            EntryCandidateScanController(
+                self.entry_candidate_service,
+                lifecycle=getattr(app_window, "task_lifecycle", None),
+                parent=self,
+            )
+            if self.entry_candidate_service is not None
+            else None
+        )
+        self.exit_candidate_service = (
+            ExitCandidateGenerationService(storage)
+            if supports_exit_candidate_storage(storage)
+            else None
+        )
+        self.exit_candidate_controller = (
+            ExitCandidateScanController(
+                self.exit_candidate_service,
+                lifecycle=getattr(app_window, "task_lifecycle", None),
+                parent=self,
+            )
+            if self.exit_candidate_service is not None
+            else None
+        )
+        self.entry_behavior_training_service = (
+            EntryBehaviorTrainingService(storage)
+            if supports_entry_behavior_training_storage(storage)
+            else None
+        )
+        self.entry_behavior_training_controller = (
+            EntryBehaviorTrainingController(
+                self.entry_behavior_training_service,
+                lifecycle=getattr(app_window, "task_lifecycle", None),
+                parent=self,
+            )
+            if self.entry_behavior_training_service is not None
+            else None
+        )
+        self.entry_outcome_comparison_service = (
+            EntryOutcomeComparisonService(storage)
+            if supports_entry_outcome_storage(storage)
+            else None
+        )
+        self.entry_outcome_comparison_controller = (
+            EntryOutcomeComparisonController(
+                self.entry_outcome_comparison_service,
+                lifecycle=getattr(app_window, "task_lifecycle", None),
+                parent=self,
+            )
+            if self.entry_outcome_comparison_service is not None
+            else None
+        )
+        self.exit_outcome_comparison_service = (
+            ExitOutcomeComparisonService(storage)
+            if supports_exit_outcome_storage(storage)
+            else None
+        )
+        self.exit_outcome_comparison_controller = (
+            EntryOutcomeComparisonController(
+                self.exit_outcome_comparison_service,
+                lifecycle=getattr(app_window, "task_lifecycle", None),
+                task_name="exit_outcome_comparison",
+                parent=self,
+            )
+            if self.exit_outcome_comparison_service is not None
+            else None
+        )
+        self.research_snapshot_service = (
+            ResearchSnapshotService(
+                storage=storage,
+                export_root=Path(EXPORT_DIR) / "research_snapshots",
+            )
+            if supports_research_snapshot_storage(storage)
+            else None
+        )
+        self.research_snapshot_controller = (
+            ResearchSnapshotController(
+                self.research_snapshot_service,
+                lifecycle=getattr(app_window, "task_lifecycle", None),
+                parent=self,
+            )
+            if self.research_snapshot_service is not None
+            else None
+        )
+        self._research_snapshot_input = None
         db_path = getattr(storage, "db_path", None)
         self.historical_performance_controller = (
             HistoricalPerformanceController(
@@ -244,11 +450,21 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self._build_ui()
         install_no_wheel_on_value_inputs(self)
         self.retranslate_ui()
-        self._apply_button_theme()
-        self._apply_plot_theme()
+        self.apply_theme(self._theme_settings)
 
-    def _apply_plot_theme(self) -> None:
-        theme = normalize_theme_settings(getattr(self.app_window, "theme_settings", None))
+    def apply_theme(self, theme: dict | None) -> None:
+        """Apply one theme to every Qt and chart surface in the workspace."""
+
+        self._theme_settings = normalize_theme_settings(theme)
+        self._apply_button_theme(self._theme_settings)
+        self._apply_plot_theme(self._theme_settings)
+
+    def _apply_plot_theme(self, theme: dict | None = None) -> None:
+        theme = normalize_theme_settings(
+            theme
+            if theme is not None
+            else getattr(self.app_window, "theme_settings", None)
+        )
         grid_alpha = max(0.0, min(1.0, theme["grid_alpha"] / 100.0))
         for plot in (self.equityCurvePlot, self.performanceHistogramPlot):
             plot.setBackground(theme["chart_bg"])
@@ -267,11 +483,16 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             f"color: {theme['text_secondary']}; background: transparent;"
         )
 
-    def _apply_button_theme(self) -> None:
+    def _apply_button_theme(self, theme: dict | None = None) -> None:
         """Give every button/input in the analysis panel the themed pill look."""
-        theme = getattr(self.app_window, "theme_settings", None)
+        theme = (
+            theme
+            if theme is not None
+            else getattr(self.app_window, "theme_settings", None)
+        )
         if theme is None:
             return
+        self.decisionResearchWorkspace.apply_theme(theme)
         try:
             from views.main_window_presentation import (
                 apply_role_button_styles,
@@ -283,7 +504,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             apply_themed_input_styles(self, theme)
             apply_role_button_shadows(self)
         except Exception:
-            pass
+            logger.exception("Failed to apply analysis control theme")
 
     def _language(self) -> str:
         return str(getattr(self.app_window, "current_language", "zh_CN") or "zh_CN")
@@ -314,7 +535,38 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.tabs = QtWidgets.QTabWidget()
         self.tabs.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Expanding)
         self.performanceTab = self._performance_tab()
-        self.eventStudyTab = self._event_study_tab()
+        self.decisionResearchWorkspace = DecisionResearchWorkspace(
+            language=self._language(),
+            setup_library=self.setup_library,
+            entry_review_controller=self.entry_blind_review_controller,
+            exit_review_controller=self.exit_blind_review_controller,
+            similarity_service=self.entry_similarity_service,
+            candidate_service=self.entry_candidate_service,
+            candidate_controller=self.entry_candidate_controller,
+            exit_candidate_service=self.exit_candidate_service,
+            exit_candidate_controller=self.exit_candidate_controller,
+            behavior_training_service=(
+                self.entry_behavior_training_service
+            ),
+            behavior_training_controller=(
+                self.entry_behavior_training_controller
+            ),
+            outcome_comparison_service=(
+                self.entry_outcome_comparison_service
+            ),
+            outcome_comparison_controller=(
+                self.entry_outcome_comparison_controller
+            ),
+            exit_outcome_comparison_service=(
+                self.exit_outcome_comparison_service
+            ),
+            exit_outcome_comparison_controller=(
+                self.exit_outcome_comparison_controller
+            ),
+            parent=self,
+        )
+        self._bind_decision_research_data()
+        self.decisionResearchTab = self.decisionResearchWorkspace
         self.consistencyTab = self._scrollable_existing_widget(
             "strategyConsistencyPanel",
             "workspace.no_strategy_panel",
@@ -328,24 +580,26 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.researchTab = self._research_tab()
         self.timeSeriesTab = self._time_series_tab()
         self.tabs.addTab(self.performanceTab, "")
-        self.tabs.addTab(self.eventStudyTab, "")
+        self.tabs.addTab(self.decisionResearchTab, "")
         self.tabs.addTab(self.consistencyTab, "")
         self.tabs.addTab(self.backtestTab, "")
         self.tabs.addTab(self.premiumTab, "")
         self.tabs.addTab(self.aiTab, "")
         self.tabs.addTab(self.researchTab, "")
         self.tabs.addTab(self.timeSeriesTab, "")
+        self.tabs.currentChanged.connect(self._ensure_lazy_analysis_panel)
         root.addWidget(self.tabs, stretch=1)
 
     def _performance_tab(self) -> QtWidgets.QWidget:
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(tab)
-        layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        layout.setSpacing(SPACING["md"])
+        page = QtWidgets.QWidget()
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(
+            SPACING["md"],
+            SPACING["md"],
+            SPACING["md"],
+            SPACING["md"],
+        )
+        page_layout.setSpacing(SPACING["md"])
         controls = QtWidgets.QHBoxLayout()
         controls.addWidget(QtWidgets.QLabel(self._tr("performance.session")))
         self.performanceSessionBox = QtWidgets.QComboBox()
@@ -359,7 +613,18 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.performanceCurveMode.addItem(self._tr("performance.pnl_curve"), PNL_CURVE_MODE)
         self.performanceCurveMode.currentIndexChanged.connect(self._refresh_performance_workspace)
         controls.addWidget(self.performanceCurveMode)
-        layout.addLayout(controls)
+        page_layout.addLayout(controls)
+
+        self.performanceContentScroll = QtWidgets.QScrollArea()
+        self.performanceContentScroll.setWidgetResizable(True)
+        self.performanceContentScroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.performanceContentScroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAlwaysOff
+        )
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(SPACING["md"])
 
         summary = QtWidgets.QFrame()
         summary.setProperty("role", "statusBlock")
@@ -393,7 +658,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
                 block_l.setContentsMargins(SPACING["md"], SPACING["sm"], SPACING["md"], SPACING["sm"])
                 block_l.setSpacing(SPACING["xs"])
                 name = QtWidgets.QLabel(self._tr(label_key))
-                name.setProperty("role", "muted")
+                name.setProperty("role", "performanceLabel")
                 name.setAlignment(QtCore.Qt.AlignCenter)
                 value = QtWidgets.QLabel("-")
                 value.setProperty("role", "metricValue" if primary else "statusValue")
@@ -545,8 +810,9 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         histogram_l.addWidget(self.performanceHistogramPlot, 1)
         distribution_l.addWidget(histogram_panel, 1)
         layout.addWidget(distribution)
-        scroll.setWidget(tab)
-        return scroll
+        self.performanceContentScroll.setWidget(tab)
+        page_layout.addWidget(self.performanceContentScroll, stretch=1)
+        return page
 
     def _populate_performance_sessions(self) -> None:
         current_id = str(getattr(self.app_window, "session_id", "") or "")
@@ -647,16 +913,22 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.equityCurveData = []
         self._performanceCurveX = []
 
-    @staticmethod
-    def _set_performance_value_tone(label: QtWidgets.QLabel, number: float, *, zero_is_negative: bool = False) -> None:
+    def _set_performance_value_tone(
+        self,
+        label: QtWidgets.QLabel,
+        number: float,
+        *,
+        zero_is_negative: bool = False,
+    ) -> None:
+        theme = self._theme_settings
         if not math.isfinite(number):
-            color = COLORS["text_secondary"]
+            color = theme["text_secondary"]
         elif number > 0:
-            color = COLORS["success"]
+            color = theme["success"]
         elif number < 0 or zero_is_negative:
-            color = COLORS["danger"]
+            color = theme["danger"]
         else:
-            color = COLORS["text_secondary"]
+            color = theme["text_secondary"]
         label.setStyleSheet(f"color: {color};")
 
     def _on_performance_curve_mouse_moved(self, scene_pos) -> None:
@@ -693,18 +965,6 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             positions=int(_safe_float(row.get("open_position_count"))),
         )
         self.performanceHoverLabel.setText(text)
-
-    def _event_study_tab(self) -> QtWidgets.QWidget:
-        tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(tab)
-        layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        self.eventTabs = QtWidgets.QTabWidget()
-        self.eventStudyTableTab = self._existing_analysis_widget("eventStudyTable", "workspace.no_event_study")
-        self.datasetTab = self._existing_analysis_widget("datasetText", "workspace.no_dataset")
-        self.eventTabs.addTab(self.eventStudyTableTab, "")
-        self.eventTabs.addTab(self.datasetTab, "")
-        layout.addWidget(self.eventTabs, stretch=1)
-        return tab
 
     def _spin_value(self, name: str, default: float) -> float:
         widget = getattr(self.app_window, name, None)
@@ -1120,7 +1380,6 @@ class AnalysisWorkspace(QtWidgets.QDialog):
                 getattr(self.app_window, "rightTabs", None),
                 getattr(self.app_window, "bottomTabs", None),
                 getattr(self.app_window, "tradeResultsTabs", None),
-                getattr(self.app_window, "eventResearchTabs", None),
             )
             if isinstance(tabs, QtWidgets.QTabWidget)
         ]
@@ -1172,6 +1431,33 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         scroll.setWidget(widget)
         return scroll
 
+    def _ensure_lazy_analysis_panel(self, index: int) -> None:
+        selected = self.tabs.widget(index)
+        if selected is self.consistencyTab:
+            panel_name = "strategyConsistencyPanel"
+            tab_attribute = "consistencyTab"
+        elif selected is self.backtestTab:
+            panel_name = "backtestPanel"
+            tab_attribute = "backtestTab"
+        else:
+            return
+        if getattr(self.app_window, panel_name, None) is not None:
+            return
+        ensure = getattr(self.app_window, "ensure_analysis_support_panel", None)
+        if not callable(ensure):
+            return
+        panel = ensure(panel_name)
+        if panel is None:
+            return
+        replacement = self._scrollable_existing_widget(panel_name, "")
+        blocker = QtCore.QSignalBlocker(self.tabs)
+        self.tabs.removeTab(index)
+        self.tabs.insertTab(index, replacement, "")
+        self.tabs.setCurrentIndex(index)
+        del blocker
+        setattr(self, tab_attribute, replacement)
+        self.retranslate_ui()
+
     def _ai_tab(self) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(tab)
@@ -1199,6 +1485,8 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         for button in (self.btnRunResearch, self.btnExportResearch, self.btnOpenResearchFolder, self.btnCopyResearchContext):
             button.setProperty("role", "secondaryButton")
             controls.addWidget(button)
+        self.btnRunResearch.setProperty("role", "primaryButton")
+        self.btnExportResearch.hide()
         controls.addStretch(1)
         layout.addLayout(controls)
         self.researchWarning = QtWidgets.QLabel()
@@ -1232,6 +1520,8 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.btnCopyResearchContext.clicked.connect(self.copy_llm_context)
         self.btnRunEntryLogic.clicked.connect(self.run_entry_logic_report)
         self.btnExportEntryLogic.clicked.connect(self.export_entry_logic_report)
+        self.btnRunEntryLogic.hide()
+        self.btnExportEntryLogic.hide()
         self.entryReviewQueueTable.itemSelectionChanged.connect(self._on_entry_review_selection_changed)
         self.btnEntryPrevious.clicked.connect(lambda: self._move_entry_candidate("previous"))
         self.btnEntryNext.clicked.connect(lambda: self._move_entry_candidate("next"))
@@ -1350,72 +1640,21 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.btnCopyTimeSeries.clicked.connect(self.copy_time_series_summary)
         return tab
 
-    def _run_export_to(self, target: Path):
-        session_id = getattr(self.app_window, "session_id", None)
-        if not session_id:
-            QtWidgets.QMessageBox.warning(self, self._tr("research.dialog_title"), self._tr("research.no_session"))
-            return
-        if hasattr(self.app_window, "start_export_task"):
-            if self.app_window.start_export_task(
-                target,
-                self._research_export_finished,
-                self._language(),
-                self.selectedLabelBox.currentText(),
-            ):
-                self.reportText.setPlainText(self._tr("research.running"))
-                self.researchWarning.setText(self._tr("research.running"))
-            else:
-                self.reportText.setPlainText(self._tr("research.task_busy"))
-            return
-        try:
-            export_dir = self.app_window.exporter.export_session(
-                session_id,
-                target,
-                language=self._language(),
-                selected_label=self.selectedLabelBox.currentText(),
-            )
-            self.last_research_dir = Path(export_dir) / "research"
-            self._load_research_views()
-        except Exception as exc:
-            QtWidgets.QMessageBox.critical(self, self._tr("research.dialog_title"), f"{self._tr('research.failed')}: {exc}")
-
     def _research_export_finished(self, export_dir: Path):
         self.last_research_dir = Path(export_dir) / "research"
         self._load_research_views()
 
     def run_research_analysis(self):
-        self._run_export_to(Path(EXPORT_DIR))
+        self.open_decision_research()
 
     def export_research_pack(self):
-        target = QtWidgets.QFileDialog.getExistingDirectory(self, self._tr("research.export"), str(EXPORT_DIR))
-        if target:
-            self._run_export_to(Path(target))
-
-    def _run_entry_logic_export_to(self, target: Path):
-        session_id = getattr(self.app_window, "session_id", None)
-        if not session_id:
-            QtWidgets.QMessageBox.warning(self, self._entry_logic_title(), self._tr("research.no_session"))
-            return
-        if not hasattr(self.app_window, "start_export_task"):
-            self.entryLogicHint.setText(self._tr("entry_logic.hint_no_backend"))
-            return
-        if self.app_window.start_export_task(
-            target,
-            self._entry_logic_export_finished,
-            self._language(),
-            self.selectedLabelBox.currentText(),
-        ):
-            self.entryLogicHint.setText(self._tr("entry_logic.hint_generating"))
-        else:
-            self.entryLogicHint.setText(self._tr("entry_logic.hint_export_busy"))
+        self.open_decision_research()
 
     def run_entry_logic_report(self):
-        self._run_entry_logic_export_to(Path(EXPORT_DIR))
+        self.open_decision_research()
 
     def export_entry_logic_report(self):
-        target = QtWidgets.QFileDialog.getExistingDirectory(self, self._entry_logic_export_title(), str(EXPORT_DIR))
-        if target:
-            self._run_entry_logic_export_to(Path(target))
+        self.open_decision_research()
 
     def _entry_logic_export_finished(self, export_dir: Path):
         self.last_entry_logic_dir = Path(export_dir)
@@ -1894,12 +2133,19 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.titleLabel.setText(self._tr("data_analysis"))
         self.btnRefresh.setText(self._tr("refresh"))
         self.tabs.setTabText(self.tabs.indexOf(self.performanceTab), self._tr("trading_performance"))
-        self.tabs.setTabText(self.tabs.indexOf(self.eventStudyTab), self._tr("event_study"))
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.decisionResearchTab),
+            self._tr("decision_research.title"),
+        )
+        self.decisionResearchWorkspace.retranslate_ui(self._language())
         self.tabs.setTabText(self.tabs.indexOf(self.consistencyTab), self._tr("strategy_consistency"))
         self.tabs.setTabText(self.tabs.indexOf(self.backtestTab), self._tr("backtest_research"))
         self.tabs.setTabText(self.tabs.indexOf(self.premiumTab), self._tr("usdt_premium"))
         self.tabs.setTabText(self.tabs.indexOf(self.aiTab), self._tr("ai_summary"))
-        self.tabs.setTabText(self.tabs.indexOf(self.researchTab), self._tr("research.pipeline"))
+        self.tabs.setTabText(
+            self.tabs.indexOf(self.researchTab),
+            self._tr("research.legacy_results"),
+        )
         self.tabs.setTabText(self.tabs.indexOf(self.timeSeriesTab), self._tr("time_series.workspace"))
         self.performanceHistogramTitle.setText(self._tr("performance.histogram.title"))
         self.performanceHistogramDefinition.setText(self._tr("performance.histogram.definition"))
@@ -1909,9 +2155,9 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.performanceHistogramPlot.setLabel(
             "left", self._tr("performance.histogram.y_axis")
         )
-        self.eventTabs.setTabText(self.eventTabs.indexOf(self.eventStudyTableTab), self._tr("event_study"))
-        self.eventTabs.setTabText(self.eventTabs.indexOf(self.datasetTab), self._tr("dataset"))
-        self.btnRunResearch.setText(self._tr("research.run"))
+        self.btnRunResearch.setText(
+            self._tr("decision_research.redirect.open")
+        )
         self.selectedLabelText.setText(self._tr("research.selected_label"))
         self.btnExportResearch.setText(self._tr("research.export"))
         self.btnOpenResearchFolder.setText(self._tr("research.open_folder"))
@@ -1974,6 +2220,428 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.aiText.setPlainText(self._tr("workspace.ai_message"))
         self.refresh()
 
+    def open_decision_research(self) -> None:
+        self.tabs.setCurrentWidget(self.decisionResearchTab)
+        mark_startup_stage("analysis_shell_visible", flush=True)
+        self._refresh_decision_research_context()
+
+    def _bind_decision_research_data(self) -> None:
+        workspace = self.decisionResearchWorkspace
+        workspace.auditRequested.connect(
+            self._inspect_decision_research_data
+        )
+        workspace.backfillRequested.connect(
+            self._start_decision_research_backfill
+        )
+        workspace.cancelRequested.connect(
+            self._cancel_decision_research_data_task
+        )
+        workspace.retryRequested.connect(
+            self._retry_decision_research_backfill
+        )
+        workspace.researchContextChanged.connect(
+            self._invalidate_decision_research_data
+        )
+        source_changed = getattr(
+            self.app_window,
+            "decisionResearchSourceChanged",
+            None,
+        )
+        if source_changed is not None:
+            source_changed.connect(self._refresh_decision_research_context)
+        symbol_box = getattr(self.app_window, "symbolBox", None)
+        if symbol_box is not None:
+            symbol_box.currentTextChanged.connect(
+                self._invalidate_decision_research_data
+            )
+        for date_control_name in ("startDate", "endDate"):
+            date_control = getattr(
+                self.app_window,
+                date_control_name,
+                None,
+            )
+            if date_control is not None:
+                date_control.dateChanged.connect(
+                    self._invalidate_decision_research_data
+                )
+        workspace.episodeCorrectionRequested.connect(
+            self._on_episode_correction_requested
+        )
+        workspace.snapshotPublishRequested.connect(
+            self._start_research_snapshot_publish
+        )
+        workspace.snapshotCancelRequested.connect(
+            self._cancel_research_snapshot_publish
+        )
+        workspace.snapshotVersionRequested.connect(
+            self._load_research_snapshot_version
+        )
+        workspace.snapshotDraftRequested.connect(
+            self._prepare_current_research_snapshot
+        )
+        if self.research_snapshot_controller is not None:
+            self.research_snapshot_controller.progress.connect(
+                workspace.researchSnapshotWorkspace.begin_publish
+            )
+            self.research_snapshot_controller.finished.connect(
+                self._on_research_snapshot_published
+            )
+            self.research_snapshot_controller.failed.connect(
+                workspace.researchSnapshotWorkspace.render_publish_error
+            )
+            self.research_snapshot_controller.cancelled.connect(
+                workspace.researchSnapshotWorkspace.render_publish_cancelled
+            )
+        controller = self._research_backfill_controller
+        if controller is None:
+            return
+        controller.inspected.connect(
+            self._on_decision_research_inspected
+        )
+        controller.progress.connect(
+            self._on_decision_research_backfill_progress
+        )
+        controller.finished.connect(
+            self._on_decision_research_backfill_finished
+        )
+        controller.auditFailed.connect(
+            self._on_decision_research_audit_failed
+        )
+        controller.auditCancelled.connect(
+            workspace.render_audit_cancelled
+        )
+        controller.failed.connect(
+            self._on_decision_research_backfill_failed
+        )
+        controller.cancelled.connect(
+            self._on_decision_research_backfill_cancelled
+        )
+
+    def prepare_research_snapshot(
+        self,
+        snapshot_input: ResearchSnapshotInput,
+    ) -> ResearchSnapshotDraft:
+        """Validate and display a dynamic draft supplied by research services."""
+
+        service = self.research_snapshot_service
+        if service is None:
+            raise RuntimeError("research snapshot storage is unavailable")
+        draft = service.build_draft(snapshot_input)
+        self._research_snapshot_input = snapshot_input
+        page = self.decisionResearchWorkspace.researchSnapshotWorkspace
+        page.render_draft(
+            content_hash=draft.content_hash,
+            summary_zh=snapshot_input.hypothesis_card.summary_zh,
+        )
+        published = self.app_window.storage.list_research_snapshots(
+            snapshot_input.versions.setup_version_id
+        )
+        page.render_published_versions(
+            (item.snapshot_id, item.created_at) for item in published
+        )
+        if published and all(
+            item.content_hash != draft.content_hash for item in published
+        ):
+            page.mark_new_evidence()
+        return draft
+
+    def _start_research_snapshot_publish(self) -> None:
+        controller = self.research_snapshot_controller
+        snapshot_input = self._research_snapshot_input
+        page = self.decisionResearchWorkspace.researchSnapshotWorkspace
+        if controller is None or snapshot_input is None:
+            page.render_publish_error(
+                self._tr("decision_research.snapshot.draft_unavailable")
+            )
+            return
+        request = ResearchSnapshotPublishRequest(
+            snapshot_input=snapshot_input,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        controller.start(request)
+        if controller.is_running:
+            page.begin_publish(
+                self._tr("decision_research.snapshot.preparing")
+            )
+
+    def _cancel_research_snapshot_publish(self) -> None:
+        controller = self.research_snapshot_controller
+        if controller is not None:
+            controller.cancel()
+
+    def _load_research_snapshot_version(self, snapshot_id: str) -> None:
+        controller = self.research_snapshot_controller
+        if controller is not None:
+            controller.load(snapshot_id)
+
+    def _on_research_snapshot_published(self, event) -> None:
+        page = self.decisionResearchWorkspace.researchSnapshotWorkspace
+        snapshot_input = self._research_snapshot_input
+        if event.publication is not None and snapshot_input is not None:
+            published = self.app_window.storage.list_research_snapshots(
+                snapshot_input.versions.setup_version_id
+            )
+            page.render_published_versions(
+                (item.snapshot_id, item.created_at) for item in published
+            )
+        page.render_published_snapshot(
+            snapshot_id=event.view.snapshot.snapshot_id,
+            report_markdown=event.view.report_markdown,
+        )
+
+    def _decision_research_request(self) -> ResearchRangeRequest | None:
+        symbol_box = getattr(self.app_window, "symbolBox", None)
+        start_edit = getattr(self.app_window, "startDate", None)
+        end_edit = getattr(self.app_window, "endDate", None)
+        if symbol_box is None or start_edit is None or end_edit is None:
+            return None
+        symbol = str(symbol_box.currentText() or "").strip().upper()
+        start_date = start_edit.date()
+        end_date = end_edit.date()
+        start_bjt = datetime(
+            start_date.year(),
+            start_date.month(),
+            start_date.day(),
+            tzinfo=BJT,
+        )
+        end_bjt = datetime(
+            end_date.year(),
+            end_date.month(),
+            end_date.day(),
+            23,
+            59,
+            59,
+            999000,
+            tzinfo=BJT,
+        )
+        return ResearchRangeRequest(
+            symbol=symbol,
+            timeframes=self.decisionResearchWorkspace.state.timeframes,
+            start_time_utc_ms=int(
+                start_bjt.astimezone(timezone.utc).timestamp() * 1_000
+            ),
+            end_time_utc_ms=int(
+                end_bjt.astimezone(timezone.utc).timestamp() * 1_000
+            ),
+            as_of_utc_ms=int(
+                datetime.now(timezone.utc).timestamp() * 1_000
+            ),
+        )
+
+    def _decision_research_context_request(
+        self,
+    ) -> DecisionResearchRequest | None:
+        range_request = self._decision_research_request()
+        setup_version_id = self.decisionResearchWorkspace.state.setup_version
+        if range_request is None or not setup_version_id:
+            return None
+        return DecisionResearchRequest(
+            session_id=str(getattr(self.app_window, "session_id", "") or ""),
+            setup_version_id=setup_version_id,
+            mode=self.decisionResearchWorkspace.state.primary_tab,
+            symbol=range_request.symbol,
+            timeframes=range_request.timeframes,
+            start_time_utc_ms=range_request.start_time_utc_ms,
+            end_time_utc_ms=range_request.end_time_utc_ms,
+        )
+
+    def _refresh_decision_research_context(self) -> None:
+        coordinator = self.decision_research_coordinator
+        request = self._decision_research_context_request()
+        workspace = self.decisionResearchWorkspace
+        if coordinator is None or request is None:
+            workspace.clear_episode_audit()
+            return
+        try:
+            context = coordinator.open(request)
+        except (KeyError, TypeError, ValueError):
+            logger.exception("Decision research context composition failed")
+            workspace.clear_episode_audit()
+            return
+        if not coordinator.is_current(context.revision):
+            return
+        if context.episode_summary is None:
+            self._decision_research_contexts[request.mode] = context
+            workspace.clear_episode_audit()
+            return
+        self._decision_research_contexts[request.mode] = context
+        workspace.render_episode_audit(context.episode_summary)
+
+    def _prepare_current_research_snapshot(self) -> None:
+        mode = self.decisionResearchWorkspace.state.primary_tab
+        context = self._decision_research_contexts.get(mode)
+        assembler = self.research_snapshot_input_assembler
+        if context is None or assembler is None:
+            return
+        try:
+            snapshot_input = assembler.assemble(
+                context,
+                self.decisionResearchWorkspace.state.active_mode,
+                completeness_report=(
+                    self.decisionResearchWorkspace._completeness_report
+                ),
+            )
+            self.prepare_research_snapshot(snapshot_input)
+        except (KeyError, TypeError, ValueError):
+            logger.exception("Research snapshot draft composition failed")
+
+    def _on_episode_correction_requested(self, grouping_version_id: str) -> None:
+        mode = self.decisionResearchWorkspace.state.primary_tab
+        context = self._decision_research_contexts.get(mode)
+        coordinator = self.decision_research_coordinator
+        if (
+            coordinator is None
+            or context is None
+            or context.grouping_version_id != grouping_version_id
+            or context.episode_summary is None
+        ):
+            return
+        try:
+            request = request_episode_correction(
+                self,
+                context.episode_summary,
+                self._tr,
+            )
+            if request is None:
+                return
+            if isinstance(request, EpisodeMergeRequest):
+                corrected = coordinator.merge_episodes(
+                    context,
+                    request.episode_ids,
+                    actor="desktop-user",
+                    reason=request.reason,
+                )
+            elif isinstance(request, EpisodeSplitRequest):
+                corrected = coordinator.split_episode(
+                    context,
+                    request.episode_id,
+                    request.sample_groups,
+                    actor="desktop-user",
+                    reason=request.reason,
+                )
+            else:  # pragma: no cover - exhaustive immutable command union
+                raise TypeError("unsupported episode correction request")
+        except (KeyError, TypeError, ValueError) as exc:
+            QtWidgets.QMessageBox.warning(
+                self,
+                self._tr("decision_research.episode.correction.failed_title"),
+                self._tr("decision_research.episode.correction.failed").format(
+                    error=str(exc),
+                ),
+            )
+            return
+        if corrected is None:
+            return
+        self._decision_research_contexts[mode] = corrected
+        self.decisionResearchWorkspace.render_episode_audit(
+            corrected.episode_summary
+        )
+        QtWidgets.QMessageBox.information(
+            self,
+            self._tr("decision_research.episode.correction.done_title"),
+            self._tr("decision_research.episode.correction.done"),
+        )
+
+    def _inspect_decision_research_data(self) -> None:
+        self._refresh_decision_research_context()
+        controller = self._research_backfill_controller
+        request = self._decision_research_request()
+        if controller is None:
+            self.decisionResearchWorkspace.render_audit_rejection(
+                self._tr(
+                    "decision_research.data.audit_controller_unavailable"
+                )
+            )
+            return
+        if request is None:
+            self.decisionResearchWorkspace.render_audit_rejection(
+                self._tr("decision_research.data.audit_context_invalid")
+            )
+            return
+        if controller.inspect(request):
+            self.decisionResearchWorkspace.begin_audit()
+            return
+        lifecycle = getattr(self.app_window, "task_lifecycle", None)
+        if bool(getattr(lifecycle, "shutdown_in_progress", False)):
+            key = "decision_research.data.audit_shutting_down"
+        elif controller.is_running or tuple(
+            getattr(lifecycle, "active_tasks", ())
+        ):
+            key = "decision_research.data.audit_busy"
+        else:
+            key = "decision_research.data.audit_start_failed"
+        self.decisionResearchWorkspace.render_audit_rejection(
+            self._tr(key)
+        )
+
+    def _start_decision_research_backfill(self) -> None:
+        controller = self._research_backfill_controller
+        request = self._decision_research_request()
+        if controller is None or request is None:
+            return
+        if controller.start(request):
+            self.decisionResearchWorkspace.begin_backfill()
+
+    def _cancel_decision_research_data_task(self) -> None:
+        controller = self._research_backfill_controller
+        if controller is not None:
+            controller.cancel()
+
+    def _retry_decision_research_backfill(self) -> None:
+        controller = self._research_backfill_controller
+        if controller is not None and controller.retry():
+            self.decisionResearchWorkspace.begin_backfill()
+
+    def _invalidate_decision_research_data(self) -> None:
+        self._refresh_decision_research_context()
+        self.decisionResearchWorkspace.invalidate_completeness()
+        controller = self._research_backfill_controller
+        if controller is not None:
+            controller.invalidate()
+
+    def _on_decision_research_backfill_failed(self, event) -> None:
+        if event.result is not None:
+            self.decisionResearchWorkspace.render_completeness(
+                event.result.completeness
+            )
+        self.decisionResearchWorkspace.render_backfill_failure(
+            event.message
+        )
+
+    @QtCore.Slot(object)
+    def _on_decision_research_inspected(self, event) -> None:
+        self.decisionResearchWorkspace.render_audit_result(event.report)
+
+    @QtCore.Slot(object)
+    def _on_decision_research_audit_failed(self, event) -> None:
+        logger.error(
+            "Decision research completeness audit failed: %s",
+            getattr(event, "message", event),
+        )
+        self.decisionResearchWorkspace.render_audit_rejection(
+            self._tr("decision_research.data.audit_failed")
+        )
+
+    @QtCore.Slot(object)
+    def _on_decision_research_backfill_progress(self, event) -> None:
+        self.decisionResearchWorkspace.render_backfill_progress(
+            event.progress
+        )
+
+    @QtCore.Slot(object)
+    def _on_decision_research_backfill_finished(self, event) -> None:
+        self.decisionResearchWorkspace.render_backfill_finished(
+            event.result
+        )
+
+    def _on_decision_research_backfill_cancelled(self, event) -> None:
+        result = getattr(event, "result", None)
+        if result is not None:
+            self.decisionResearchWorkspace.render_completeness(
+                result.completeness
+            )
+        self.decisionResearchWorkspace.render_backfill_cancelled()
+
     def refresh(self):
         session_id = getattr(self.app_window, "session_id", None)
         session_text = self._tr("workspace.session").format(session_id=session_id) if session_id else self._tr("no_session_data")
@@ -2004,6 +2672,42 @@ class AnalysisWorkspace(QtWidgets.QDialog):
     def shutdown(self) -> bool:
         """Release worker and pyqtgraph ownership only during app shutdown."""
 
+        candidate_controller = self.entry_candidate_controller
+        if (
+            candidate_controller is not None
+            and candidate_controller.shutdown() is False
+        ):
+            return False
+        exit_candidate_controller = self.exit_candidate_controller
+        if (
+            exit_candidate_controller is not None
+            and exit_candidate_controller.shutdown() is False
+        ):
+            return False
+        behavior_controller = self.entry_behavior_training_controller
+        if (
+            behavior_controller is not None
+            and behavior_controller.shutdown() is False
+        ):
+            return False
+        outcome_controller = self.entry_outcome_comparison_controller
+        if (
+            outcome_controller is not None
+            and outcome_controller.shutdown() is False
+        ):
+            return False
+        exit_outcome_controller = self.exit_outcome_comparison_controller
+        if (
+            exit_outcome_controller is not None
+            and exit_outcome_controller.shutdown() is False
+        ):
+            return False
+        snapshot_controller = self.research_snapshot_controller
+        if (
+            snapshot_controller is not None
+            and snapshot_controller.shutdown() is False
+        ):
+            return False
         controller = self.historical_performance_controller
         if controller is not None and controller.shutdown() is False:
             return False

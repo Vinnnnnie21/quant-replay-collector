@@ -158,6 +158,13 @@ def raise_trade_action_error(result: TradeActionResult) -> None:
     raise RuntimeError(result.message or "交易操作失败")
 
 
+def _notify_decision_research_source_changed(window) -> None:
+    signal = getattr(window, "decisionResearchSourceChanged", None)
+    emit = getattr(signal, "emit", None)
+    if callable(emit):
+        emit()
+
+
 def apply_open_trade_result(window, result: TradeActionResult) -> None:
     if not result.trade_id or not result.event_id:
         raise RuntimeError("开仓结果缺少交易ID或事件ID")
@@ -168,6 +175,7 @@ def apply_open_trade_result(window, result: TradeActionResult) -> None:
     window._sample_market_key = window._display_market_key or window._current_market_key()
     window._sample_cursor_bar_index = int(window.cursor)
     _render_state(window).mark_events_changed()
+    _notify_decision_research_source_changed(window)
 
 
 def undo_open_trade_result(window, result: TradeActionResult) -> None:
@@ -178,6 +186,7 @@ def undo_open_trade_result(window, result: TradeActionResult) -> None:
     window._trade_by_id.pop(result.trade_id, None)
     window._event_by_id.pop(result.event_id, None)
     _render_state(window).mark_events_changed()
+    _notify_decision_research_source_changed(window)
 
 
 def apply_close_trade_result(window, result: TradeActionResult, trade: dict[str, Any]) -> None:
@@ -189,6 +198,7 @@ def apply_close_trade_result(window, result: TradeActionResult, trade: dict[str,
     window._trade_by_id[trade["trade_id"]] = trade
     window._sample_cursor_bar_index = int(window.cursor)
     _render_state(window).mark_events_changed()
+    _notify_decision_research_source_changed(window)
 
 
 def undo_close_trade_result(window, result: TradeActionResult, trade: dict[str, Any]) -> None:
@@ -199,6 +209,7 @@ def undo_close_trade_result(window, result: TradeActionResult, trade: dict[str, 
     trade.update((result.undo_payload.original_trade if result.undo_payload else None) or {})
     window._trade_by_id[trade["trade_id"]] = trade
     _render_state(window).mark_events_changed()
+    _notify_decision_research_source_changed(window)
 
 
 def _bar_for_index(window, bar_index: int):

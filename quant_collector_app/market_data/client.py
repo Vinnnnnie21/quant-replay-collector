@@ -2,9 +2,7 @@ from __future__ import annotations
 
 import datetime as dt
 import time
-from typing import Callable
-
-import requests
+from typing import Any, Callable
 
 try:
     from app_config import BINANCE_FAPI
@@ -14,6 +12,8 @@ from .types import BINANCE_RAW_COLUMNS, DataLoadCancelled, interval_to_ms, to_ap
 
 
 def format_request_error(error: Exception) -> str:
+    import requests
+
     if isinstance(error, requests.exceptions.Timeout):
         return "网络请求超时，请检查网络或稍后重试。"
     if isinstance(error, requests.exceptions.ConnectionError):
@@ -36,13 +36,17 @@ class MarketDataClient:
 
     def __init__(
         self,
-        session: requests.Session | None = None,
+        session: Any | None = None,
         timeout: tuple[float, float] = (5.0, 20.0),
         max_retries: int = 3,
         backoff_seconds: float = 0.5,
         sleep: Callable[[float], None] = time.sleep,
     ):
-        self.session = session or requests.Session()
+        if session is None:
+            import requests
+
+            session = requests.Session()
+        self.session = session
         self.timeout = timeout
         self.max_retries = max(0, int(max_retries))
         self.backoff_seconds = max(0.0, float(backoff_seconds))
@@ -56,6 +60,8 @@ class MarketDataClient:
             self.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
 
     def _request_batch(self, params: dict, cancelled: Callable[[], bool]) -> list:
+        import requests
+
         for attempt in range(self.max_retries + 1):
             if cancelled():
                 raise DataLoadCancelled("Loading cancelled.")

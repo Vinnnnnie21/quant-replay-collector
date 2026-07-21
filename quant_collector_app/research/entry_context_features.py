@@ -7,6 +7,11 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+try:
+    from market_data.types import interval_to_ms
+except ImportError:  # pragma: no cover - package import path
+    from ..market_data.types import interval_to_ms
+
 from .data_versioning import attach_kline_data_version
 from .kline_quality import validate_research_klines
 
@@ -18,6 +23,8 @@ CURRENT_BAR_CLOSE = "CURRENT_BAR_CLOSE"
 NEXT_BAR_CONFIRMATION = "NEXT_BAR_CONFIRMATION"
 DEFAULT_FEATURE_VERSION = "entry_context_features_v1"
 DEFAULT_DECISION_TIMING_POLICY = "setup_bar_until_confirmation_allowed"
+ENTRY_STRUCTURAL_FEATURE_VERSION = "entry-structural-features-v1"
+ENTRY_STRUCTURAL_HISTORY_BARS = 61
 POLICY_CURRENT_BAR_CLOSE = "current_bar_close"
 POLICY_CONFIRMATION_BAR_INCLUDED = "confirmation_bar_included"
 POLICY_SETUP_BAR_ONLY = "setup_bar_only"
@@ -76,6 +83,615 @@ FEATURE_COLUMNS = [
     "insufficient_history",
 ]
 DEFAULT_FEATURE_COLS = tuple(column for column in FEATURE_COLUMNS if column not in FEATURE_METADATA_COLUMNS)
+
+
+@dataclass(frozen=True, slots=True)
+class StructuralFeatureValue:
+    name: str
+    values: tuple[float, ...]
+    unavailable_reason: str | None = None
+
+    @property
+    def available(self) -> bool:
+        return self.unavailable_reason is None
+
+
+@dataclass(frozen=True, slots=True)
+class StructuralFeatureGroup:
+    name: str
+    features: tuple[StructuralFeatureValue, ...]
+
+    def feature(self, name: str) -> StructuralFeatureValue:
+        return next(item for item in self.features if item.name == name)
+
+
+@dataclass(frozen=True, slots=True)
+class EntryStructuralFeatureSnapshot:
+    symbol: str
+    interval: str
+    cutoff_time_utc_ms: int
+    feature_version: str
+    groups: tuple[StructuralFeatureGroup, ...]
+
+    def group(self, name: str) -> StructuralFeatureGroup:
+        return next(item for item in self.groups if item.name == name)
+
+
+def build_entry_structural_feature_snapshot(
+    klines: pd.DataFrame,
+    *,
+    symbol: str,
+    interval: str,
+    cutoff_time_utc_ms: int,
+) -> EntryStructuralFeatureSnapshot:
+    """Build the canonical v1.6 structural feature snapshot at a closed cutoff."""
+    required = [
+        "open_time_utc_ms",
+        "close_time_utc_ms",
+        "open",
+        "high",
+        "low",
+        "close",
+    ]
+    if not isinstance(klines, pd.DataFrame):
+        raise TypeError("klines must be a pandas DataFrame")
+    _validate_columns(klines, required, "structural kline")
+    cutoff = int(cutoff_time_utc_ms)
+    ordered = klines.copy()
+    ordered["_close_time"] = pd.to_numeric(
+        ordered["close_time_utc_ms"], errors="coerce"
+    )
+    ordered = ordered[ordered["_close_time"] <= cutoff]
+    ordered = ordered.sort_values("open_time_utc_ms", kind="stable").tail(
+        ENTRY_STRUCTURAL_HISTORY_BARS
+    )
+    open_times = pd.to_numeric(ordered["open_time_utc_ms"], errors="coerce")
+    expected_step = _structural_interval_ms(str(interval))
+    ordered["_continuous_from_previous"] = (
+        open_times.diff().eq(expected_step) & open_times.notna()
+    )
+    atrs = _structural_atrs(ordered, (5, 20, 60))
+    path_features = tuple(
+        _structural_path_feature(
+            ordered,
+            window,
+            anchors,
+            atr=atrs[window],
+        )
+        for window, anchors in ((5, 5), (20, 10), (60, 15))
+    )
+    candle_features = _structural_candle_features(
+        ordered,
+        atr20=atrs[20],
+    )
+    trend_features = _structural_trend_features(ordered, atrs=atrs)
+    activity_features = _structural_activity_features(ordered)
+    return EntryStructuralFeatureSnapshot(
+        symbol=str(symbol).upper(),
+        interval=str(interval),
+        cutoff_time_utc_ms=cutoff,
+        feature_version=ENTRY_STRUCTURAL_FEATURE_VERSION,
+        groups=(
+            StructuralFeatureGroup("price_path", path_features),
+            StructuralFeatureGroup("candle_shape", candle_features),
+            StructuralFeatureGroup("trend_volatility", trend_features),
+            StructuralFeatureGroup("trading_activity", activity_features),
+        ),
+    )
+
+
+def _structural_activity_features(
+    ordered: pd.DataFrame,
+) -> tuple[StructuralFeatureValue, ...]:
+    names = (
+        "quote_activity_20",
+        "quote_activity_60",
+        "trade_count_activity_20",
+        "trade_count_activity_60",
+        "average_trade_size_activity_20",
+        "aggressor_current",
+        "aggressor_5",
+        "aggressor_20",
+        "aggressor_delta",
+    )
+    required = {
+        "quote_volume",
+        "trade_count",
+        "taker_buy_quote_volume",
+    }
+    if not required.issubset(ordered.columns):
+        return tuple(
+            StructuralFeatureValue(name, (), "ancillary_field_missing")
+            for name in names
+        )
+
+    def positive_values(column: str, frame: pd.DataFrame) -> tuple[float, ...] | None:
+        values: list[float] = []
+        for raw_value in frame[column]:
+            value = _finite(raw_value)
+            if value is None or value <= 0:
+                return None
+            values.append(value)
+        return tuple(values)
+
+    def relative_activity(column: str, window: int) -> float | None:
+        if not _structural_window_is_contiguous(ordered, window + 1):
+            return None
+        current_values = positive_values(column, ordered.tail(1))
+        prior_values = positive_values(
+            column,
+            ordered.iloc[:-1].tail(window),
+        )
+        if current_values is None or prior_values is None or len(prior_values) != window:
+            return None
+        median = float(np.median(np.asarray(prior_values, dtype=float)))
+        return math.log(current_values[0] / median) if median > 0 else None
+
+    def positive_reason(column: str, window: int) -> str:
+        label = "trade_count" if column == "trade_count" else "quote_volume"
+        if len(ordered) >= window + 1 and not _structural_window_is_contiguous(
+            ordered,
+            window + 1,
+        ):
+            return "missing_bar_continuity"
+        frame = ordered.tail(window + 1)
+        values = tuple(_finite(value) for value in frame[column])
+        if len(values) < window + 1 or any(value is None for value in values):
+            return f"missing_{label}"
+        if any(value == 0 for value in values):
+            return f"zero_{label}"
+        if any(value is not None and value < 0 for value in values):
+            return f"negative_{label}"
+        return f"invalid_{label}"
+
+    average_size = None
+    if _structural_window_is_contiguous(ordered, 21):
+        current_quote = positive_values("quote_volume", ordered.tail(1))
+        current_count = positive_values("trade_count", ordered.tail(1))
+        prior_quote = positive_values("quote_volume", ordered.iloc[:-1].tail(20))
+        prior_count = positive_values("trade_count", ordered.iloc[:-1].tail(20))
+        if (
+            current_quote is not None
+            and current_count is not None
+            and prior_quote is not None
+            and prior_count is not None
+            and len(prior_quote) == len(prior_count) == 20
+        ):
+            current_size = current_quote[0] / current_count[0]
+            prior_sizes = tuple(
+                quote / count
+                for quote, count in zip(
+                    prior_quote,
+                    prior_count,
+                    strict=True,
+                )
+            )
+            median_size = float(
+                np.median(np.asarray(prior_sizes, dtype=float))
+            )
+            if current_size > 0 and median_size > 0:
+                average_size = math.log(current_size / median_size)
+
+    def aggressor_values(window: int) -> tuple[float, ...] | None:
+        frame = ordered.tail(window)
+        if not _structural_window_is_contiguous(ordered, window):
+            return None
+        values: list[float] = []
+        for _, row in frame.iterrows():
+            quote = _finite(row["quote_volume"])
+            taker_buy = _finite(row["taker_buy_quote_volume"])
+            if (
+                quote is None
+                or quote <= 0
+                or taker_buy is None
+                or taker_buy < 0
+                or taker_buy > quote
+            ):
+                return None
+            values.append(2.0 * taker_buy / quote - 1.0)
+        return tuple(values)
+
+    current_aggressor = aggressor_values(1)
+    last_five = aggressor_values(5)
+    last_twenty = aggressor_values(20)
+    aggressor_current = current_aggressor[0] if current_aggressor else None
+    aggressor_5 = math.fsum(last_five) / 5 if last_five else None
+    aggressor_20 = math.fsum(last_twenty) / 20 if last_twenty else None
+    aggressor_delta = (
+        aggressor_5 - aggressor_20
+        if aggressor_5 is not None and aggressor_20 is not None
+        else None
+    )
+    return (
+        _structural_scalar("quote_activity_20", relative_activity("quote_volume", 20), positive_reason("quote_volume", 20)),
+        _structural_scalar("quote_activity_60", relative_activity("quote_volume", 60), positive_reason("quote_volume", 60)),
+        _structural_scalar("trade_count_activity_20", relative_activity("trade_count", 20), positive_reason("trade_count", 20)),
+        _structural_scalar("trade_count_activity_60", relative_activity("trade_count", 60), positive_reason("trade_count", 60)),
+        _structural_scalar(
+            "average_trade_size_activity_20",
+            average_size,
+            (
+                positive_reason("trade_count", 20)
+                if positive_values("trade_count", ordered.tail(21)) is None
+                else positive_reason("quote_volume", 20)
+            ),
+        ),
+        _structural_scalar("aggressor_current", aggressor_current, "nonpositive_or_missing_quote_volume"),
+        _structural_scalar("aggressor_5", aggressor_5, "nonpositive_or_missing_quote_volume"),
+        _structural_scalar("aggressor_20", aggressor_20, "nonpositive_or_missing_quote_volume"),
+        _structural_scalar("aggressor_delta", aggressor_delta, "nonpositive_or_missing_quote_volume"),
+    )
+
+
+def _structural_trend_features(
+    ordered: pd.DataFrame,
+    *,
+    atrs: Mapping[int, float | None],
+) -> tuple[StructuralFeatureValue, ...]:
+    raw_closes = tuple(_finite(value) for value in ordered["close"])
+    closes = (
+        tuple(float(value) for value in raw_closes if value is not None)
+        if all(value is not None and value > 0 for value in raw_closes)
+        else ()
+    )
+    price_history_valid = len(closes) == len(raw_closes)
+
+    def efficiency(window: int) -> float | None:
+        if (
+            len(closes) < window + 1
+            or not price_history_valid
+            or not _structural_window_is_contiguous(ordered, window + 1)
+        ):
+            return None
+        values = closes[-(window + 1):]
+        numerator = values[-1] - values[0]
+        denominator = math.fsum(
+            abs(values[index] - values[index - 1])
+            for index in range(1, len(values))
+        )
+        return numerator / denominator if denominator > 0 else None
+
+    def adjusted_slope(window: int) -> float | None:
+        if (
+            len(closes) < window
+            or not price_history_valid
+            or not _structural_window_is_contiguous(ordered, window)
+        ):
+            return None
+        values = np.asarray(closes[-window:], dtype=float)
+        log_values = np.log(values)
+        slope = float(
+            np.polyfit(np.arange(window, dtype=float), log_values, 1)[0]
+        )
+        sigma = float(np.std(np.diff(log_values), ddof=0))
+        if not math.isfinite(sigma) or math.isclose(
+            sigma,
+            0.0,
+            rel_tol=0.0,
+            abs_tol=1e-15,
+        ):
+            return None
+        value = slope / sigma
+        return value if math.isfinite(value) else None
+
+    def ema_distance(window: int, atr20: float | None) -> float | None:
+        if (
+            len(closes) < window
+            or not price_history_valid
+            or atr20 is None
+            or not _structural_window_is_contiguous(ordered, len(ordered))
+        ):
+            return None
+        ema = math.fsum(closes[:window]) / window
+        alpha = 2.0 / (window + 1.0)
+        for value in closes[window:]:
+            ema = alpha * value + (1.0 - alpha) * ema
+        return (closes[-1] - ema) / atr20
+
+    atr5 = atrs[5]
+    atr20 = atrs[20]
+    atr60 = atrs[60]
+    current_close = closes[-1] if closes else None
+    volatility_level = (
+        atr20 / current_close
+        if atr20 is not None
+        and current_close is not None
+        and current_close > 0
+        else None
+    )
+    volatility_shock = (
+        atr5 / atr20
+        if atr5 is not None and atr20 is not None
+        else None
+    )
+    volatility_regime = (
+        atr20 / atr60
+        if atr20 is not None and atr60 is not None
+        else None
+    )
+    return (
+        _structural_scalar("direction_efficiency_20", efficiency(20), "zero_or_invalid_direction_path"),
+        _structural_scalar("direction_efficiency_60", efficiency(60), "zero_or_invalid_direction_path"),
+        _structural_scalar("adjusted_slope_20", adjusted_slope(20), "zero_or_invalid_return_volatility"),
+        _structural_scalar("adjusted_slope_60", adjusted_slope(60), "zero_or_invalid_return_volatility"),
+        _structural_scalar("ema_distance_20", ema_distance(20, atr20), "atr_or_price_unavailable"),
+        _structural_scalar("ema_distance_60", ema_distance(60, atr20), "atr_or_price_unavailable"),
+        _structural_scalar("volatility_level", volatility_level, "atr_or_price_unavailable"),
+        _structural_scalar("volatility_shock", volatility_shock, "atr_unavailable"),
+        _structural_scalar("volatility_regime", volatility_regime, "atr_unavailable"),
+    )
+
+
+def _structural_candle_features(
+    ordered: pd.DataFrame,
+    *,
+    atr20: float | None,
+) -> tuple[StructuralFeatureValue, ...]:
+    names = (
+        "body_direction",
+        "upper_wick_ratio",
+        "lower_wick_ratio",
+        "amplitude_atr_20",
+        "bullish_ratio_5",
+        "body_net_5",
+        "max_upper_wick_5",
+        "max_lower_wick_5",
+        "range_position_20",
+        "range_position_60",
+    )
+    if ordered.empty:
+        return tuple(
+            StructuralFeatureValue(name, (), "insufficient_history")
+            for name in names
+        )
+    current = ordered.iloc[-1]
+    open_value, high, low, close = (
+        _finite(current[column])
+        for column in ("open", "high", "low", "close")
+    )
+    candle_range = (
+        high - low
+        if high is not None and low is not None and high >= low
+        else None
+    )
+    current_ohlc = (open_value, high, low, close)
+    if not _structural_ohlc_is_valid(current_ohlc):
+        shape_reason = "invalid_ohlc_bounds"
+    elif candle_range is None or candle_range <= 0:
+        shape_reason = "zero_or_invalid_range"
+    else:
+        shape_reason = None
+    if shape_reason is None:
+        assert open_value is not None and high is not None
+        assert low is not None and close is not None and candle_range is not None
+        body = (close - open_value) / candle_range
+        upper = (high - max(open_value, close)) / candle_range
+        lower = (min(open_value, close) - low) / candle_range
+    else:
+        body = upper = lower = None
+
+    amplitude = (
+        candle_range / atr20
+        if candle_range is not None and atr20 is not None
+        else None
+    )
+    last_five = ordered.tail(5)
+    five_complete = _structural_window_is_contiguous(ordered, 5)
+    five_ohlc = [
+        tuple(_finite(row[column]) for column in ("open", "high", "low", "close"))
+        for _, row in last_five.iterrows()
+    ]
+    five_valid = five_complete and all(
+        _structural_ohlc_is_valid(values)
+        for values in five_ohlc
+    )
+    typed_five_ohlc = (
+        tuple(
+            tuple(float(value) for value in values if value is not None)
+            for values in five_ohlc
+        )
+        if five_valid
+        else ()
+    )
+    bullish = (
+        math.fsum(
+            1.0 for values in typed_five_ohlc if values[3] > values[0]
+        )
+        / 5
+        if five_valid
+        else None
+    )
+    body_denominator = (
+        math.fsum(values[1] - values[2] for values in typed_five_ohlc)
+        if five_valid
+        else 0.0
+    )
+    body_net = (
+        math.fsum(values[3] - values[0] for values in typed_five_ohlc)
+        / body_denominator
+        if five_valid and body_denominator > 0
+        else None
+    )
+    wick_ratios: list[tuple[float, float]] = []
+    if five_valid:
+        for values in typed_five_ohlc:
+            item_open, item_high, item_low, item_close = values
+            item_range = item_high - item_low
+            if item_range <= 0:
+                wick_ratios = []
+                break
+            wick_ratios.append(
+                (
+                    (item_high - max(item_open, item_close)) / item_range,
+                    (min(item_open, item_close) - item_low) / item_range,
+                )
+            )
+
+    def range_position(window: int) -> float | None:
+        frame = ordered.tail(window)
+        if (
+            len(frame) < window
+            or close is None
+            or not _structural_window_is_contiguous(ordered, window)
+        ):
+            return None
+        highs = tuple(_finite(value) for value in frame["high"])
+        lows = tuple(_finite(value) for value in frame["low"])
+        if any(value is None for value in (*highs, *lows)):
+            return None
+        high_values = tuple(float(value) for value in highs if value is not None)
+        low_values = tuple(float(value) for value in lows if value is not None)
+        width = max(high_values) - min(low_values)
+        return (close - min(low_values)) / width if width > 0 else None
+
+    return (
+        _structural_scalar("body_direction", body, shape_reason),
+        _structural_scalar("upper_wick_ratio", upper, shape_reason),
+        _structural_scalar("lower_wick_ratio", lower, shape_reason),
+        _structural_scalar("amplitude_atr_20", amplitude, "atr_unavailable"),
+        _structural_scalar("bullish_ratio_5", bullish, "insufficient_or_invalid_5_bar_window"),
+        _structural_scalar("body_net_5", body_net, "zero_or_invalid_5_bar_range"),
+        _structural_scalar(
+            "max_upper_wick_5",
+            max((item[0] for item in wick_ratios), default=None),
+            "zero_or_invalid_5_bar_range",
+        ),
+        _structural_scalar(
+            "max_lower_wick_5",
+            max((item[1] for item in wick_ratios), default=None),
+            "zero_or_invalid_5_bar_range",
+        ),
+        _structural_scalar("range_position_20", range_position(20), "zero_or_invalid_20_bar_range"),
+        _structural_scalar("range_position_60", range_position(60), "zero_or_invalid_60_bar_range"),
+    )
+
+
+def _structural_scalar(
+    name: str,
+    value: float | None,
+    unavailable_reason: str | None,
+) -> StructuralFeatureValue:
+    if value is None or not math.isfinite(value):
+        return StructuralFeatureValue(
+            name,
+            (),
+            unavailable_reason or "non_finite_value",
+        )
+    return StructuralFeatureValue(name, (float(value),))
+
+
+def _structural_path_feature(
+    ordered: pd.DataFrame,
+    window: int,
+    anchor_count: int,
+    *,
+    atr: float | None,
+) -> StructuralFeatureValue:
+    name = f"path_{window}"
+    if len(ordered) < window + 1:
+        return StructuralFeatureValue(name, (), "insufficient_history")
+    if not _structural_window_is_contiguous(ordered, window + 1):
+        return StructuralFeatureValue(name, (), "missing_bar_continuity")
+    window_frame = ordered.tail(window)
+    closes = tuple(_finite(value) for value in window_frame["close"])
+    if (
+        atr is None
+        or any(value is None or value <= 0 for value in closes)
+        or closes[-1] is None
+    ):
+        return StructuralFeatureValue(name, (), "atr_or_price_unavailable")
+    close_values = tuple(float(value) for value in closes if value is not None)
+    positions = tuple(
+        round(index * (window - 1) / (anchor_count - 1))
+        for index in range(anchor_count)
+    )
+    first = close_values[positions[0]]
+    last = close_values[-1]
+    denominator = atr / last
+    values = tuple(
+        math.log(close_values[position] / first) / denominator
+        for position in positions
+    )
+    return StructuralFeatureValue(name, values)
+
+
+def _structural_atrs(
+    ordered: pd.DataFrame,
+    windows: tuple[int, ...],
+) -> dict[int, float | None]:
+    results = {window: None for window in windows}
+    if len(ordered) < 2:
+        return results
+    values = {
+        column: pd.to_numeric(ordered[column], errors="coerce").to_numpy(
+            dtype=float
+        )
+        for column in ("open", "high", "low", "close")
+    }
+    open_values = values["open"]
+    high_values = values["high"]
+    low_values = values["low"]
+    close_values = values["close"]
+    current_ohlc_valid = (
+        np.isfinite(open_values[1:])
+        & np.isfinite(high_values[1:])
+        & np.isfinite(low_values[1:])
+        & np.isfinite(close_values[1:])
+        & (open_values[1:] > 0)
+        & (high_values[1:] > 0)
+        & (low_values[1:] > 0)
+        & (close_values[1:] > 0)
+        & (high_values[1:] >= np.maximum(open_values[1:], close_values[1:]))
+        & (low_values[1:] <= np.minimum(open_values[1:], close_values[1:]))
+    )
+    previous_close_valid = np.isfinite(close_values[:-1]) & (
+        close_values[:-1] > 0
+    )
+    valid_ranges = current_ohlc_valid & previous_close_valid
+    true_ranges = np.maximum.reduce(
+        (
+            high_values[1:] - low_values[1:],
+            np.abs(high_values[1:] - close_values[:-1]),
+            np.abs(low_values[1:] - close_values[:-1]),
+        )
+    )
+    for window in windows:
+        if not _structural_window_is_contiguous(ordered, window + 1):
+            continue
+        tail_valid = valid_ranges[-window:]
+        if len(tail_valid) != window or not bool(tail_valid.all()):
+            continue
+        value = math.fsum(true_ranges[-window:].tolist()) / window
+        if math.isfinite(value) and value > 0:
+            results[window] = value
+    return results
+
+
+def _structural_window_is_contiguous(
+    ordered: pd.DataFrame,
+    bars: int,
+) -> bool:
+    if bars < 1 or len(ordered) < bars:
+        return False
+    if bars == 1:
+        return True
+    flags = ordered.tail(bars)["_continuous_from_previous"]
+    return bool(flags.iloc[1:].all())
+
+
+def _structural_ohlc_is_valid(
+    values: tuple[float | None, float | None, float | None, float | None],
+) -> bool:
+    open_value, high, low, close = values
+    if any(value is None or value <= 0 for value in values):
+        return False
+    assert open_value is not None and high is not None
+    assert low is not None and close is not None
+    return high >= max(open_value, close) and low <= min(open_value, close)
+
+
+def _structural_interval_ms(interval: str) -> int:
+    return interval_to_ms(interval)
 
 
 @dataclass(frozen=True)
@@ -655,10 +1271,16 @@ def _finite(value: Any) -> float | None:
 
 
 __all__ = [
+    "ENTRY_STRUCTURAL_FEATURE_VERSION",
+    "ENTRY_STRUCTURAL_HISTORY_BARS",
+    "EntryStructuralFeatureSnapshot",
     "FEATURE_COLUMNS",
     "FeatureQualityReport",
     "FeatureSpec",
+    "StructuralFeatureGroup",
+    "StructuralFeatureValue",
     "build_entry_context_features",
+    "build_entry_structural_feature_snapshot",
     "build_feature_quality_report",
     "_resolve_feature_cutoff_bar",
     "validate_no_forbidden_context_fields",
