@@ -37,12 +37,12 @@
 
 ## 正式包
 
-- [x] `quant_collector_app/build_windows.bat` 从干净提交 `21d910e` 构建成功。
+- [x] `quant_collector_app/build_windows.bat` 从干净提交 `6ec2083` 构建成功。
 - [x] 非项目目录、带空格目录和中文目录原生启动—关闭通过。
 - [x] 临时 schema 19 数据库副本启动通过，源数据库 SHA-256 不变。
 - [x] 数据分析、开仓研究、平仓研究和版本报告可打开。
 - [x] manifest 标记原生启动通过并覆盖 2,040 个正式文件。
-- [x] `QRC-v1.6.0-Windows-x64.zip` 原子生成：144,809,840 字节，SHA-256 `8b87bdcf2d52e04489537b9f7e5b80060d6eccd44ef5d59aa8376cfe66b94929`。
+- [x] `QRC-v1.6.0-Windows-x64.zip` 原子生成：144,810,200 字节，SHA-256 `1ba739a75fb5433767d415f5104fe3e129077d8702de76d871aa99d6a4e1d3cd`。
 
 ## 发布
 
