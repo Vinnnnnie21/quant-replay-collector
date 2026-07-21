@@ -87,6 +87,13 @@ def test_shortcut_script_is_parameterized_and_has_no_developer_user_path():
     assert "GetFolderPath" in source
 
 
+def test_shortcut_script_hashing_does_not_depend_on_get_file_hash_cmdlet():
+    source = SCRIPT.read_text(encoding="utf-8")
+
+    assert "Get-FileHash" not in source
+    assert "System.Security.Cryptography.SHA256" in source
+
+
 def test_shortcut_script_builds_a_temporary_link_before_atomic_replace():
     source = SCRIPT.read_text(encoding="utf-8")
 

@@ -31,9 +31,9 @@
     "chinese_path_schema19_seconds": 4.621
   },
   "verification": {
-    "default_pytest_passed": 1745,
+    "default_pytest_passed": 1746,
     "default_pytest_deselected": 10,
-    "default_pytest_seconds": 257.59,
+    "default_pytest_seconds": 267.04,
     "performance_pytest_passed": 8,
     "performance_pytest_deselected": 1745,
     "performance_pytest_seconds": 328.41,

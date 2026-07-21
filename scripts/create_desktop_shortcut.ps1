@@ -24,6 +24,20 @@ function Get-AbsolutePath {
     return [IO.Path]::GetFullPath((Join-Path (Get-Location) $Path))
 }
 
+function Get-Sha256Hex {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        $bytes = $algorithm.ComputeHash($stream)
+        return ([BitConverter]::ToString($bytes)).Replace("-", "").ToLowerInvariant()
+    } finally {
+        $stream.Dispose()
+        $algorithm.Dispose()
+    }
+}
+
 function Get-ShortcutFileName {
     param([Parameter(Mandatory = $true)][string]$Name)
 
@@ -75,7 +89,7 @@ $manifestTarget = Get-AbsolutePath (Join-Path ([IO.Path]::GetDirectoryName($reso
 if (-not $manifestTarget.Equals($resolvedTarget, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Release manifest entrypoint does not match target: $manifestTarget"
 }
-$actualTargetHash = (Get-FileHash -LiteralPath $resolvedTarget -Algorithm SHA256).Hash.ToLowerInvariant()
+$actualTargetHash = Get-Sha256Hex -Path $resolvedTarget
 $expectedTargetHash = [string]$manifest.entrypoint_sha256
 if (-not $actualTargetHash.Equals($expectedTargetHash, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Release target hash does not match the manifest. Refusing to replace the shortcut."
