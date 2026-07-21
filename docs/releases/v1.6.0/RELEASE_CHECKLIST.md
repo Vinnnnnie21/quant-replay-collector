@@ -42,7 +42,7 @@
 - [x] 临时 schema 19 数据库副本启动通过，源数据库 SHA-256 不变。
 - [x] 数据分析、开仓研究、平仓研究和版本报告可打开。
 - [x] manifest 标记原生启动通过并覆盖 2,040 个正式文件。
-- [x] `QRC-v1.6.0-Windows-x64.zip` 原子生成：144,810,200 字节，SHA-256 `1ba739a75fb5433767d415f5104fe3e129077d8702de76d871aa99d6a4e1d3cd`。
+- [x] `QRC-v1.6.0-Windows-x64.zip` 原子生成：144,810,796 字节，SHA-256 `b911e58d5d5f8e30b39c35ee3b281bf8adaa3437af9996715b4796b9d64af9c4`。
 
 ## 发布
 
@@ -51,4 +51,4 @@
 - [ ] GitHub Release 不是 draft，也不是 prerelease。
 - [ ] 远端资产 SHA-256 与本地一致。
 - [ ] README、教程和发布说明链接可访问。
-- [x] 桌面快捷方式 dry-run、原子更新和实际启动—正常关闭验证完成；目标为 `D:\Trading\quant_collector_app\dist\QRC\QRC.exe`，旧 v1.5.2 EXE 保留。
+- [x] 桌面快捷方式 dry-run、原子更新和实际启动—正常关闭验证完成；目标为 `D:\Trading\quant_collector_app\dist\QRC-v1.6.0\QRC.exe`，旧 `dist\QRC` 包和数据库保留。

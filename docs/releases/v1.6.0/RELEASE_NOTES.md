@@ -24,8 +24,8 @@ v1.6.0 把交易回放中的主观开仓、平仓行为接入统一的“决策�
 - Windows 文件版本：`1.6.0.0`
 - 稳定任务栏标识：`QuantReplayCollector.QRC`
 - 打包方式：Windows x64 onedir
-- 包大小：144,810,200 字节（约 138.10 MiB）
-- SHA-256：`1ba739a75fb5433767d415f5104fe3e129077d8702de76d871aa99d6a4e1d3cd`
+- 包大小：144,810,796 字节（约 138.10 MiB）
+- SHA-256：`b911e58d5d5f8e30b39c35ee3b281bf8adaa3437af9996715b4796b9d64af9c4`
 
 EXE、窗口、Alt+Tab、任务栏和快捷方式使用同一个多尺寸品牌 ICO。不要从 onedir 中单独移走 `QRC.exe`。
 
