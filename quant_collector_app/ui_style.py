@@ -825,10 +825,15 @@ def build_app_qss(theme: dict | None = None) -> str:
             font-weight: 650;
         }}
 
+        QLabel[role="performanceLabel"] {{
+            color: {t['text_secondary']};
+            font-weight: 700;
+        }}
+
         QLabel[role="distributionLabel"] {{
-            color: {t['text_muted']};
+            color: {t['text_secondary']};
             font-size: {FONT_SIZES['large']}px;
-            font-weight: 600;
+            font-weight: 700;
             min-height: 42px;
         }}
 

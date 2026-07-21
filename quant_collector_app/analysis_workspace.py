@@ -267,6 +267,9 @@ class AnalysisWorkspace(QtWidgets.QDialog):
     def __init__(self, app_window, parent=None, *, embedded: bool = False):
         super().__init__(parent or app_window)
         self.app_window = app_window
+        self._theme_settings = normalize_theme_settings(
+            getattr(app_window, "theme_settings", None)
+        )
         self.embedded = bool(embedded)
         if self.embedded:
             self.setWindowFlags(QtCore.Qt.Widget)
@@ -447,11 +450,21 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self._build_ui()
         install_no_wheel_on_value_inputs(self)
         self.retranslate_ui()
-        self._apply_button_theme()
-        self._apply_plot_theme()
+        self.apply_theme(self._theme_settings)
 
-    def _apply_plot_theme(self) -> None:
-        theme = normalize_theme_settings(getattr(self.app_window, "theme_settings", None))
+    def apply_theme(self, theme: dict | None) -> None:
+        """Apply one theme to every Qt and chart surface in the workspace."""
+
+        self._theme_settings = normalize_theme_settings(theme)
+        self._apply_button_theme(self._theme_settings)
+        self._apply_plot_theme(self._theme_settings)
+
+    def _apply_plot_theme(self, theme: dict | None = None) -> None:
+        theme = normalize_theme_settings(
+            theme
+            if theme is not None
+            else getattr(self.app_window, "theme_settings", None)
+        )
         grid_alpha = max(0.0, min(1.0, theme["grid_alpha"] / 100.0))
         for plot in (self.equityCurvePlot, self.performanceHistogramPlot):
             plot.setBackground(theme["chart_bg"])
@@ -470,11 +483,16 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             f"color: {theme['text_secondary']}; background: transparent;"
         )
 
-    def _apply_button_theme(self) -> None:
+    def _apply_button_theme(self, theme: dict | None = None) -> None:
         """Give every button/input in the analysis panel the themed pill look."""
-        theme = getattr(self.app_window, "theme_settings", None)
+        theme = (
+            theme
+            if theme is not None
+            else getattr(self.app_window, "theme_settings", None)
+        )
         if theme is None:
             return
+        self.decisionResearchWorkspace.apply_theme(theme)
         try:
             from views.main_window_presentation import (
                 apply_role_button_styles,
@@ -485,9 +503,8 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             apply_role_button_styles(self, theme)
             apply_themed_input_styles(self, theme)
             apply_role_button_shadows(self)
-            self.decisionResearchWorkspace.apply_theme(theme)
         except Exception:
-            pass
+            logger.exception("Failed to apply analysis control theme")
 
     def _language(self) -> str:
         return str(getattr(self.app_window, "current_language", "zh_CN") or "zh_CN")
@@ -574,14 +591,15 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         root.addWidget(self.tabs, stretch=1)
 
     def _performance_tab(self) -> QtWidgets.QWidget:
-        scroll = QtWidgets.QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
-        tab = QtWidgets.QWidget()
-        layout = QtWidgets.QVBoxLayout(tab)
-        layout.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
-        layout.setSpacing(SPACING["md"])
+        page = QtWidgets.QWidget()
+        page_layout = QtWidgets.QVBoxLayout(page)
+        page_layout.setContentsMargins(
+            SPACING["md"],
+            SPACING["md"],
+            SPACING["md"],
+            SPACING["md"],
+        )
+        page_layout.setSpacing(SPACING["md"])
         controls = QtWidgets.QHBoxLayout()
         controls.addWidget(QtWidgets.QLabel(self._tr("performance.session")))
         self.performanceSessionBox = QtWidgets.QComboBox()
@@ -595,7 +613,18 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.performanceCurveMode.addItem(self._tr("performance.pnl_curve"), PNL_CURVE_MODE)
         self.performanceCurveMode.currentIndexChanged.connect(self._refresh_performance_workspace)
         controls.addWidget(self.performanceCurveMode)
-        layout.addLayout(controls)
+        page_layout.addLayout(controls)
+
+        self.performanceContentScroll = QtWidgets.QScrollArea()
+        self.performanceContentScroll.setWidgetResizable(True)
+        self.performanceContentScroll.setFrameShape(QtWidgets.QFrame.NoFrame)
+        self.performanceContentScroll.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAlwaysOff
+        )
+        tab = QtWidgets.QWidget()
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(SPACING["md"])
 
         summary = QtWidgets.QFrame()
         summary.setProperty("role", "statusBlock")
@@ -629,7 +658,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
                 block_l.setContentsMargins(SPACING["md"], SPACING["sm"], SPACING["md"], SPACING["sm"])
                 block_l.setSpacing(SPACING["xs"])
                 name = QtWidgets.QLabel(self._tr(label_key))
-                name.setProperty("role", "muted")
+                name.setProperty("role", "performanceLabel")
                 name.setAlignment(QtCore.Qt.AlignCenter)
                 value = QtWidgets.QLabel("-")
                 value.setProperty("role", "metricValue" if primary else "statusValue")
@@ -781,8 +810,9 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         histogram_l.addWidget(self.performanceHistogramPlot, 1)
         distribution_l.addWidget(histogram_panel, 1)
         layout.addWidget(distribution)
-        scroll.setWidget(tab)
-        return scroll
+        self.performanceContentScroll.setWidget(tab)
+        page_layout.addWidget(self.performanceContentScroll, stretch=1)
+        return page
 
     def _populate_performance_sessions(self) -> None:
         current_id = str(getattr(self.app_window, "session_id", "") or "")
@@ -883,16 +913,22 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         self.equityCurveData = []
         self._performanceCurveX = []
 
-    @staticmethod
-    def _set_performance_value_tone(label: QtWidgets.QLabel, number: float, *, zero_is_negative: bool = False) -> None:
+    def _set_performance_value_tone(
+        self,
+        label: QtWidgets.QLabel,
+        number: float,
+        *,
+        zero_is_negative: bool = False,
+    ) -> None:
+        theme = self._theme_settings
         if not math.isfinite(number):
-            color = COLORS["text_secondary"]
+            color = theme["text_secondary"]
         elif number > 0:
-            color = COLORS["success"]
+            color = theme["success"]
         elif number < 0 or zero_is_negative:
-            color = COLORS["danger"]
+            color = theme["danger"]
         else:
-            color = COLORS["text_secondary"]
+            color = theme["text_secondary"]
         label.setStyleSheet(f"color: {color};")
 
     def _on_performance_curve_mouse_moved(self, scene_pos) -> None:

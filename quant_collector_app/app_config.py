@@ -80,6 +80,19 @@ class ApplicationPaths:
     backup_dir: Path
 
 
+def _workspace_application_dir(executable_dir: Path) -> Path | None:
+    candidates = [executable_dir.parent / "quant_collector_app"]
+    if executable_dir.parent.name.casefold() == "dist":
+        candidates.append(executable_dir.parent.parent)
+    for candidate in candidates:
+        if (
+            (candidate / "__init__.py").is_file()
+            and (candidate / "app_config.py").is_file()
+        ):
+            return candidate
+    return None
+
+
 def resolve_application_paths(
     *,
     module_file: str | Path,
@@ -93,12 +106,9 @@ def resolve_application_paths(
         uses_workspace_layout = False
     elif frozen:
         executable_dir = Path(executable).resolve().parent
-        workspace_app_dir = executable_dir.parent / "quant_collector_app"
-        is_workspace_build = (
-            (workspace_app_dir / "__init__.py").is_file()
-            and (workspace_app_dir / "app_config.py").is_file()
-        )
-        root_dir = workspace_app_dir if is_workspace_build else executable_dir
+        workspace_app_dir = _workspace_application_dir(executable_dir)
+        is_workspace_build = workspace_app_dir is not None
+        root_dir = workspace_app_dir if workspace_app_dir is not None else executable_dir
         uses_workspace_layout = is_workspace_build
     else:
         root_dir = module_dir

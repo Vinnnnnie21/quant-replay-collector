@@ -36,6 +36,25 @@ def test_local_frozen_executable_reuses_workspace_research_data(tmp_path):
     assert paths.backup_dir == workspace / "backups"
 
 
+def test_local_onedir_executable_reuses_workspace_research_data(tmp_path):
+    workspace = tmp_path / "Trading"
+    app_dir = workspace / "quant_collector_app"
+    executable = app_dir / "dist" / "QRC" / "QRC.exe"
+    executable.parent.mkdir(parents=True)
+    (app_dir / "__init__.py").write_text("", encoding="utf-8")
+    (app_dir / "app_config.py").write_text("", encoding="utf-8")
+
+    paths = app_config.resolve_application_paths(
+        module_file=app_dir / "app_config.py",
+        executable=executable,
+        frozen=True,
+    )
+
+    assert paths.data_dir == app_dir / "data"
+    assert paths.log_dir == app_dir / "logs"
+    assert paths.backup_dir == workspace / "backups"
+
+
 def test_portable_frozen_executable_keeps_data_beside_executable(tmp_path):
     install_dir = tmp_path / "QRC"
     executable = install_dir / "QRC.exe"

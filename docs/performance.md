@@ -81,8 +81,11 @@ Reproduce source measurements with `scripts/profile_startup.py` and `scripts/pro
 ## v1.6.0 formal release measurements
 
 Measured on 2026-07-21 with the locked Windows 11 / CPython 3.13 environment.
-The complete performance-marked suite passed in 328.41 seconds (330.419 seconds
-outer wall time). The decision-research reference case produced:
+The complete performance-marked suite passed in 329.06 seconds. The startup
+budget is applied to the in-process cold probe through first render; outer
+Python process creation time is retained separately in the benchmark report so
+Windows scheduler or paging delays do not get mislabeled as application work.
+The decision-research reference case produced:
 
 | Task | Result | Frozen ceiling |
 | --- | ---: | ---: |

@@ -378,8 +378,10 @@ def apply_main_window_theme(window, theme: dict) -> None:
         pass
     window.premiumPlot.showGrid(x=True, y=True, alpha=grid_alpha)
     analysis_workspace = getattr(window, "_analysis_workspace", None)
-    if analysis_workspace is not None and hasattr(analysis_workspace, "_apply_plot_theme"):
-        analysis_workspace._apply_plot_theme()
+    if analysis_workspace is not None:
+        apply_workspace_theme = getattr(analysis_workspace, "apply_theme", None)
+        if callable(apply_workspace_theme):
+            apply_workspace_theme(window.theme_settings)
     premium_item = window.premiumPlot.getPlotItem() if hasattr(window.premiumPlot, "getPlotItem") else None
     if premium_item is not None:
         for side in ("left", "bottom", "right", "top"):

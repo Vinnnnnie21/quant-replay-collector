@@ -714,9 +714,19 @@ def run_benchmark_suite(
             "unexpected_optional_modules_loaded": [],
             "error": f"{type(exc).__name__}: {exc}",
         }
+    startup_interactive_raw = startup_raw.get("cold_probe_seconds")
+    if startup_interactive_raw is None:
+        startup_interactive_raw = startup_raw.get("process_wall_seconds", 0.0)
+    startup_interactive_seconds = _finite_float(startup_interactive_raw)
     startup_probe = {
         "status": "success" if startup_raw.get("ok") else "failed",
-        "wall_seconds": _finite_float(startup_raw.get("process_wall_seconds", 0.0)),
+        # Schema v1 exposed wall_seconds; retain it as the budgeted in-process
+        # measurement and record process creation overhead under its own key.
+        "wall_seconds": startup_interactive_seconds,
+        "interactive_seconds": startup_interactive_seconds,
+        "process_wall_seconds": _finite_float(
+            startup_raw.get("process_wall_seconds", 0.0)
+        ),
         "unexpected_optional_modules_loaded": list(
             startup_raw.get("unexpected_optional_modules_loaded") or []
         ),

@@ -25,8 +25,8 @@
 - [x] 整理前性能测试：8 passed，1,718 deselected。
 - [x] 分类移动未减少测试；发布回归新增后为 246 个文件、默认收集 1,746（总计 1,756，10 个按标记排除）。
 - [x] 整理后 `compileall`、`pip check`、core/gui/all 自检通过。
-- [x] 整理后默认 pytest：1,746 passed，10 deselected，267.04 秒。
-- [x] performance：8 passed；Qt native 单独 1 passed；安全关闭包含在默认全集；clean release 通过。
+- [x] 发布前缺陷修复后默认 pytest：1,752 passed，11 deselected，291.67 秒。
+- [x] performance：9 passed，329.06 秒；Qt native 单独 1 passed；安全关闭包含在默认全集；clean release 待按最终提交重建。
 
 ## 文档与界面
 

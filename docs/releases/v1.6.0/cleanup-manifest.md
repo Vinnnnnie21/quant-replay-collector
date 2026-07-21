@@ -63,13 +63,13 @@
 
 新增 `tests/helpers/project_paths.py` 作为唯一测试仓库路径解析器，并为各分类目录加入 `__init__.py`。跨测试复用改用完整包导入，避免依赖 pytest 执行顺序或当前目录。
 
-整理前测试文件数 242，默认收集 1,716（总计 1,726，10 个按标记排除）。分类移动本身没有减少测试；发布脚本、图标、路径安全、原生启动门、Qt 生命周期和 CI PowerShell 兼容性回归新增后，测试文件为 246，默认收集 1,746（总计 1,756，10 个按标记排除）。最终默认回归结果为 `1746 passed, 10 deselected in 267.04s`。
+整理前测试文件数 242，默认收集 1,716（总计 1,726，10 个按标记排除）。分类移动本身没有减少测试；发布脚本、图标、路径安全、原生启动门、Qt 生命周期和 CI PowerShell 兼容性回归新增后，测试文件为 246。发布前缺陷修复再增加字体、主题传播、绩效入口、冻结程序数据路径和启动预算边界回归，最终默认收集 1,752（总计 1,763，11 个按标记排除）。最终默认回归结果为 `1752 passed, 11 deselected in 291.67s`。
 
 ## 发布审查修复
 
 - clean-release 只允许替换带本项目生成标记的旧输出，拒绝删除未知目录。
 - clean-release、正式 manifest、ZIP 归档、依赖裁剪和测试产物清理均拒绝跟随符号链接或 Windows junction。
-- 测试分类后的 Qt native 子进程路径已改为 `tests/performance/test_qt_layout_stress.py`；最终生命周期独立回归 `1 passed in 71.39s`，完整性能集 `8 passed, 1745 deselected in 328.41s`。
+- 测试分类后的 Qt native 子进程路径已改为 `tests/performance/test_qt_layout_stress.py`；最终生命周期独立回归 `1 passed in 67.54s`，完整性能集 `9 passed, 1754 deselected in 329.06s`。
 - 两份新增产品文档和 Windows smoke 清单已使用仓库相对路径，不再固化本机工作区。
 
 ## 保留项目
@@ -82,3 +82,25 @@
 ## 发布包排除规则
 
 `scripts/check_release_clean.py` 和 `scripts/clean_release.py` 继续排除数据库、行情文件、备份、导出、日志、缓存、`.test-artifacts`、根目录 `.pytest_tmp_*`、本机绝对路径和本地 Agent 文件。正式构建还需在最终包内容清单上再次执行数据与敏感信息扫描。
+
+## 根目录 pytest ACL 残留复核
+
+2026-07-21 再次逐项检查根目录 301 个 `.pytest_tmp_*` 目录。它们均未被 Git 跟踪，也不是符号链接或 Windows junction。按测试轮次归类如下：
+
+| 测试轮次 | 目录数 |
+| --- | ---: |
+| blind review | 44 |
+| candidate / candidates | 24 |
+| equity marker | 5 |
+| exit research | 22 |
+| prompt audit | 9 |
+| rc1 / rc2 | 8 |
+| research | 1 |
+| round09 | 30 |
+| round10 | 33 |
+| setup | 12 |
+| similarity | 51 |
+| snapshot | 62 |
+| 合计 | 301 |
+
+对样本目录执行内容枚举、ACL 读取、移动和设置隐藏属性，Windows 均返回“拒绝访问”。因此本轮没有伪称已归档，也没有使用 `takeown`、`icacls` 或管理员权限改写所有者。它们继续留在根目录并从 pytest 收集、Git、clean release 和 Windows 发布包中排除。后续 pytest 已固定写入 `.test-artifacts/pytest-tmp-run-<pid>-<uuid>`，本轮测试未新增根目录临时目录。

@@ -97,6 +97,38 @@ def test_phase3_benchmark_records_ui_handoff_boundary_and_slo(tmp_path):
 
 
 @pytest.mark.performance
+def test_phase3_benchmark_applies_startup_budget_to_interactive_probe_time(
+    tmp_path,
+    monkeypatch,
+):
+    from quant_collector_app.benchmarks.phase3_large_dataset import run_benchmark_suite
+    from scripts import profile_startup
+
+    monkeypatch.setattr(
+        profile_startup,
+        "run_probe",
+        lambda: {
+            "ok": True,
+            "process_wall_seconds": 3.2,
+            "cold_probe_seconds": 2.8,
+            "unexpected_optional_modules_loaded": [],
+            "optional_modules_deferred": [],
+            "error": None,
+        },
+    )
+
+    result = run_benchmark_suite(
+        bars=1_000,
+        seed=20260713,
+        runs=1,
+        output_dir=tmp_path,
+    )
+
+    assert result["startup_probe"]["interactive_seconds"] == pytest.approx(2.8)
+    assert result["startup_probe"]["process_wall_seconds"] == pytest.approx(3.2)
+
+
+@pytest.mark.performance
 def test_phase3_benchmark_fails_when_real_ui_input_capture_exceeds_budget(
     tmp_path, monkeypatch
 ):

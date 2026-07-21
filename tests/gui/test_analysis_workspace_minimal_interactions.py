@@ -17,7 +17,7 @@ from controllers.analysis_controller import AnalysisRefreshController
 from services.analysis_refresh import AnalysisRefreshSnapshot, build_analysis_refresh_result
 from storage import StorageManager
 from task_lifecycle import BackgroundTaskLifecycle
-from ui_style import COLORS, LIGHT_THEME
+from ui_style import COLORS, EXCHANGE_DARK_THEME, LIGHT_THEME, build_app_qss
 from workers.analysis_refresh_worker import AnalysisRefreshWorker
 from views.plot_lifecycle import close_parent_owned_graphics_view
 from project_paths import REPO_ROOT
@@ -93,6 +93,31 @@ def _send_wheel(widget: QtWidgets.QWidget) -> None:
         False,
     )
     QtWidgets.QApplication.sendEvent(widget, event)
+
+
+def test_light_theme_performance_chinese_labels_are_bold():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    previous_stylesheet = app.styleSheet()
+    host = PerformanceHost()
+    host.theme_settings = dict(LIGHT_THEME)
+    dialog = AnalysisWorkspace(host)
+    try:
+        app.setStyleSheet(build_app_qss(LIGHT_THEME))
+        dialog.ensurePolished()
+        labels = {
+            label.text(): label
+            for label in dialog.performanceTab.findChildren(QtWidgets.QLabel)
+        }
+
+        for text in ("当前权益", "盈利笔数"):
+            label = labels[text]
+            label.ensurePolished()
+            assert label.font().weight() >= QtGui.QFont.Weight.Bold
+    finally:
+        dialog.shutdown()
+        dialog.close()
+        host.close()
+        app.setStyleSheet(previous_stylesheet)
 
 
 def test_parent_owned_graphics_view_detaches_scene_only_after_native_close(
@@ -535,6 +560,74 @@ def test_performance_workspace_shows_account_summary_curve_and_trade_pnl():
     dialog.close()
     host.close()
     app.processEvents()
+
+
+def test_light_theme_zero_performance_values_use_active_readable_text_color():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = PerformanceHost()
+    host.theme_settings = dict(LIGHT_THEME)
+    host.trades = []
+    host.df = pd.DataFrame()
+    dialog = AnalysisWorkspace(host)
+
+    try:
+        dialog.apply_performance_payload(_worker_performance_payload(host))
+
+        expected = f"color: {LIGHT_THEME['text_secondary']};"
+        assert dialog.performanceMetricLabels["total_pnl"].styleSheet() == expected
+        assert dialog.performanceDistributionLabels["win_count"].styleSheet() == expected
+    finally:
+        dialog.close()
+        host.close()
+        app.processEvents()
+
+
+def test_analysis_workspace_theme_switch_updates_performance_and_review_charts(tmp_path):
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = PerformanceHost()
+    host.theme_settings = dict(LIGHT_THEME)
+    host.storage = StorageManager(tmp_path / "theme-switch.db")
+    host.task_lifecycle = BackgroundTaskLifecycle()
+    dialog = AnalysisWorkspace(host)
+
+    try:
+        review_plot = (
+            dialog.decisionResearchWorkspace
+            .entryBlindReviewWorkspace.chartPanes[0].plot
+        )
+        assert review_plot.backgroundBrush().color().name() == "#ffffff"
+        assert dialog.equityCurvePlot.backgroundBrush().color().name() == "#ffffff"
+
+        host.theme_settings = dict(EXCHANGE_DARK_THEME)
+        dialog.apply_theme(host.theme_settings)
+
+        expected_dark = EXCHANGE_DARK_THEME["chart_bg"].lower()
+        assert review_plot.backgroundBrush().color().name() == expected_dark
+        assert dialog.equityCurvePlot.backgroundBrush().color().name() == expected_dark
+    finally:
+        dialog.close()
+        host.close()
+        app.processEvents()
+
+
+def test_applied_workspace_theme_controls_later_performance_value_tones():
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = PerformanceHost()
+    host.theme_settings = dict(LIGHT_THEME)
+    host.trades = []
+    host.df = pd.DataFrame()
+    dialog = AnalysisWorkspace(host)
+
+    try:
+        dialog.apply_theme(EXCHANGE_DARK_THEME)
+        dialog.apply_performance_payload(_worker_performance_payload(host))
+
+        expected = f"color: {EXCHANGE_DARK_THEME['text_secondary']};"
+        assert dialog.performanceMetricLabels["total_pnl"].styleSheet() == expected
+    finally:
+        dialog.close()
+        host.close()
+        app.processEvents()
 
 
 def test_performance_workspace_applies_worker_payload_without_changing_visible_results():
@@ -1047,6 +1140,56 @@ def test_analysis_performance_sessions_use_the_shared_narrow_session_catalog(tmp
         assert dialog.performanceSessionBox.itemText(index) == (
             "BTCUSDT · 5m · 2026-04-01—2026-05-01"
         )
+    finally:
+        dialog.close()
+        host.close()
+        app.processEvents()
+
+
+def test_performance_session_selector_stays_visible_while_results_scroll(tmp_path):
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    host = PerformanceHost()
+    storage = StorageManager(tmp_path / "sticky-session-selector.db")
+    storage.upsert_session(
+        {
+            "session_id": "session_history",
+            "symbol": "BTCUSDT",
+            "interval": "5m",
+            "start_date_bjt": "2026-04-01",
+            "end_date_bjt": "2026-05-01",
+            "last_saved_at": "2026-07-01T00:00:00+08:00",
+        }
+    )
+    host.storage = storage
+    host.task_lifecycle = BackgroundTaskLifecycle()
+    dialog = AnalysisWorkspace(host)
+    dialog.resize(900, 600)
+    dialog.show()
+    app.processEvents()
+
+    try:
+        assert dialog.performanceSessionBox.findData("session_history") >= 0
+        results_scroll = getattr(
+            dialog,
+            "performanceContentScroll",
+            dialog.performanceTab,
+        )
+        assert isinstance(results_scroll, QtWidgets.QScrollArea)
+        assert results_scroll.verticalScrollBar().maximum() > 0
+
+        results_scroll.verticalScrollBar().setValue(
+            results_scroll.verticalScrollBar().maximum()
+        )
+        app.processEvents()
+        selector_rect = QtCore.QRect(
+            dialog.performanceSessionBox.mapTo(
+                dialog.performanceTab,
+                QtCore.QPoint(0, 0),
+            ),
+            dialog.performanceSessionBox.size(),
+        )
+
+        assert dialog.performanceTab.rect().intersects(selector_rect)
     finally:
         dialog.close()
         host.close()
