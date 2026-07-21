@@ -18,7 +18,81 @@ except ImportError:  # pragma: no cover - package import path
 BACKUP_NAME_PREFIX = "quant_replay"
 DAILY_BACKUP_RETENTION = 14
 ANNOTATION_TABLES = ("entry_annotations", "entry_annotation_history")
-PROTECTED_TABLES = ("sessions", "trades", "entry_annotations", "entry_annotation_history")
+SETUP_TABLES = ("setups", "setup_versions")
+EPISODE_TABLES = (
+    "episode_grouping_versions",
+    "market_episodes",
+    "market_episode_memberships",
+    "market_episode_audit",
+)
+ENTRY_REVIEW_TABLES = (
+    "entry_decision_events",
+    "entry_original_actions",
+    "entry_review_batches",
+    "entry_review_batch_items",
+    "entry_judgment_versions",
+    "entry_review_reveals",
+)
+ENTRY_SIMILARITY_TABLES = ("entry_similarity_audits",)
+ENTRY_CANDIDATE_TABLES = (
+    "entry_candidate_scans",
+    "entry_candidate_scores",
+    "entry_candidate_batches",
+    "entry_candidate_batch_items",
+    "entry_candidate_exclusions",
+)
+ENTRY_BEHAVIOR_TABLES = (
+    "entry_behavior_experiments",
+    "entry_behavior_model_versions",
+)
+ENTRY_OUTCOME_TABLES = (
+    "entry_outcome_comparisons",
+    "entry_outcome_matches",
+)
+EXIT_REVIEW_TABLES = (
+    "exit_decision_events",
+    "exit_position_snapshots",
+    "exit_account_pressure_snapshots",
+    "exit_original_actions",
+    "exit_review_batches",
+    "exit_review_batch_items",
+    "exit_judgment_versions",
+    "exit_review_reveals",
+)
+EXIT_BEHAVIOR_TABLES = (
+    "exit_behavior_experiments",
+    "exit_behavior_model_versions",
+)
+EXIT_CANDIDATE_TABLES = (
+    "exit_candidate_scans",
+    "exit_candidate_scores",
+    "exit_candidate_batches",
+    "exit_candidate_batch_items",
+    "exit_candidate_exclusions",
+)
+SNAPSHOT_TABLES = ("research_snapshots",)
+EXIT_OUTCOME_TABLES = (
+    "exit_outcome_comparisons",
+    "exit_outcome_matches",
+)
+PROTECTED_TABLES = (
+    "sessions",
+    "trades",
+    "entry_annotations",
+    "entry_annotation_history",
+    *SETUP_TABLES,
+    *EPISODE_TABLES,
+    *ENTRY_REVIEW_TABLES,
+    *ENTRY_SIMILARITY_TABLES,
+    *ENTRY_CANDIDATE_TABLES,
+    *ENTRY_BEHAVIOR_TABLES,
+    *ENTRY_OUTCOME_TABLES,
+    *EXIT_REVIEW_TABLES,
+    *EXIT_BEHAVIOR_TABLES,
+    *EXIT_CANDIDATE_TABLES,
+    *SNAPSHOT_TABLES,
+    *EXIT_OUTCOME_TABLES,
+)
 
 
 class BackupCancelled(RuntimeError):
@@ -323,6 +397,30 @@ def _missing_required_tables(tables: set[str], expected_schema_version: int | No
     required = {"sessions", "trades"}
     if int(expected_schema_version) >= 6:
         required.update(ANNOTATION_TABLES)
+    if int(expected_schema_version) >= 8:
+        required.update(SETUP_TABLES)
+    if int(expected_schema_version) >= 9:
+        required.update(EPISODE_TABLES)
+    if int(expected_schema_version) >= 10:
+        required.update(ENTRY_REVIEW_TABLES)
+    if int(expected_schema_version) >= 11:
+        required.update(ENTRY_SIMILARITY_TABLES)
+    if int(expected_schema_version) >= 12:
+        required.update(ENTRY_CANDIDATE_TABLES)
+    if int(expected_schema_version) >= 13:
+        required.update(ENTRY_BEHAVIOR_TABLES)
+    if int(expected_schema_version) >= 14:
+        required.update(ENTRY_OUTCOME_TABLES)
+    if int(expected_schema_version) >= 15:
+        required.update(EXIT_REVIEW_TABLES)
+    if int(expected_schema_version) >= 16:
+        required.update(EXIT_BEHAVIOR_TABLES)
+    if int(expected_schema_version) >= 17:
+        required.update(EXIT_CANDIDATE_TABLES)
+    if int(expected_schema_version) >= 18:
+        required.update(SNAPSHOT_TABLES)
+    if int(expected_schema_version) >= 19:
+        required.update(EXIT_OUTCOME_TABLES)
     return sorted(required - tables)
 
 

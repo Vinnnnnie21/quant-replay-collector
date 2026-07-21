@@ -120,3 +120,34 @@ def fetch_event(conn, event_id: str) -> dict[str, Any] | None:
     out = dict(row)
     out["label_tags"] = json.loads(out.get("label_tags_json") or "[]")
     return out
+
+
+def list_events_for_session(
+    conn,
+    session_id: str,
+    *,
+    event_types: tuple[str, ...] = (),
+) -> list[dict[str, Any]]:
+    conditions = ["session_id=?"]
+    params: list[Any] = [session_id]
+    normalized_types = tuple(
+        str(value).strip().upper() for value in event_types if str(value).strip()
+    )
+    if normalized_types:
+        placeholders = ", ".join("?" for _ in normalized_types)
+        conditions.append(f"UPPER(event_type) IN ({placeholders})")
+        params.extend(normalized_types)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM trade_events
+        WHERE {' AND '.join(conditions)}
+        ORDER BY created_at, event_id
+        """,
+        tuple(params),
+    ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["label_tags"] = json.loads(item.get("label_tags_json") or "[]")
+        result.append(item)
+    return result

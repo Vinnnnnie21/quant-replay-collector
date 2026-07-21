@@ -4,7 +4,7 @@
 
 ## 固定输入
 
-- 解释器：`D:\Trading\.venv\Scripts\python.exe`
+- 解释器：`.\.venv\Scripts\python.exe`
 - K 线：至少 270,000 根连续 1 分钟数据
 - seed：`20260713`
 - 记录：CPU、内存、Windows 版本、GPU、显卡驱动、显示器数量、缩放比例、应用版本

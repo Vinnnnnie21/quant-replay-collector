@@ -19,6 +19,7 @@ except ImportError:  # pragma: no cover - package import path
 APP_SETTINGS_PATH = DATA_DIR / "app_settings.json"
 DEFAULT_RENDER_BACKEND = "hardware"
 RENDER_BACKENDS = ("hardware", "software")
+LAYOUT_PREFERENCES_VERSION = 2
 
 DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "language": "zh_CN",
@@ -30,6 +31,7 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "trade_notional": None,
     "initial_equity": None,
     "right_panel_visible": True,
+    "layout_preferences_version": LAYOUT_PREFERENCES_VERSION,
     "right_panel_width": 360,
     "right_panel_tab": 0,
     "bottom_panel_visible": True,
@@ -116,6 +118,17 @@ def load_app_settings(path: Path | None = None) -> dict[str, Any]:
         return dict(DEFAULT_APP_SETTINGS)
     if not isinstance(data, dict):
         return dict(DEFAULT_APP_SETTINGS)
+    try:
+        layout_version = int(data.get("layout_preferences_version") or 0)
+    except (TypeError, ValueError):
+        layout_version = 0
+    if layout_version < LAYOUT_PREFERENCES_VERSION:
+        data = dict(data)
+        # Older builds inferred this value from QWidget.isVisible(). Closing the
+        # app from data analysis therefore persisted a false collapsed state even
+        # when the replay-side panel was logically expanded.
+        data["right_panel_visible"] = True
+        data["layout_preferences_version"] = LAYOUT_PREFERENCES_VERSION
     return sanitize_app_settings(data)
 
 

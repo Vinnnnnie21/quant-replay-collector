@@ -647,6 +647,33 @@ def list_observation_samples(
     return [dict(row) for row in conn.execute(query, tuple(params)).fetchall()]
 
 
+def list_entry_candidate_observations(
+    conn,
+    *,
+    setup_version_id: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT o.*
+        FROM observation_universe AS o
+        WHERE o.profile_id=?
+          AND o.is_candidate=1
+          AND o.user_action='NO_ACTION'
+          AND o.source_type='AUTO_CANDIDATE'
+          AND NOT EXISTS (
+              SELECT 1
+              FROM entry_decision_events AS e
+              WHERE e.source_sample_id=o.sample_id
+          )
+        ORDER BY o.event_time_bjt, o.sample_id
+        LIMIT ?
+        """,
+        (setup_version_id, int(limit)),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def save_strategy_sample(conn, row: dict[str, Any]) -> None:
     placeholders = ", ".join(["?"] * len(STRATEGY_SAMPLE_COLUMNS))
     conn.execute(

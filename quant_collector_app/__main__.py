@@ -19,8 +19,8 @@ def main() -> int:
                 "Install requirements with: python -m pip install -r quant_collector_app/requirements.txt"
             ) from exc
         raise
-    launch()
-    return 0
+    result = launch()
+    return int(result or 0)
 
 
 if __name__ == "__main__":

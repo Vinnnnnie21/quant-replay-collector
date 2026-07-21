@@ -13,12 +13,14 @@ from pathlib import Path
 try:
     from atomic_write import atomic_write_text
     from ui_style import DARK_THEME, LIGHT_THEME, normalize_theme_settings
+    from version import __version__
 except ImportError:  # pragma: no cover - package import path
     from .atomic_write import atomic_write_text
     from .ui_style import DARK_THEME, LIGHT_THEME, normalize_theme_settings
+    from .version import __version__
 
 APP_NAME = "Quant Replay Collector"
-APP_VERSION = "1.5.2"
+APP_VERSION = __version__
 DEFAULT_SYMBOL = "BTCUSDT"
 DEFAULT_INTERVAL = "1m"
 DEFAULT_INITIAL_EQUITY = 10_000.0
@@ -83,9 +85,13 @@ def resolve_application_paths(
     module_file: str | Path,
     executable: str | Path,
     frozen: bool,
+    runtime_root: str | Path | None = None,
 ) -> ApplicationPaths:
     module_dir = Path(module_file).resolve().parent
-    if frozen:
+    if runtime_root is not None:
+        root_dir = Path(runtime_root).resolve()
+        uses_workspace_layout = False
+    elif frozen:
         executable_dir = Path(executable).resolve().parent
         workspace_app_dir = executable_dir.parent / "quant_collector_app"
         is_workspace_build = (
@@ -114,6 +120,7 @@ APPLICATION_PATHS = resolve_application_paths(
     module_file=__file__,
     executable=sys.executable,
     frozen=bool(getattr(sys, "frozen", False)),
+    runtime_root=os.environ.get("QRC_RUNTIME_ROOT") or None,
 )
 ROOT_DIR = APPLICATION_PATHS.root_dir
 DATA_DIR = APPLICATION_PATHS.data_dir

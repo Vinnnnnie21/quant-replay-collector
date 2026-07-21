@@ -18,10 +18,23 @@ VALID_INTERVALS = {
 
 BINANCE_RAW_COLUMNS = [
     "open_time_ms", "open", "high", "low", "close", "volume",
-    "close_time_ms", "qav", "num_trades", "tbbav", "tbqav", "ignore",
+    "close_time_ms", "quote_volume", "trade_count",
+    "taker_buy_base_volume", "taker_buy_quote_volume", "ignore",
 ]
 
 PRICE_COLUMNS = ["open", "high", "low", "close", "volume"]
+KLINE_ANCILLARY_COLUMNS = (
+    "quote_volume",
+    "trade_count",
+    "taker_buy_base_volume",
+    "taker_buy_quote_volume",
+)
+LEGACY_KLINE_ANCILLARY_ALIASES = {
+    "qav": "quote_volume",
+    "num_trades": "trade_count",
+    "tbbav": "taker_buy_base_volume",
+    "tbqav": "taker_buy_quote_volume",
+}
 
 
 def clamp(value, low, high):

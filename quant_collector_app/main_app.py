@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import math
+import os
 import sys
 import threading
 import time
@@ -9,11 +9,16 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+os.environ.setdefault(
+    "QRC_PROCESS_START_PERF_COUNTER",
+    str(time.perf_counter()),
+)
+
 import pandas as pd
 import pyqtgraph as pg
 from PySide6 import QtCore, QtGui, QtWidgets
 
-from app_icon import apply_application_icon
+from app_icon import apply_application_icon, configure_windows_taskbar_identity
 from app_config import (
     APP_NAME,
     APP_VERSION,
@@ -29,7 +34,12 @@ from app_config import (
 )
 from app_logger import get_logger, install_exception_hook
 from app_i18n import tr as i18n_tr, translate_for
-from app_settings import load_app_settings, save_app_settings
+from ui_style import ensure_ui_font_support
+from app_settings import (
+    LAYOUT_PREFERENCES_VERSION,
+    load_app_settings,
+    save_app_settings,
+)
 from database_backup import backup_database_if_needed
 from execution import ExecutionSettings
 from market_data import bjt_now_iso, clamp
@@ -151,8 +161,6 @@ from services.analysis_refresh import (
     AnalysisRefreshRequest,
     AnalysisRefreshResult,
     PublishedMarketData,
-    build_dataset_summary_text,
-    build_event_study_summary_frame,
 )
 from services.session_service import (
     build_session_restore_plan,
@@ -164,8 +172,16 @@ from services.ui_message_localizer import localize_worker_message
 from services.trade_use_cases import TradeActionResult, TradeUseCase
 from ui_watchdog import UiFreezeWatchdog
 from state import AppState
-from startup import bootstrap_runtime_dirs, configure_logging
+from startup import (
+    bootstrap_runtime_dirs,
+    configure_logging,
+    mark_startup_stage,
+    native_smoke_exit_delay_ms,
+    native_smoke_workspace,
+    open_native_smoke_workspace,
+)
 from storage import StorageManager
+from errors import DatabaseSchemaTooNewError
 from task_lifecycle import BackgroundTaskLifecycle
 from trade_controller import TradeController
 from render.marker_renderer import MarkerPayloadCache
@@ -203,6 +219,7 @@ def _maybe_log_slow_operation(target: Any, name: str, started: float) -> None:
 class MainWindow(QtWidgets.QMainWindow):
     requestLoad = QtCore.Signal(object)
     requestPremium = QtCore.Signal()
+    decisionResearchSourceChanged = QtCore.Signal()
 
     def __init__(self):
         super().__init__()
@@ -210,6 +227,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.resize(1820, 980)
 
         self.storage = StorageManager()
+        mark_startup_stage("storage_ready")
         self.trade_controller = TradeController(self.storage, export_version=APP_VERSION)
         self.trade_use_cases = TradeUseCase(self.trade_controller)
         self.exporter = None
@@ -295,6 +313,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.export_task_controller.finished.connect(self._on_export_finished)
         self.export_task_controller.failed.connect(self._on_export_failed)
         self.export_task_controller.cancelled.connect(self._on_export_cancelled)
+        self.research_backfill_controller = None
 
         self.loader_thread = QtCore.QThread(self)
         self.loader = LoaderWorker()
@@ -449,6 +468,16 @@ class MainWindow(QtWidgets.QMainWindow):
             self.analysis_refresh_controller.shutdown() is not False
             and controllers_stopped
         )
+        research_backfill_controller = getattr(
+            self,
+            "research_backfill_controller",
+            None,
+        )
+        if research_backfill_controller is not None:
+            controllers_stopped = (
+                research_backfill_controller.shutdown() is not False
+                and controllers_stopped
+            )
         stopped = True
         for thread in (self.loader_thread, self.premium_thread):
             if thread.isRunning():
@@ -543,18 +572,88 @@ class MainWindow(QtWidgets.QMainWindow):
             self._update_header()
             self._log(self.tr("log.settings_applied"))
 
+    def _ensure_research_backfill_controller(self):
+        controller = getattr(self, "research_backfill_controller", None)
+        if controller is not None:
+            return controller
+        try:
+            from controllers.research_backfill_controller import (
+                ResearchBackfillController,
+            )
+        except ImportError:  # pragma: no cover - package import path
+            from .controllers.research_backfill_controller import (
+                ResearchBackfillController,
+            )
+        controller = ResearchBackfillController(
+            db_path=self.storage.db_path,
+            lifecycle=self.task_lifecycle,
+            parent=self,
+        )
+        controller.maintenanceFinished.connect(
+            self._on_full_history_backfill_finished
+        )
+        controller.maintenanceFailed.connect(
+            self._on_full_history_backfill_failed
+        )
+        controller.maintenanceCancelled.connect(
+            self._on_full_history_backfill_cancelled
+        )
+        self.research_backfill_controller = controller
+        return controller
+
+    def start_full_history_ancillary_backfill(self) -> bool:
+        lifecycle = getattr(self, "task_lifecycle", None)
+        if lifecycle is not None and lifecycle.shutdown_in_progress:
+            return False
+        controller = self._ensure_research_backfill_controller()
+        if not controller.start_full_history():
+            return False
+        message = self.tr(
+            "settings.full_history_backfill_running"
+        )
+        self.status.setText(message)
+        self._log(message)
+        return True
+
+    def _on_full_history_backfill_finished(self, event) -> None:
+        result = event.result
+        message = self.tr(
+            (
+                "settings.full_history_backfill_complete"
+                if result.is_complete
+                else "settings.full_history_backfill_partial"
+            )
+        ).format(
+            completed=result.completed_series,
+            total=result.total_series,
+            bars=result.downloaded_bars,
+        )
+        self.status.setText(message)
+        self._log(message)
+
+    def _on_full_history_backfill_failed(self, event) -> None:
+        message = self.tr(
+            "settings.full_history_backfill_failed"
+        ).format(error=event.message)
+        self.status.setText(message)
+        self._log(message)
+
+    def _on_full_history_backfill_cancelled(self, event) -> None:
+        result = event.result
+        message = self.tr(
+            "settings.full_history_backfill_cancelled"
+        ).format(
+            completed=result.completed_series,
+            total=result.total_series,
+        )
+        self.status.setText(message)
+        self._log(message)
+
     def open_analysis_workspace(self):
         from analysis_workspace import AnalysisWorkspace
 
-        if self.backtestPanel is None:
-            from backtest_panel import BacktestPanel
-
-            self.backtestPanel = BacktestPanel(self)
-        if self.strategyConsistencyPanel is None:
-            from strategy_consistency_panel import StrategyConsistencyPanel
-
-            self.strategyConsistencyPanel = StrategyConsistencyPanel(self)
         if not hasattr(self, "_analysis_workspace") or self._analysis_workspace is None:
+            self._ensure_research_backfill_controller()
             self._analysis_workspace = AnalysisWorkspace(
                 self,
                 parent=self.workspaceStack,
@@ -573,7 +672,13 @@ class MainWindow(QtWidgets.QMainWindow):
             from views.main_window_presentation import apply_role_button_styles, apply_themed_input_styles
             from views.widget_effects import apply_role_button_shadows
 
-            for _panel in (self.backtestPanel, self.strategyConsistencyPanel, self._analysis_workspace):
+            for _panel in (
+                self.backtestPanel,
+                self.strategyConsistencyPanel,
+                self._analysis_workspace,
+            ):
+                if _panel is None:
+                    continue
                 apply_role_button_styles(_panel, self.theme_settings)
                 apply_themed_input_styles(_panel, self.theme_settings)
                 apply_role_button_shadows(_panel)
@@ -589,6 +694,40 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         self.workspaceStack.setCurrentWidget(self._analysis_workspace)
         self.btnAnalysisWorkspace.setChecked(True)
+
+    def ensure_analysis_support_panel(self, panel_name: str):
+        if panel_name == "backtestPanel":
+            if self.backtestPanel is None:
+                from backtest_panel import BacktestPanel
+
+                self.backtestPanel = BacktestPanel(self)
+            panel = self.backtestPanel
+        elif panel_name == "strategyConsistencyPanel":
+            if self.strategyConsistencyPanel is None:
+                from strategy_consistency_panel import StrategyConsistencyPanel
+
+                self.strategyConsistencyPanel = StrategyConsistencyPanel(self)
+            panel = self.strategyConsistencyPanel
+        else:
+            raise ValueError(f"Unsupported lazy analysis panel: {panel_name}")
+        try:
+            from views.main_window_presentation import (
+                apply_role_button_styles,
+                apply_themed_input_styles,
+            )
+            from views.widget_effects import apply_role_button_shadows
+
+            apply_role_button_styles(panel, self.theme_settings)
+            apply_themed_input_styles(panel, self.theme_settings)
+            apply_role_button_shadows(panel)
+        except Exception:
+            logger.exception("Lazy analysis panel theme application failed")
+        return panel
+
+    def open_decision_research_workspace(self):
+        """Compatibility entry that targets the sole decision-research page."""
+        self.open_analysis_workspace()
+        self._analysis_workspace.open_decision_research()
 
     def open_replay_workspace(self):
         self.workspaceStack.setCurrentWidget(self.replayWorkspace)
@@ -615,12 +754,15 @@ class MainWindow(QtWidgets.QMainWindow):
         settings = load_app_settings()
         body_sizes = self.bodySplitter.sizes()
         center_sizes = self.centerSplitter.sizes()
+        right_panel_visible = self.btnToggleRightPanel.isChecked()
+        bottom_panel_visible = not self.btnToggleBottomPanel.isChecked()
         settings.update(
             {
-                "right_panel_visible": self.rightTabs.isVisible(),
-                "right_panel_width": self._expanded_right_panel_width if not self.rightTabs.isVisible() else (body_sizes[-1] if len(body_sizes) == 2 and body_sizes[-1] >= 300 else 360),
+                "layout_preferences_version": LAYOUT_PREFERENCES_VERSION,
+                "right_panel_visible": right_panel_visible,
+                "right_panel_width": self._expanded_right_panel_width if not right_panel_visible else (body_sizes[-1] if len(body_sizes) == 2 and body_sizes[-1] >= 300 else 360),
                 "right_panel_tab": self.rightTabs.currentIndex(),
-                "bottom_panel_visible": self.bottomTabs.isVisible(),
+                "bottom_panel_visible": bottom_panel_visible,
                 "bottom_splitter_sizes": center_sizes if len(center_sizes) == 2 and all(center_sizes) else [720, 220],
                 "analysis_subtab": self._analysis_workspace.tabs.currentIndex() if self._analysis_workspace is not None else int(settings.get("analysis_subtab", 0) or 0),
             }
@@ -1278,9 +1420,6 @@ class MainWindow(QtWidgets.QMainWindow):
         if hasattr(self, "performanceStack"):
             has_closed_trades = self.closedTradesTable.rowCount() > 0
             self.performanceStack.setCurrentIndex(1 if has_closed_trades else 0)
-        if hasattr(self, "eventResearchStack"):
-            has_research = self.eventStudyTable.rowCount() > 0 or self.eventTable.rowCount() > 0
-            self.eventResearchStack.setCurrentIndex(1 if has_research else 0)
         if hasattr(self, "datasetStack"):
             text = self.datasetText.toPlainText().strip() if hasattr(self, "datasetText") else ""
             empty_dataset_texts = {
@@ -1357,57 +1496,6 @@ class MainWindow(QtWidgets.QMainWindow):
                 workspace.apply_performance_payload(result.performance_workspace)
         for warning in result.warnings:
             self._log(warning)
-
-    def _feature_rows_for_session(self) -> list[dict[str, Any]]:
-        if not self.session_id:
-            return []
-        try:
-            return self.storage.fetch_table("event_features", "session_id=?", (self.session_id,))
-        except Exception as e:
-            self._log(
-                self.tr("log.event_features_failed").format(
-                    error=f"{type(e).__name__}: {e}"
-                )
-            )
-            return []
-
-    def _event_rows_for_study(self) -> list[dict[str, Any]]:
-        rows: list[dict[str, Any]] = []
-        for event in self.events:
-            row = dict(event)
-            if not row.get("label_tags_json"):
-                row["label_tags_json"] = json.dumps(row.get("label_tags") or [], ensure_ascii=False)
-            rows.append(row)
-        return rows
-
-    def _populate_event_study_table(self):
-        started = time.perf_counter()
-
-        try:
-            summary, warning = build_event_study_summary_frame(
-                self._event_rows_for_study(),
-                self._feature_rows_for_session(),
-                language=self.current_language,
-            )
-            if warning:
-                self._log(warning)
-            populate_event_study_table(self.eventStudyTable, summary)
-        finally:
-            _maybe_log_slow_operation(self, "_populate_event_study_table", started)
-
-    def _refresh_dataset_summary(self):
-        started = time.perf_counter()
-
-        try:
-            text, warning = build_dataset_summary_text(
-                self._feature_rows_for_session(),
-                language=self.current_language,
-            )
-            self.datasetText.setPlainText(text)
-            if warning:
-                self._log(warning)
-        finally:
-            _maybe_log_slow_operation(self, "_refresh_dataset_summary", started)
 
     def jump_to_trade_row(self, item: QtWidgets.QTableWidgetItem):
         trade_id = self.sender().item(item.row(), 0).data(ROLE_ID)
@@ -1598,15 +1686,46 @@ class MainWindow(QtWidgets.QMainWindow):
 
 
 def main():
+    configure_windows_taskbar_identity()
     bootstrap_runtime_dirs()
     log_path = configure_logging()
     install_exception_hook()
     logger.info("启动 %s v%s，日志文件=%s", APP_NAME, APP_VERSION, log_path)
     try:
         app = QtWidgets.QApplication(sys.argv)
+        mark_startup_stage("qapplication_ready")
+        ensure_ui_font_support(app)
         apply_application_icon(app)
-        win = MainWindow()
+        try:
+            win = MainWindow()
+        except DatabaseSchemaTooNewError as exc:
+            logger.exception("Database schema is newer than this application")
+            QtWidgets.QMessageBox.critical(
+                None,
+                i18n_tr("startup.database_schema_too_new.title", "zh_CN"),
+                exc.user_message_zh(APP_VERSION),
+            )
+            return 2
+        mark_startup_stage("main_window_built")
         win.show()
+        mark_startup_stage("first_show")
+        smoke_workspace = native_smoke_workspace()
+        if smoke_workspace is not None:
+            def open_smoke_workspace() -> None:
+                try:
+                    open_native_smoke_workspace(win, smoke_workspace)
+                except Exception:
+                    logger.exception("Packaged workspace smoke failed: %s", smoke_workspace)
+                    app.exit(3)
+
+            QtCore.QTimer.singleShot(0, open_smoke_workspace)
+        smoke_exit_delay = native_smoke_exit_delay_ms()
+        if smoke_exit_delay is not None:
+            QtCore.QTimer.singleShot(smoke_exit_delay, win.close)
+        QtCore.QTimer.singleShot(
+            0,
+            lambda: mark_startup_stage("interactive", flush=True),
+        )
         sys.exit(app.exec())
     except Exception:
         logger.exception("程序启动或运行失败")

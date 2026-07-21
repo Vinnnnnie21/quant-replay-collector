@@ -1,0 +1,175 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+import app_config
+import app_settings
+from app_settings import build_app_settings_update, load_app_settings, save_app_settings
+
+
+def test_app_settings_save_and_load(tmp_path):
+    path = tmp_path / "app_settings.json"
+    save_app_settings(
+        {
+            "language": "en_US",
+            "llm_provider": "mock",
+            "fee_bps": 5.5,
+            "openai_api_key": "should-not-be-saved",
+            "api_key": "should-not-be-saved",
+        },
+        path,
+    )
+
+    loaded = load_app_settings(path)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+
+    assert loaded["language"] == "en_US"
+    assert loaded["llm_provider"] == "mock"
+    assert loaded["fee_bps"] == 5.5
+    assert "openai_api_key" not in raw
+    assert "api_key" not in raw
+
+
+def test_app_settings_missing_file_uses_defaults(tmp_path):
+    loaded = load_app_settings(tmp_path / "missing.json")
+    assert loaded["language"] == "zh_CN"
+    assert loaded["llm_provider"] == "mock"
+    assert loaded["render_backend"] == "hardware"
+
+
+def test_legacy_layout_preferences_do_not_restore_a_spurious_collapsed_panel(tmp_path):
+    path = tmp_path / "app_settings.json"
+    path.write_text(
+        json.dumps({"language": "zh_CN", "right_panel_visible": False}),
+        encoding="utf-8",
+    )
+
+    loaded = load_app_settings(path)
+
+    assert loaded["right_panel_visible"] is True
+    assert loaded["layout_preferences_version"] == 2
+
+
+def test_current_layout_preferences_preserve_an_explicit_collapsed_panel(tmp_path):
+    path = tmp_path / "app_settings.json"
+    save_app_settings(
+        {
+            "layout_preferences_version": 2,
+            "right_panel_visible": False,
+        },
+        path,
+    )
+
+    loaded = load_app_settings(path)
+
+    assert loaded["right_panel_visible"] is False
+
+
+def test_invalid_layout_preference_version_is_migrated_without_breaking_startup(
+    tmp_path,
+):
+    path = tmp_path / "app_settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "layout_preferences_version": "invalid",
+                "right_panel_visible": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_app_settings(path)
+
+    assert loaded["layout_preferences_version"] == 2
+    assert loaded["right_panel_visible"] is True
+
+
+def test_build_app_settings_update_preserves_existing_safe_values_and_drops_secrets():
+    settings = build_app_settings_update(
+        {
+            "language": "zh_CN",
+            "llm_provider": "mock",
+            "custom_setting": "keep",
+            "api_key": "secret",
+        },
+        language="en_US",
+        llm_provider="local",
+        local_api_url="http://127.0.0.1:8765",
+        fill_mode="CLOSE",
+        fee_bps=5.0,
+        slippage_bps=2.0,
+        trade_notional=2_000.0,
+        initial_equity=20_000.0,
+        render_backend="software",
+    )
+
+    assert settings["language"] == "en_US"
+    assert settings["llm_provider"] == "local"
+    assert settings["custom_setting"] == "keep"
+    assert settings["fill_mode"] == "CLOSE"
+    assert settings["fee_bps"] == 5.0
+    assert settings["trade_notional"] == 2_000.0
+    assert settings["render_backend"] == "software"
+    assert "api_key" not in settings
+
+
+def test_broken_app_settings_are_backed_up_and_defaulted(tmp_path):
+    path = tmp_path / "app_settings.json"
+    path.write_text("{broken", encoding="utf-8")
+
+    with pytest.warns(UserWarning, match="invalid"):
+        loaded = load_app_settings(path)
+
+    assert loaded["language"] == "zh_CN"
+    assert list(tmp_path.glob("app_settings.*.broken.json"))
+
+
+def test_broken_theme_settings_are_backed_up_and_defaulted(tmp_path, monkeypatch):
+    path = tmp_path / "theme_settings.json"
+    path.write_text("{broken", encoding="utf-8")
+    monkeypatch.setattr(app_config, "THEME_CONFIG_PATH", path)
+
+    with pytest.warns(UserWarning, match="invalid"):
+        loaded = app_config.load_theme_settings()
+
+    assert loaded["name"] == app_config.DEFAULT_THEME["name"]
+    assert list(tmp_path.glob("theme_settings.*.broken.json"))
+
+
+def test_app_settings_interrupted_replace_keeps_previous_complete_file(tmp_path, monkeypatch):
+    path = tmp_path / "app_settings.json"
+    save_app_settings({"language": "zh_CN"}, path)
+    previous = path.read_text(encoding="utf-8")
+
+    def fail_replace(_source, _target):
+        raise OSError("replace interrupted")
+
+    monkeypatch.setattr(app_settings.os, "replace", fail_replace)
+
+    with pytest.raises(OSError, match="replace interrupted"):
+        save_app_settings({"language": "en_US"}, path)
+
+    assert path.read_text(encoding="utf-8") == previous
+    assert list(tmp_path.glob(".app_settings.json.*.tmp")) == []
+
+
+def test_theme_settings_interrupted_replace_keeps_previous_complete_file(tmp_path, monkeypatch):
+    path = tmp_path / "theme_settings.json"
+    monkeypatch.setattr(app_config, "THEME_CONFIG_PATH", path)
+    app_config.save_theme_settings(app_config.DEFAULT_THEME)
+    previous = path.read_text(encoding="utf-8")
+
+    monkeypatch.setattr(
+        app_config.os,
+        "replace",
+        lambda _source, _target: (_ for _ in ()).throw(OSError("replace interrupted")),
+    )
+
+    with pytest.raises(OSError, match="replace interrupted"):
+        app_config.save_theme_settings({**app_config.DEFAULT_THEME, "name": "changed"})
+
+    assert path.read_text(encoding="utf-8") == previous
+    assert list(tmp_path.glob(".theme_settings.json.*.tmp")) == []

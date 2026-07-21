@@ -7,7 +7,7 @@ from pathlib import Path
 from PySide6 import QtCore, QtGui
 
 
-WINDOWS_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+WINDOWS_ICON_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 
 
 def _square_canvas(image: QtGui.QImage) -> QtGui.QImage:

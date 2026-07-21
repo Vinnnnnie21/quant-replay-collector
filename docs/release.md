@@ -1,5 +1,46 @@
 # Release Hygiene
 
+## v1.6.0 正式发布
+
+正式 Windows 资产名为 `QRC-v1.6.0-Windows-x64.zip`。应用版本由
+`quant_collector_app/version.py` 提供；Windows 文件版本为 `1.6.0.0`，
+数据库 schema 继续独立维护为 19。
+
+完整用户说明见 [v1.6.0 中文操作教程](USER_GUIDE_v1.6.0.md)，正式变更和门禁见
+[`docs/releases/v1.6.0`](releases/v1.6.0/RELEASE_NOTES.md)。
+
+源码 clean release：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.6.0-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.6.0-Clean
+```
+
+原生验证并把 manifest 标记为通过后，生成 Windows 正式归档：
+
+```powershell
+.\.venv\Scripts\python.exe scripts\package_windows_release.py --root quant_collector_app\dist\QRC --output-dir dist
+```
+
+## v1.6.0-rc.2 Release Candidate（历史）
+
+This release candidate adds the versioned decision-research workspace and its
+entry/exit review, retrieval, modeling, matched-outcome and immutable-report
+paths. SQLite migrations are additive through schema 19 and back up an existing
+database before upgrade. Research scores remain descriptive and are not trading
+signals, win-rate estimates or profit probabilities.
+
+Release acceptance must use temporary or explicit database copies. The default
+core/all self-check does not open the application database; pass
+`--database <copy-path>` only when a database audit is intended.
+
+Clean release commands:
+
+```powershell
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.6.0-rc.2-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.6.0-rc.2-Clean
+```
+
 ## v1.5.2 Release Notes
 
 `v1.5.2` is a language-consistency hotfix. Chinese mode now uses Chinese interface text and English mode uses English interface text throughout replay, analysis, settings and backtest views. Dynamic status, progress, validation, warning and table text is translated through the same resources, and English no longer falls back to Chinese for a missing key.
@@ -28,19 +69,35 @@ The supported release target is Windows x64 with Python 3.13. CI now validates t
 Clean release commands:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.1-Clean
-.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.1-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.6.0-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.6.0-Clean
 ```
 
 ### Windows desktop entry
 
-`quant_collector_app\build_windows.bat` produces `quant_collector_app\dist\QRC.exe`. From the release root, create the current user's `QRC.lnk` desktop shortcut with:
+`quant_collector_app\build_windows.bat` produces the onedir entry point `quant_collector_app\dist\QRC\QRC.exe` and `release-manifest.json`. Run the native start/close gate and mark the manifest before creating the current user's `QRC.lnk` desktop shortcut. Always preview first:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\create_desktop_shortcut.ps1 -TargetPath .\quant_collector_app\dist\QRC.exe
+$env:QRC_RUNTIME_ROOT = "$env:TEMP\qrc-v160-native-validation"
+$env:QRC_NATIVE_SMOKE_EXIT_MS = "1200"
+$process = Start-Process -FilePath .\quant_collector_app\dist\QRC\QRC.exe -PassThru -WindowStyle Hidden
+$process.WaitForExit()
+if ($process.ExitCode -ne 0) { throw "Native launch failed: $($process.ExitCode)" }
+.\.venv\Scripts\python.exe .\scripts\write_release_manifest.py --root .\quant_collector_app\dist\QRC --entrypoint QRC.exe --native-launch-verified
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\create_desktop_shortcut.ps1 -TargetPath .\quant_collector_app\dist\QRC\QRC.exe -ManifestPath .\quant_collector_app\dist\QRC\release-manifest.json -DryRun
 ```
 
-The explicit `ExecutionPolicy Bypass` applies only to this script process and does not change the user's PowerShell policy. Add `-DryRun` to print the resolved shortcut, target, working directory and icon without creating a `.lnk` file. The script needs no administrator rights, does not write the registry and accepts explicit `-TargetPath`, `-DesktopPath`, `-IconPath` and `-ShortcutName` parameters. The application window selects `quant_collector_app/assets/app_logo.png` for dark themes and `quant_collector_app/assets/app_logo_light.png` for light themes. `quant_collector_app/assets/app_icon.ico` is the fixed Windows executable and shortcut icon generated from the dark-theme logo. If the icon is removed, shortcut creation still falls back to the executable's default icon.
+The validation runtime must be disposable and must not point at
+`quant_collector_app/data`. The manifest may be marked only after the process
+exits with code 0. The explicit `ExecutionPolicy Bypass` applies only to this
+script process and does not change the user's PowerShell policy. `-DryRun`
+prints the resolved shortcut, target, working directory, verified manifest and
+icon without creating a `.lnk` file. The script needs no administrator rights,
+does not write the registry and accepts explicit `-TargetPath`, `-DesktopPath`,
+`-IconPath`, `-ManifestPath` and `-ShortcutName` parameters.
+The default shortcut icon is
+`quant_collector_app/assets/app_icon.ico`; when it is absent the script keeps
+the executable's embedded default icon.
 
 Regenerate the multi-size icon after replacing the PNG source:
 
@@ -100,8 +157,8 @@ This is a replay and research application. It does not connect to Binance order 
 Run from PowerShell at the repository root:
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.2-Clean
-.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.2-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.6.0-rc.2-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.6.0-rc.2-Clean
 ```
 
 The output contains the source package, public documentation, tests, requirements and launch scripts. It includes `clean_release_report.json` and `clean_release_report.md`. The default public reports omit local absolute paths and individual skipped file names.
@@ -124,8 +181,8 @@ PowerShell verification commands. Use the project virtual environment so release
 .\.venv\Scripts\python.exe -m compileall -q quant_collector_app tests
 .\.venv\Scripts\python.exe -m pytest -q
 .\.venv\Scripts\python.exe -m quant_collector_app.self_check --core
-.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.5.2-Clean
-.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.5.2-Clean
+.\.venv\Scripts\python.exe scripts\clean_release.py --output dist\QuantReplayCollector-v1.6.0-rc.2-Clean
+.\.venv\Scripts\python.exe scripts\check_release_clean.py dist\QuantReplayCollector-v1.6.0-rc.2-Clean
 ```
 
 Inspect local-only files before staging:
@@ -140,11 +197,11 @@ The second command must produce no tracked runtime data, archives, caches, logs,
 Publish through a branch:
 
 ```powershell
-git switch -c release/v1.5.2
+git switch -c release/v1.6.0-rc.2
 git add .gitignore .github README.md CHANGELOG.md docs quant_collector_app requirements.txt requirements-lock.txt run_app.py run_app.pyw scripts start.bat tests
 git status --short
-git commit -m "Prepare v1.5.2 release"
-git push -u origin release/v1.5.2
+git commit -m "Prepare v1.6.0-rc.2 release"
+git push -u origin release/v1.6.0-rc.2
 ```
 
 Open a pull request to `main`. GitHub Actions will run compilation, tests, the core health check, build a downloadable clean artifact and reject contaminated output. Create a GitHub Release from the reviewed merge commit or a release tag, and upload the checked clean artifact rather than the development directory.
@@ -152,5 +209,5 @@ Open a pull request to `main`. GitHub Actions will run compilation, tests, the c
 For a manually uploaded archive, package only the checked output:
 
 ```powershell
-Compress-Archive -Path dist/QuantReplayCollector-v1.5.2-Clean/* -DestinationPath QuantReplayCollector-v1.5.2-Clean.zip -Force
+Compress-Archive -Path dist/QuantReplayCollector-v1.6.0-rc.2-Clean/* -DestinationPath QuantReplayCollector-v1.6.0-rc.2-Clean.zip -Force
 ```

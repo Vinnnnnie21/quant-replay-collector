@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
 from textwrap import dedent
 
 
@@ -167,12 +169,78 @@ SPACING = {
     "xl": 16,
 }
 
+WORKSPACE_SIZES = {
+    "audit_detail_min_height": 160,
+    "blind_chart_min_height": 130,
+    "blind_batch_min_width": 180,
+    "blind_chart_column_min_width": 420,
+    "blind_form_min_width": 260,
+    "blind_reason_max_height": 120,
+    "blind_note_min_height": 90,
+    "blind_columns_content_min_width": 700,
+    "setup_rules_min_height": 120,
+}
+
 # 交易终端采用紧凑的无衬线字阶。Inter 在可用时提供一致的数字宽度和
 # 英文观感；Windows 则优先使用系统 UI 字体，最后回退到常见中文字体。
-UI_FONT_FAMILY = (
-    '"Inter", "Segoe UI Variable", "Segoe UI", "Microsoft YaHei UI", '
-    '"Microsoft YaHei", "Noto Sans SC", sans-serif'
+_CJK_UI_FONT_FAMILIES = (
+    "Noto Sans SC",
+    "Microsoft YaHei UI",
+    "Microsoft YaHei",
+    "DengXian",
 )
+UI_FONT_FAMILY = (
+    '"Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", '
+    '"DengXian", "Segoe UI Variable", "Segoe UI", "Inter", sans-serif'
+)
+_WINDOWS_CJK_FONT_FILES = (
+    "NotoSansSC-VF.ttf",
+    "msyh.ttc",
+    "Deng.ttf",
+)
+
+
+def ensure_ui_font_support(app=None) -> str | None:
+    """Make a Windows CJK system font visible to Qt before applying QSS."""
+    from PySide6 import QtGui, QtWidgets
+
+    application = app or QtWidgets.QApplication.instance()
+    if application is None:
+        raise RuntimeError("QApplication must exist before loading UI fonts")
+
+    probe = "决策研究"
+
+    def supported_family() -> str | None:
+        for family in _CJK_UI_FONT_FAMILIES:
+            metrics = QtGui.QFontMetrics(QtGui.QFont(family))
+            if all(metrics.inFontUcs4(ord(character)) for character in probe):
+                return family
+        return None
+
+    family = supported_family()
+    if family is None and os.name == "nt":
+        windows_root = Path(
+            os.environ.get("WINDIR")
+            or os.environ.get("SystemRoot")
+            or r"C:\Windows"
+        )
+        fonts_root = windows_root / "Fonts"
+        for filename in _WINDOWS_CJK_FONT_FILES:
+            path = fonts_root / filename
+            if not path.is_file():
+                continue
+            font_id = QtGui.QFontDatabase.addApplicationFont(str(path))
+            if font_id < 0:
+                continue
+            family = supported_family()
+            if family is not None:
+                break
+
+    if family is not None:
+        application_font = application.font()
+        application_font.setFamily(family)
+        application.setFont(application_font)
+    return family
 
 FONT_SIZES = {
     "small": 12,

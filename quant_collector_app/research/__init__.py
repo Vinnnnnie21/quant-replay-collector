@@ -1,32 +1,47 @@
-"""Auditable quantitative research pipeline for Quant Replay Collector."""
+"""Auditable research APIs with lazy package-level compatibility exports."""
 
-from .behavior_model import (
-    compute_behavior_entropy,
-    compute_profile_adherence,
-    compute_state_action_table,
-    summarize_action_frequency,
-    summarize_behavior_model,
-)
-from .context_features import compute_context_features_for_sample, compute_multi_window_context_features
-from .matched_baseline import (
-    MatchedBaselineSpec,
-    bootstrap_effect_ci,
-    build_match_pool,
-    compare_user_vs_controls,
-    compute_context_distance,
-    permutation_test_effect,
-    select_matched_controls,
-    summarize_matched_baseline,
-)
-from .multiple_testing import add_fdr_results, benjamini_hochberg, multiple_testing_warning
-from .outcome_labels import compute_multi_horizon_outcome_labels, compute_outcome_labels_for_sample
-from .validation import (
-    minimum_sample_gate,
-    oos_degradation_gate,
-    purged_embargo_split,
-    summarize_rule_validation,
-    validate_candidate_rule,
-)
+from __future__ import annotations
+
+from importlib import import_module
+from typing import Any
+
+
+_EXPORT_MODULES = {
+    "compute_behavior_entropy": ".behavior_model",
+    "compute_profile_adherence": ".behavior_model",
+    "compute_state_action_table": ".behavior_model",
+    "summarize_action_frequency": ".behavior_model",
+    "summarize_behavior_model": ".behavior_model",
+    "compute_context_features_for_sample": ".context_features",
+    "compute_multi_window_context_features": ".context_features",
+    "MatchedBaselineSpec": ".matched_baseline",
+    "bootstrap_effect_ci": ".matched_baseline",
+    "build_match_pool": ".matched_baseline",
+    "compare_user_vs_controls": ".matched_baseline",
+    "compute_context_distance": ".matched_baseline",
+    "permutation_test_effect": ".matched_baseline",
+    "select_matched_controls": ".matched_baseline",
+    "summarize_matched_baseline": ".matched_baseline",
+    "add_fdr_results": ".multiple_testing",
+    "benjamini_hochberg": ".multiple_testing",
+    "multiple_testing_warning": ".multiple_testing",
+    "compute_multi_horizon_outcome_labels": ".outcome_labels",
+    "compute_outcome_labels_for_sample": ".outcome_labels",
+    "minimum_sample_gate": ".validation",
+    "oos_degradation_gate": ".validation",
+    "purged_embargo_split": ".validation",
+    "summarize_rule_validation": ".validation",
+    "validate_candidate_rule": ".validation",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name, __name__), name)
+    globals()[name] = value
+    return value
 
 
 def run_research_pack(*args, **kwargs):
@@ -36,31 +51,5 @@ def run_research_pack(*args, **kwargs):
 
     return implementation(*args, **kwargs)
 
-__all__ = [
-    "MatchedBaselineSpec",
-    "add_fdr_results",
-    "benjamini_hochberg",
-    "bootstrap_effect_ci",
-    "build_match_pool",
-    "compare_user_vs_controls",
-    "compute_behavior_entropy",
-    "compute_context_features_for_sample",
-    "compute_context_distance",
-    "compute_multi_horizon_outcome_labels",
-    "compute_multi_window_context_features",
-    "compute_outcome_labels_for_sample",
-    "compute_profile_adherence",
-    "compute_state_action_table",
-    "minimum_sample_gate",
-    "multiple_testing_warning",
-    "oos_degradation_gate",
-    "permutation_test_effect",
-    "purged_embargo_split",
-    "run_research_pack",
-    "select_matched_controls",
-    "summarize_action_frequency",
-    "summarize_behavior_model",
-    "summarize_matched_baseline",
-    "summarize_rule_validation",
-    "validate_candidate_rule",
-]
+
+__all__ = [*_EXPORT_MODULES, "run_research_pack"]

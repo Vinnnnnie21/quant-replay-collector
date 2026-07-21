@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from bisect import bisect_left
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -175,6 +176,8 @@ def prepare_analysis_refresh_snapshot(
     events: Iterable[dict[str, Any]] = ()
     trades: Iterable[dict[str, Any]] = ()
     features: Iterable[dict[str, Any]] = ()
+    session: dict[str, Any] | None = None
+    storage: Any | None = None
     sqlite_thread_id: int | None = None
     if request.session_id and request.db_path:
         if storage_factory is None:
@@ -186,21 +189,42 @@ def prepare_analysis_refresh_snapshot(
             storage_factory = StorageManager
         storage = storage_factory(request.db_path)
         sqlite_thread_id = threading.get_ident()
-        _session, trades, events = storage.load_session_snapshot(request.session_id)
+        session, trades, events = storage.load_session_snapshot(request.session_id)
         _raise_if_cancelled(cancelled)
         features = storage.fetch_table(
             "event_features", "session_id=?", (request.session_id,)
         )
     _raise_if_cancelled(cancelled)
     published = request.market_data
+    market_frame = published.frame if published is not None else None
+    market_cursor = request.market_cursor
+    if published is None and session is not None and storage is not None:
+        try:
+            from services.performance_market_data import (
+                load_session_performance_market_data,
+            )
+        except ImportError:  # pragma: no cover - package import path
+            from .performance_market_data import load_session_performance_market_data
+
+        restored_market = load_session_performance_market_data(
+            storage,
+            session,
+            trades,
+            cache_dir=Path(request.db_path).parent / "cache",
+            cancelled=cancelled,
+        )
+        _raise_if_cancelled(cancelled)
+        if restored_market is not None:
+            market_frame = pd.DataFrame.from_records(restored_market.rows)
+            market_cursor = restored_market.cursor
     snapshot = AnalysisRefreshSnapshot(
         events=events,
         features=features,
         trades=trades,
         equity_rows=(),
         initial_equity=request.initial_equity,
-        market_frame=published.frame if published is not None else None,
-        market_cursor=request.market_cursor,
+        market_frame=market_frame,
+        market_cursor=market_cursor,
         session_id=request.session_id,
         trade_notional=request.trade_notional,
         language=request.language,
@@ -352,8 +376,10 @@ def _performance_trade_markers(
     trade_rows = tuple(trades)
     positions: list[tuple[int, int, dict[str, Any]]] = []
     for position, row in enumerate(equity_rows):
+        if row.get("bar_index") is None:
+            continue
         try:
-            bar_index = int(row.get("bar_index", position))
+            bar_index = int(row["bar_index"])
         except (TypeError, ValueError):
             continue
         positions.append((bar_index, position, row))
@@ -536,15 +562,14 @@ def build_analysis_refresh_result(
     cancelled: Callable[[], bool] | None = None,
     progress: Callable[[str], None] | None = None,
 ) -> AnalysisRefreshResult:
-    _raise_if_cancelled(cancelled)
-    if progress is not None:
-        progress(tr("analysis.progress.event_study", snapshot.language))
-    event_study, event_warning = build_event_study_summary_frame(
-        snapshot.events,
-        snapshot.features,
-        build_summary_fn=build_event_study_fn,
-        language=snapshot.language,
-    )
+    """Build the live analysis payload without starting legacy event research.
+
+    ``build_event_study_fn`` remains accepted so older callers do not break, but
+    live refresh deliberately never invokes it. Historical research exports use
+    :func:`build_event_study_summary_frame` as an explicit compatibility path.
+    """
+
+    _ = build_event_study_fn
     _raise_if_cancelled(cancelled)
     if progress is not None:
         progress(tr("analysis.progress.dataset", snapshot.language))
@@ -568,11 +593,15 @@ def build_analysis_refresh_result(
         language=snapshot.language,
     )
     _raise_if_cancelled(cancelled)
-    warnings = tuple(w for w in (event_warning, dataset_warning, performance_warning) if w)
+    warnings = tuple(
+        warning
+        for warning in (dataset_warning, performance_warning)
+        if warning
+    )
     performance_workspace = _performance_workspace_payload(snapshot, equity_rows)
     display_equity_rows = performance_workspace.equity_rows
     return AnalysisRefreshResult(
-        event_study=event_study,
+        event_study=pd.DataFrame(),
         dataset_text=dataset_text,
         performance_text=performance_text,
         warnings=warnings,

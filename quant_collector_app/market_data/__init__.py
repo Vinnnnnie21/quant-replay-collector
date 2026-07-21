@@ -7,6 +7,7 @@ from importlib import import_module
 
 _EXPORTS = {
     "BINANCE_RAW_COLUMNS": ("market_data.types", "BINANCE_RAW_COLUMNS"),
+    "KLINE_ANCILLARY_COLUMNS": ("market_data.types", "KLINE_ANCILLARY_COLUMNS"),
     "PRICE_COLUMNS": ("market_data.types", "PRICE_COLUMNS"),
     "VALID_INTERVALS": ("market_data.types", "VALID_INTERVALS"),
     "DataLoadCancelled": ("market_data.types", "DataLoadCancelled"),
@@ -27,6 +28,7 @@ _EXPORTS = {
     "DataQualityReport": ("market_data.quality", "DataQualityReport"),
     "assess_data_quality": ("market_data.quality", "assess_data_quality"),
     "_normalize_kline_df": ("market_data.transforms", "_normalize_kline_df"),
+    "iter_kline_storage_rows": ("market_data.transforms", "iter_kline_storage_rows"),
     "normalize_kline_df": ("market_data.transforms", "normalize_kline_df"),
     "build_feature_row": ("market_data.features", "build_feature_row"),
     "build_window_rows": ("market_data.features", "build_window_rows"),

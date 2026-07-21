@@ -9,6 +9,12 @@ REQUIRED_MODULES = (
     "app_icon",
     "app_config",
     "app_i18n",
+    "research.entry_behavior_codec",
+    "research.entry_behavior_model",
+    "research.entry_behavior_training",
+    "research.entry_behavior_validation",
+    "services.entry_behavior_training",
+    "sklearn",
     "storage",
     "views.main_window_layout",
 )

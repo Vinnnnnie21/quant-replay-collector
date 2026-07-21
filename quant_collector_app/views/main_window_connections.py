@@ -73,6 +73,10 @@ def connect_main_window_signals(window) -> None:
     window.btnAnalysis.clicked.connect(window.open_analysis_workspace)
     if hasattr(window, "btnReplayWorkspace"):
         window.btnReplayWorkspace.clicked.connect(window.open_replay_workspace)
+    if hasattr(window, "btnOpenDecisionResearch"):
+        window.btnOpenDecisionResearch.clicked.connect(
+            window.open_decision_research_workspace
+        )
     window.btnSettings.clicked.connect(window.open_settings_dialog)
     window.btnOpenLong.clicked.connect(lambda: window.request_open_trade("LONG"))
     window.btnOpenShort.clicked.connect(lambda: window.request_open_trade("SHORT"))

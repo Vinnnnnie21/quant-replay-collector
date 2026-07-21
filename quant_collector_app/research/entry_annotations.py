@@ -5,17 +5,17 @@ from dataclasses import dataclass, fields
 from enum import Enum
 from typing import Any
 
+try:
+    from research.setups import DecisionProtocol as DecisionTiming
+except ImportError:  # pragma: no cover - package import path
+    from .setups import DecisionProtocol as DecisionTiming
+
 
 class HumanDecision(str, Enum):
     ENTRY = "ENTRY"
     REJECT = "REJECT"
     UNCERTAIN = "UNCERTAIN"
     UNLABELED = "UNLABELED"
-
-
-class DecisionTiming(str, Enum):
-    CURRENT_BAR_CLOSE = "CURRENT_BAR_CLOSE"
-    NEXT_BAR_CONFIRMATION = "NEXT_BAR_CONFIRMATION"
 
 
 class EntryReasonTag(str, Enum):

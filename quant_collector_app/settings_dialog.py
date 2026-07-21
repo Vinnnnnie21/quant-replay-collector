@@ -195,7 +195,15 @@ class SettingsDialog(QtWidgets.QDialog):
 
     def _storage_tab(self) -> QtWidgets.QWidget:
         tab = QtWidgets.QWidget()
-        form = QtWidgets.QFormLayout(tab)
+        layout = QtWidgets.QVBoxLayout(tab)
+        layout.setContentsMargins(
+            SPACING["md"],
+            SPACING["md"],
+            SPACING["md"],
+            SPACING["md"],
+        )
+        layout.setSpacing(SPACING["md"])
+        form = QtWidgets.QFormLayout()
         form.setContentsMargins(SPACING["md"], SPACING["md"], SPACING["md"], SPACING["md"])
         form.setSpacing(SPACING["sm"])
         self.cacheLimitSpin = self._double_spin(1.0, 50.0, 5.0)
@@ -209,6 +217,33 @@ class SettingsDialog(QtWidgets.QDialog):
         form.addRow("", hint)
         render_hint = self._hint_label("settings.render_hint")
         form.addRow("", render_hint)
+        layout.addLayout(form)
+        maintenance_title = self._form_label(
+            "settings.data_maintenance"
+        )
+        maintenance_title.setProperty("role", "sectionTitle")
+        layout.addWidget(maintenance_title)
+        layout.addWidget(
+            self._hint_label("settings.full_history_backfill_hint")
+        )
+        self.btnBackfillFullHistory = QtWidgets.QPushButton()
+        self.btnBackfillFullHistory.setProperty("role", "secondaryButton")
+        bind_text(
+            self.btnBackfillFullHistory,
+            "settings.full_history_backfill",
+            self._tr,
+        )
+        start_backfill = getattr(
+            self.app_window,
+            "start_full_history_ancillary_backfill",
+            None,
+        )
+        if callable(start_backfill):
+            self.btnBackfillFullHistory.clicked.connect(start_backfill)
+        else:
+            self.btnBackfillFullHistory.setEnabled(False)
+        layout.addWidget(self.btnBackfillFullHistory)
+        layout.addStretch(1)
         return tab
 
     def _color_row(self, key: str) -> QtWidgets.QWidget:

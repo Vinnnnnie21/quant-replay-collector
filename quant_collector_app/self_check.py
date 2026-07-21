@@ -104,16 +104,14 @@ def _gui_dependency_check() -> dict:
 
 
 def _database_integrity_probe(
-    db_path: str | Path | None = None,
+    db_path: str | Path,
     backup_dir: str | Path | None = None,
     create_backup: bool = False,
 ) -> dict:
-    from app_config import BACKUP_DIR, DB_PATH
     from database_backup import backup_database, export_annotations_jsonl, run_database_integrity_check
     from storage import StorageManager
 
-    target_db = Path(db_path or DB_PATH)
-    target_backup_dir = Path(backup_dir or BACKUP_DIR)
+    target_db = Path(db_path)
     report = run_database_integrity_check(
         target_db,
         expected_schema_version=StorageManager.SCHEMA_VERSION,
@@ -125,6 +123,12 @@ def _database_integrity_probe(
         )
         if can_backup:
             try:
+                if backup_dir is None:
+                    from app_config import BACKUP_DIR
+
+                    target_backup_dir = Path(BACKUP_DIR)
+                else:
+                    target_backup_dir = Path(backup_dir)
                 backup = backup_database(target_db, target_backup_dir)
                 annotations = export_annotations_jsonl(target_db, target_backup_dir)
                 report["backup"] = {
@@ -258,11 +262,19 @@ def run_self_check(
         return {"status": gui["status"], "mode": mode, "gui": gui}
     result = _run_core_check()
     result["mode"] = mode
-    database_integrity = _database_integrity_probe(
-        db_path=db_path,
-        backup_dir=backup_dir,
-        create_backup=backup_database_requested,
-    )
+    if db_path is None:
+        if backup_database_requested:
+            raise ValueError("A database path is required when backup is requested.")
+        database_integrity = {
+            "status": "skipped",
+            "reason": "database_not_requested",
+        }
+    else:
+        database_integrity = _database_integrity_probe(
+            db_path=db_path,
+            backup_dir=backup_dir,
+            create_backup=backup_database_requested,
+        )
     result["database_integrity"] = database_integrity
     if database_integrity.get("status") == "failed":
         result["status"] = "failed"
@@ -278,10 +290,27 @@ def main() -> int:
     mode.add_argument("--core", action="store_true", help="Run non-GUI storage and export checks (default).")
     mode.add_argument("--gui", action="store_true", help="Run GUI dependency and offscreen application probes only.")
     mode.add_argument("--all", action="store_true", help="Run core and GUI probes.")
+    parser.add_argument(
+        "--database",
+        type=Path,
+        help="Explicit SQLite database to audit; omitted by default to protect local data.",
+    )
+    parser.add_argument(
+        "--backup-dir",
+        type=Path,
+        help="Backup destination used with --backup-database.",
+    )
     parser.add_argument("--backup-database", action="store_true", help="Create a verified SQLite backup and entry annotation JSONL backup.")
     args = parser.parse_args()
+    if args.backup_database and args.database is None:
+        parser.error("--backup-database requires --database")
     requested_mode = "all" if args.all else "gui" if args.gui else "core"
-    result = run_self_check(mode=requested_mode, backup_database_requested=args.backup_database)
+    result = run_self_check(
+        mode=requested_mode,
+        db_path=args.database,
+        backup_dir=args.backup_dir,
+        backup_database_requested=args.backup_database,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result["status"] == "ok" else 1
 

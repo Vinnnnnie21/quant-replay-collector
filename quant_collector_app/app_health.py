@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 
-CORE_REQUIRED_DEPENDENCIES = ("pandas", "numpy", "requests")
+CORE_REQUIRED_DEPENDENCIES = ("pandas", "numpy", "requests", "sklearn")
 GUI_REQUIRED_DEPENDENCIES = ("PySide6", "pyqtgraph")
 REQUIRED_DEPENDENCIES = CORE_REQUIRED_DEPENDENCIES + GUI_REQUIRED_DEPENDENCIES
 OPTIONAL_DEPENDENCIES = ("pyarrow", "matplotlib", "fastapi", "uvicorn")

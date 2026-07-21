@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
+
+if TYPE_CHECKING:
+    from .market_episodes import EpisodeResolver
 
 import pandas as pd
 
@@ -465,6 +468,9 @@ def build_purged_chronological_split(
     max_gap_bars: int | None = None,
     enforce_episode_purity: bool = False,
     bar_col: str | None = None,
+    episode_service: EpisodeResolver | None = None,
+    episode_grouping_version_id: str | None = None,
+    episode_sample_id_col: str = "observation_id",
 ) -> SplitResult:
     resolved_validation_ratio = validation_ratio if validation_ratio is not None else val_ratio
     if resolved_validation_ratio is None or test_ratio is None:
@@ -477,7 +483,20 @@ def build_purged_chronological_split(
         bar_col=bar_col,
     )
     gap = episode_gap_bars if episode_gap_bars is not None else max_gap_bars
-    if gap is not None:
+    if episode_service is not None:
+        if gap is not None:
+            raise ValueError(
+                "persisted episode grouping cannot be combined with legacy episode_gap_bars"
+            )
+        ordered = _attach_persisted_episode_ids(
+            ordered,
+            episode_service=episode_service,
+            grouping_version_id=episode_grouping_version_id,
+            sample_id_col=episode_sample_id_col,
+        )
+    elif episode_grouping_version_id is not None:
+        raise ValueError("episode_service is required with episode_grouping_version_id")
+    elif gap is not None:
         ordered = assign_episode_id(ordered, max_gap_bars=gap, bar_col=bar_col)
     train, validation, test = _chronological_frames(
         ordered,
@@ -486,7 +505,7 @@ def build_purged_chronological_split(
         test_ratio=float(test_ratio),
         bar_col=bar_col,
     )
-    return _make_split_result(
+    result = _make_split_result(
         train,
         validation,
         test,
@@ -498,6 +517,9 @@ def build_purged_chronological_split(
         enforce_episode_purity=enforce_episode_purity,
         bar_col=bar_col,
     )
+    if episode_grouping_version_id is not None:
+        result.summary["episode_grouping_version_id"] = episode_grouping_version_id
+    return result
 
 
 def build_purged_walk_forward_splits(
@@ -516,6 +538,9 @@ def build_purged_walk_forward_splits(
     max_gap_bars: int | None = None,
     enforce_episode_purity: bool = False,
     bar_col: str | None = None,
+    episode_service: EpisodeResolver | None = None,
+    episode_grouping_version_id: str | None = None,
+    episode_sample_id_col: str = "observation_id",
 ) -> WalkForwardSplitResult:
     resolved_validation_window = validation_window if validation_window is not None else val_window
     if resolved_validation_window is None or test_window is None or step is None:
@@ -534,7 +559,20 @@ def build_purged_walk_forward_splits(
         bar_col=bar_col,
     )
     gap = episode_gap_bars if episode_gap_bars is not None else max_gap_bars
-    if gap is not None:
+    if episode_service is not None:
+        if gap is not None:
+            raise ValueError(
+                "persisted episode grouping cannot be combined with legacy episode_gap_bars"
+            )
+        ordered = _attach_persisted_episode_ids(
+            ordered,
+            episode_service=episode_service,
+            grouping_version_id=episode_grouping_version_id,
+            sample_id_col=episode_sample_id_col,
+        )
+    elif episode_grouping_version_id is not None:
+        raise ValueError("episode_service is required with episode_grouping_version_id")
+    elif gap is not None:
         ordered = assign_episode_id(ordered, max_gap_bars=gap, bar_col=bar_col)
     total_window = train_size + validation_size + test_size
     warnings: list[str] = []
@@ -570,6 +608,10 @@ def build_purged_walk_forward_splits(
             bar_col=bar_col,
             fold_index=fold_index,
         )
+        if episode_grouping_version_id is not None:
+            fold.summary["episode_grouping_version_id"] = (
+                episode_grouping_version_id
+            )
         folds.append(fold)
         warnings.extend(fold.warnings)
     summary = {
@@ -584,7 +626,32 @@ def build_purged_walk_forward_splits(
         "embargo_bars": int(embargo_bars),
         "warnings": list(dict.fromkeys(warnings)),
     }
+    if episode_grouping_version_id is not None:
+        summary["episode_grouping_version_id"] = episode_grouping_version_id
     return WalkForwardSplitResult(folds=folds, summary=summary, warnings=summary["warnings"])
+
+
+def _attach_persisted_episode_ids(
+    frame: pd.DataFrame,
+    *,
+    episode_service: EpisodeResolver,
+    grouping_version_id: str | None,
+    sample_id_col: str,
+) -> pd.DataFrame:
+    if not grouping_version_id:
+        raise ValueError("episode_grouping_version_id is required with episode_service")
+    if sample_id_col not in frame.columns:
+        raise ValueError(f"Missing episode sample id column: {sample_id_col}")
+    sample_ids = frame[sample_id_col].astype(str).tolist()
+    assignments = episode_service.resolve_episode_ids(grouping_version_id, sample_ids)
+    if len(assignments) != len(sample_ids):
+        raise ValueError("episode resolver returned an incomplete assignment set")
+    episode_by_sample = {item.sample_id: item.episode_id for item in assignments}
+    output = frame.copy()
+    output["episode_id"] = output[sample_id_col].astype(str).map(episode_by_sample)
+    if output["episode_id"].isna().any():
+        raise ValueError("episode resolver omitted one or more training samples")
+    return output
 
 
 def _make_split_result(

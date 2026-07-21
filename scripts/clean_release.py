@@ -3,15 +3,22 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = REPO_ROOT / "dist" / "QuantReplayCollector-v1.5.2-Clean"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from quant_collector_app.version import __version__
+
+
+DEFAULT_OUTPUT = REPO_ROOT / "dist" / f"QuantReplayCollector-v{__version__}-Clean"
 PROJECT_NAME = "Quant Replay Collector"
-RELEASE_VERSION = "v1.5.2"
+RELEASE_VERSION = f"v{__version__}"
 ROOT_CONTENT = (
     "README.md",
     "CHANGELOG.md",
@@ -26,8 +33,13 @@ ROOT_CONTENT = (
     "run_app.py",
     "run_app.pyw",
     "scripts/create_desktop_shortcut.ps1",
+    "scripts/cleanup_test_artifacts.py",
     "scripts/generate_app_icon.py",
+    "scripts/package_windows_release.py",
+    "scripts/prune_windows_package.py",
     "scripts/verify_frozen_archive.py",
+    "scripts/write_release_manifest.py",
+    "scripts/write_windows_version_info.py",
 )
 EXCLUDED_DIR_NAMES = {
     ".agents",
@@ -71,6 +83,7 @@ def excluded_reason(relative_path: Path) -> str | None:
     if len(parts) >= 3 and parts[:3] in {
         ("quant_collector_app", "data", "cache"),
         ("quant_collector_app", "data", "exports"),
+        ("quant_collector_app", "data", "research_snapshots"),
     }:
         return "runtime_data"
     if len(parts) >= 3 and parts[:2] == ("quant_collector_app", "data"):
@@ -93,17 +106,42 @@ def excluded_reason(relative_path: Path) -> str | None:
     return None
 
 
+def _is_link_like(path: Path) -> bool:
+    return path.is_symlink() or bool(getattr(path, "is_junction", lambda: False)())
+
+
+def _is_generated_release_output(output_dir: Path) -> bool:
+    marker = output_dir / "clean_release_report.json"
+    if not marker.is_file() or _is_link_like(marker):
+        return False
+    try:
+        payload = json.loads(marker.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return payload.get("project") == PROJECT_NAME
+
+
 def build_release(
     output_dir: Path,
     source_root: Path = REPO_ROOT,
     *,
     include_private_report: bool = False,
 ) -> dict:
-    output_dir = output_dir.resolve()
+    unresolved_output = Path(output_dir).absolute()
+    if any(
+        path.exists() and _is_link_like(path)
+        for path in (unresolved_output, *unresolved_output.parents)
+    ):
+        raise ValueError("Output path must not pass through a symbolic link.")
+    output_dir = unresolved_output.resolve()
     source_root = source_root.resolve()
     if output_dir == source_root or output_dir in source_root.parents:
         raise ValueError("Output directory must not replace or contain the source repository.")
     if output_dir.exists():
+        if not output_dir.is_dir() or not _is_generated_release_output(output_dir):
+            raise ValueError(
+                "Existing output is not a generated clean release; refusing to delete it."
+            )
         shutil.rmtree(output_dir)
     output_dir.mkdir(parents=True)
 
@@ -115,9 +153,22 @@ def build_release(
         if not source.exists():
             missing.append(item_name)
             continue
-        candidates = [source] if source.is_file() else [p for p in source.rglob("*") if p.is_file()]
+        candidates = (
+            [source]
+            if source.is_file() or _is_link_like(source)
+            else [
+                path
+                for path in source.rglob("*")
+                if path.is_file() or _is_link_like(path)
+            ]
+        )
         for candidate in candidates:
             relative_path = candidate.relative_to(source_root)
+            if _is_link_like(candidate):
+                skipped.append(
+                    {"path": str(relative_path), "reason": "symbolic_link"}
+                )
+                continue
             reason = excluded_reason(relative_path)
             if reason:
                 skipped.append({"path": str(relative_path), "reason": reason})

@@ -27,6 +27,10 @@ ABSOLUTE_PATH_PATTERNS = (
 )
 
 
+def _is_link_like(path: Path) -> bool:
+    return path.is_symlink() or bool(getattr(path, "is_junction", lambda: False)())
+
+
 def contamination_reason(relative_path: Path) -> str | None:
     parts = tuple(part.casefold() for part in relative_path.parts)
     if parts[:2] == ("docs", "agents"):
@@ -39,6 +43,11 @@ def contamination_reason(relative_path: Path) -> str | None:
         return "runtime data cache directory"
     if any(parts[index : index + 2] == ("data", "exports") for index in range(len(parts) - 1)):
         return "local export directory"
+    if any(
+        parts[index : index + 2] == ("data", "research_snapshots")
+        for index in range(len(parts) - 1)
+    ):
+        return "local research snapshot directory"
     if "cache" in parts:
         return "cache directory"
     posix = relative_path.as_posix().casefold()
@@ -84,6 +93,14 @@ def inspect_release(directory: Path) -> list[tuple[str, str]]:
     contamination: list[tuple[str, str]] = []
     for path in root.rglob("*"):
         relative_path = path.relative_to(root)
+        if _is_link_like(path):
+            contamination.append(
+                (
+                    relative_path.as_posix(),
+                    "symbolic link is not allowed in a release",
+                )
+            )
+            continue
         reason = contamination_reason(relative_path)
         if reason:
             contamination.append((relative_path.as_posix(), reason))
