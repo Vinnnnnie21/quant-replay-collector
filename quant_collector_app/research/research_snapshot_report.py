@@ -299,6 +299,19 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _strategy_spec_for_publish(
+    draft: ResearchSnapshotDraft,
+    *,
+    snapshot_id: str,
+) -> dict[str, Any] | None:
+    if "strategy_spec" not in draft.manifest:
+        return None
+    payload = snapshot_manifest_as_dict(draft.manifest["strategy_spec"])
+    provenance = dict(payload["provenance"])
+    provenance["research_snapshot_id"] = snapshot_id
+    return {**payload, "provenance": provenance}
+
+
 def verify_research_snapshot_package(
     directory: Path,
     *,
@@ -384,11 +397,25 @@ def write_research_snapshot_package(
 ) -> dict[str, Any]:
     directory.mkdir(parents=True, exist_ok=True)
     content = draft.manifest["content"]
+    strategy_spec = _strategy_spec_for_publish(draft, snapshot_id=snapshot_id)
     _checkpoint(cancelled, progress, "正在生成中文研究报告")
     (directory / "research_report.md").write_text(
         _report_markdown(draft),
         encoding="utf-8",
     )
+    if strategy_spec is not None:
+        _checkpoint(cancelled, progress, "Writing structured StrategySpec")
+        (directory / "strategy_spec_v1.json").write_text(
+            json.dumps(
+                strategy_spec,
+                ensure_ascii=False,
+                allow_nan=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
     table_rows = {
         "samples": content["sample_rows"],
         "coefficients": content["coefficient_rows"],
@@ -431,7 +458,9 @@ def write_research_snapshot_package(
         },
         "export_manifest": {"json": "export_manifest.json"},
     }
-    artifact_names = (
+    if strategy_spec is not None:
+        files["strategy_spec"] = {"json": "strategy_spec_v1.json"}
+    artifact_names = [
         "research_report.md",
         "samples.csv",
         "coefficients.csv",
@@ -439,12 +468,15 @@ def write_research_snapshot_package(
         "outcomes.csv",
         "outcome_matrix.png",
         "strategy_hypothesis_card.json",
-    )
+    ]
+    if strategy_spec is not None:
+        artifact_names.append("strategy_spec_v1.json")
     artifact_hashes = {
         name: _sha256(directory / name) for name in artifact_names
     }
     manifest = {
         **snapshot_manifest_as_dict(draft.manifest),
+        **({"strategy_spec": strategy_spec} if strategy_spec is not None else {}),
         "snapshot_id": snapshot_id,
         "row_counts": {
             name: len(rows) for name, rows in table_rows.items()

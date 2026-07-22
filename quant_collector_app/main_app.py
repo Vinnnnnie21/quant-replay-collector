@@ -720,6 +720,9 @@ class MainWindow(QtWidgets.QMainWindow):
             apply_role_button_styles(panel, self.theme_settings)
             apply_themed_input_styles(panel, self.theme_settings)
             apply_role_button_shadows(panel)
+            apply_panel_theme = getattr(panel, "apply_theme", None)
+            if callable(apply_panel_theme):
+                apply_panel_theme(self.theme_settings)
         except Exception:
             logger.exception("Lazy analysis panel theme application failed")
         return panel

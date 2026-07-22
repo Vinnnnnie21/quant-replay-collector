@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from PySide6 import QtCore, QtWidgets
+from PySide6 import QtCore, QtGui, QtWidgets
 
 try:
     from app_i18n import tr
@@ -25,7 +25,12 @@ try:
         localize_warnings,
         trade_rows,
     )
+    from presenters.backtest_result_display import value_tone
     from presenters.formatters import side_label
+    from views.backtest_equity_curve_widget import BacktestEquityCurveWidget
+    from views.backtest_summary_widget import BacktestSummaryWidget
+    from views.backtest_trade_review_widget import BacktestTradeReviewWidget
+    from ui_style import normalize_theme_settings
     from views.wheel_guard import install_no_wheel_on_value_inputs
     from views.i18n_bindings import (
         add_combo_item,
@@ -53,7 +58,12 @@ except ImportError:  # pragma: no cover - package import path
         localize_warnings,
         trade_rows,
     )
+    from .presenters.backtest_result_display import value_tone
     from .presenters.formatters import side_label
+    from .views.backtest_equity_curve_widget import BacktestEquityCurveWidget
+    from .views.backtest_summary_widget import BacktestSummaryWidget
+    from .views.backtest_trade_review_widget import BacktestTradeReviewWidget
+    from .ui_style import normalize_theme_settings
     from .views.wheel_guard import install_no_wheel_on_value_inputs
     from .views.i18n_bindings import (
         add_combo_item,
@@ -76,6 +86,10 @@ class BacktestPanel(QtWidgets.QWidget):
         self.loaded_rule_conditions = None
         self.loaded_rule_path = ""
         self._analysis_params_source: dict[str, Any] | None = None
+        self._strategy_spec_source: dict[str, Any] | None = None
+        self._theme_settings = normalize_theme_settings(
+            getattr(self.app_window, "theme_settings", None)
+        )
         self._build_ui()
         install_no_wheel_on_value_inputs(self)
 
@@ -221,6 +235,36 @@ class BacktestPanel(QtWidgets.QWidget):
         self.resultText.setPlainText(self._tr("backtest.initial_message"))
         layout.addWidget(self.resultText)
 
+        self.summaryWidget = BacktestSummaryWidget(
+            language_provider=self._language,
+            parent=self,
+        )
+        self.summaryWidget.apply_theme(
+            getattr(self.app_window, "theme_settings", None)
+        )
+        layout.addWidget(self.summaryWidget)
+
+        self.equityCurveWidget = BacktestEquityCurveWidget(
+            language_provider=self._language,
+            parent=self,
+        )
+        self.equityCurveWidget.apply_theme(
+            getattr(self.app_window, "theme_settings", None)
+        )
+        layout.addWidget(self.equityCurveWidget)
+
+        self.tradeReviewWidget = BacktestTradeReviewWidget(
+            language_provider=self._language,
+            parent=self,
+        )
+        self.tradeReviewWidget.apply_theme(
+            getattr(self.app_window, "theme_settings", None)
+        )
+        self.equityCurveWidget.strategyEntryClicked.connect(
+            self.tradeReviewWidget.select_trade
+        )
+        layout.addWidget(self.tradeReviewWidget)
+
         result_tabs = QtWidgets.QTabWidget()
         self.resultTabs = result_tabs
         self.tradeResultTable = self._result_table(TRADE_COLUMNS)
@@ -331,9 +375,20 @@ class BacktestPanel(QtWidgets.QWidget):
         self.resultText.setPlainText(self._tr("backtest.initial_message"))
         for table in (self.tradeResultTable, self.equityResultTable, self.comparisonTable):
             table.setRowCount(0)
+        self.summaryWidget.clear()
+        self.equityCurveWidget.clear()
+        self.tradeReviewWidget.clear()
 
     def set_analysis_params_source(self, value: dict[str, Any] | None) -> None:
         self._analysis_params_source = dict(value) if value else None
+
+    def apply_strategy_spec(self, value: Any) -> None:
+        values = self.controller.apply_strategy_spec(
+            value,
+            current_values=self.collect_form_values(),
+        )
+        self._strategy_spec_source = dict(values["strategy_spec"])
+        self._set_form_values(values)
 
     def apply_analysis_params(self) -> None:
         try:
@@ -434,6 +489,13 @@ class BacktestPanel(QtWidgets.QWidget):
     def _language(self) -> str:
         return str(getattr(self.app_window, "current_language", "zh_CN") or "zh_CN")
 
+    def closeEvent(self, event) -> None:
+        self.equityCurveWidget.shutdown()
+        trade_review = getattr(self, "tradeReviewWidget", None)
+        if trade_review is not None:
+            trade_review.shutdown()
+        super().closeEvent(event)
+
     def retranslate_ui(self):
         language = self._language()
         retranslate_bound_widgets(self, self._tr)
@@ -454,6 +516,25 @@ class BacktestPanel(QtWidgets.QWidget):
             self._apply_service_result(self.last_service_result)
         elif self.last_result is not None:
             self._display_metrics(self.last_result.metrics)
+            self.summaryWidget.retranslate_ui()
+            self.equityCurveWidget.retranslate_ui()
+            self.tradeReviewWidget.retranslate_ui()
+        else:
+            self.summaryWidget.retranslate_ui()
+            self.equityCurveWidget.retranslate_ui()
+            self.tradeReviewWidget.retranslate_ui()
+
+    def apply_theme(self, theme: dict | None) -> None:
+        self._theme_settings = normalize_theme_settings(theme)
+        self.summaryWidget.apply_theme(theme)
+        self.equityCurveWidget.apply_theme(theme)
+        self.tradeReviewWidget.apply_theme(theme)
+        for table, columns in (
+            (self.tradeResultTable, TRADE_COLUMNS),
+            (self.equityResultTable, EQUITY_COLUMNS),
+            (self.comparisonTable, ("metric", "value")),
+        ):
+            self._refresh_result_table_tones(table, columns)
 
     def _safe_float(self, value: Any, default: float = 0.0) -> float:
         try:
@@ -563,6 +644,7 @@ class BacktestPanel(QtWidgets.QWidget):
                 loaded_market_key=getattr(self.app_window, "_loaded_market_key", None),
             )
             self.last_service_result = result
+            self.last_result = None
             self._apply_service_result(result)
         except Exception as exc:
             self.resultText.setPlainText(
@@ -574,22 +656,38 @@ class BacktestPanel(QtWidgets.QWidget):
             data = self._df()
             if data.empty:
                 self.resultText.setPlainText(self._tr("backtest.no_data"))
+                self.summaryWidget.clear()
+                self.equityCurveWidget.clear()
+                self.tradeReviewWidget.clear()
                 return
             symbol, interval = self._symbol_interval()
             self.last_result = run_backtest(data, self._strategy(), self._config(), symbol, interval)
+            self.last_service_result = None
             self._display_metrics(self.last_result.metrics)
+            self.summaryWidget.set_summary(self.last_result.metrics)
+            self.equityCurveWidget.set_result(
+                self.last_result,
+                initial_equity=self._config().initial_equity,
+            )
+            self.tradeReviewWidget.set_result(data, self.last_result)
         except Exception as exc:
             self.resultText.setPlainText(
                 self._tr("backtest.failed").format(
                     error=f"{type(exc).__name__}: {exc}"
                 )
             )
+            self.equityCurveWidget.clear()
+            self.summaryWidget.clear()
+            self.tradeReviewWidget.clear()
 
     def _apply_service_result(self, result) -> None:
         if not result.success:
             self.resultText.setPlainText(format_errors(result.errors, translator=self._tr))
             for table in (self.tradeResultTable, self.equityResultTable, self.comparisonTable):
                 table.setRowCount(0)
+            self.summaryWidget.clear()
+            self.equityCurveWidget.clear()
+            self.tradeReviewWidget.clear()
             return
         self.resultText.setPlainText(
             format_summary(
@@ -605,6 +703,12 @@ class BacktestPanel(QtWidgets.QWidget):
             comparison_rows(result.manual_vs_rule_comparison),
             ("metric", "value"),
         )
+        self.summaryWidget.set_summary(result.summary)
+        self.equityCurveWidget.set_result(
+            result,
+            initial_equity=self.controller.build_config(self.collect_form_values()).initial_equity,
+        )
+        self.tradeReviewWidget.set_result(self._df(), result)
 
     def _populate_result_table(
         self,
@@ -632,8 +736,41 @@ class BacktestPanel(QtWidgets.QWidget):
                     )
                 else:
                     text = str(value)
-                table.setItem(row_index, column_index, QtWidgets.QTableWidgetItem(text))
+                item = QtWidgets.QTableWidgetItem(text)
+                self._apply_result_item_tone(item, column, value)
+                table.setItem(row_index, column_index, item)
         table.resizeColumnsToContents()
+
+    def _apply_result_item_tone(
+        self,
+        item: QtWidgets.QTableWidgetItem,
+        column: str,
+        value: Any,
+    ) -> None:
+        tone = value_tone(column, value)
+        color = self._tone_color(tone)
+        if color:
+            item.setForeground(QtGui.QBrush(QtGui.QColor(color)))
+
+    def _refresh_result_table_tones(
+        self,
+        table: QtWidgets.QTableWidget,
+        columns: tuple[str, ...],
+    ) -> None:
+        for row in range(table.rowCount()):
+            for column_index, column in enumerate(columns):
+                item = table.item(row, column_index)
+                if item is None:
+                    continue
+                self._apply_result_item_tone(item, column, item.text())
+
+    def _tone_color(self, tone: str) -> str:
+        normalized = self._theme_settings
+        if tone == "success":
+            return normalized["success"]
+        if tone == "danger":
+            return normalized["danger"]
+        return normalized["text_secondary"]
 
     def run_scan(self):
         try:
@@ -687,7 +824,8 @@ class BacktestPanel(QtWidgets.QWidget):
             )
 
     def export_result(self):
-        if self.last_result is None:
+        result = self._exportable_result()
+        if result is None:
             self.resultText.setPlainText(self._tr("backtest.run_first"))
             return
         target = QtWidgets.QFileDialog.getExistingDirectory(
@@ -697,7 +835,14 @@ class BacktestPanel(QtWidgets.QWidget):
         if not target:
             return
         try:
-            out = export_backtest_result(self.last_result, Path(target), self.last_scan, self.last_walk_forward)
+            out = export_backtest_result(
+                result,
+                Path(target),
+                self.last_scan,
+                self.last_walk_forward,
+                strategy_spec=self._strategy_spec_source,
+                applied_params=self.collect_form_values(),
+            )
             self.resultText.appendPlainText(
                 "\n" + self._tr("backtest.exported").format(path=out)
             )
@@ -708,3 +853,8 @@ class BacktestPanel(QtWidgets.QWidget):
                     error=f"{type(exc).__name__}: {exc}"
                 )
             )
+
+    def _exportable_result(self):
+        if self.last_service_result is not None:
+            return self.last_service_result if self.last_service_result.success else None
+        return self.last_result

@@ -10,6 +10,7 @@ import pytest
 
 from backtesting.date_range import BacktestDateRange
 from backtesting.parameter_schema import StrategyRuleParams
+from backtesting.random_baseline import DEFAULT_RANDOM_BASELINE_SIMULATIONS, DEFAULT_RANDOM_BASELINE_SEED
 from backtesting.types import BacktestConfig
 from services.backtest_service import BacktestService
 from project_paths import REPO_ROOT
@@ -107,6 +108,12 @@ def test_backtest_service_runs_deep_v_and_returns_standard_outputs():
         "slippage",
     } <= set(result.trades.columns)
     assert {"bar_index", "time", "equity", "drawdown"} <= set(result.equity_curve.columns)
+    assert result.random_baseline_summary["status"] == "ready"
+    assert result.random_baseline_summary["simulation_count"] == DEFAULT_RANDOM_BASELINE_SIMULATIONS
+    assert result.random_baseline_summary["random_seed"] == DEFAULT_RANDOM_BASELINE_SEED
+    assert result.random_baseline_summary["target_trade_count"] == result.summary["total_trades"]
+    assert not result.random_baseline_equity_curve.empty
+    assert {"bar_index", "time", "equity", "drawdown"} <= set(result.random_baseline_equity_curve.columns)
 
 
 def test_backtest_service_returns_clear_errors_for_invalid_inputs():
@@ -209,6 +216,9 @@ def test_backtest_service_returns_safe_empty_result_when_no_rule_trade_occurs():
     assert result.summary["hit_tp_count"] == 0
     assert result.trades.empty
     assert not result.equity_curve.empty
+    assert result.random_baseline_summary["status"] == "skipped"
+    assert result.random_baseline_equity_curve.empty
+    assert any("random baseline skipped" in warning for warning in result.warnings)
 
 
 def test_backtest_service_requires_uptrend_history_when_regime_filter_is_enabled():

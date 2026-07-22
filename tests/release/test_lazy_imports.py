@@ -104,22 +104,38 @@ def test_opening_analysis_shell_defers_legacy_backtest_panels(tmp_path):
     env["PYTHONPATH"] = str(APP_DIR)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["QRC_RUNTIME_ROOT"] = str(tmp_path / "runtime")
-    probe = (
-        "import json,os,sys; "
-        "from PySide6 import QtWidgets; import main_app; "
-        "app=QtWidgets.QApplication([]); "
-        "main_app.MainWindow.request_premium_sample=lambda self: None; "
-        "window=main_app.MainWindow(); window.open_analysis_workspace(); "
-        "app.processEvents(); "
-        "before={'backtest_module':'backtest_panel' in sys.modules,"
-        "'consistency_module':'strategy_consistency_panel' in sys.modules,"
-        "'backtest_panel':window.backtestPanel is not None,"
-        "'consistency_panel':window.strategyConsistencyPanel is not None}; "
-        "analysis=window._analysis_workspace; "
-        "analysis.tabs.setCurrentWidget(analysis.consistencyTab); app.processEvents(); "
-        "before['consistency_loaded_on_demand']='strategy_consistency_panel' in sys.modules and window.strategyConsistencyPanel is not None; "
-        "print(json.dumps(before),flush=True); "
-        "os._exit(0)"
+    probe = "\n".join(
+        [
+            "import ctypes,json,sys",
+            "from PySide6 import QtWidgets",
+            "import main_app",
+            "app=QtWidgets.QApplication([])",
+            "main_app.MainWindow.request_premium_sample=lambda self: None",
+            "class DummyWatchdog:",
+            "    def __init__(self,*args,**kwargs):",
+            "        pass",
+            "    def shutdown(self):",
+            "        pass",
+            "main_app.UiFreezeWatchdog=DummyWatchdog",
+            "main_app.DailyBackupController.schedule=lambda self: None",
+            "window=main_app.MainWindow()",
+            "window.open_analysis_workspace()",
+            "app.processEvents()",
+            "before={",
+            "    'backtest_module':'backtest_panel' in sys.modules,",
+            "    'consistency_module':'strategy_consistency_panel' in sys.modules,",
+            "    'backtest_panel':window.backtestPanel is not None,",
+            "    'consistency_panel':window.strategyConsistencyPanel is not None,",
+            "}",
+            "analysis=window._analysis_workspace",
+            "analysis.tabs.setCurrentWidget(analysis.consistencyTab)",
+            "app.processEvents()",
+            "before['consistency_loaded_on_demand']='strategy_consistency_panel' in sys.modules and window.strategyConsistencyPanel is not None",
+            "watchdog=getattr(window,'ui_watchdog',None)",
+            "watchdog.shutdown() if watchdog is not None else None",
+            "print(json.dumps(before),flush=True)",
+            "ctypes.windll.kernel32.ExitProcess(0) if sys.platform == 'win32' else sys.exit(0)",
+        ]
     )
 
     run = subprocess.run(

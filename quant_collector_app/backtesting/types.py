@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 import pandas as pd
@@ -34,6 +34,7 @@ class BacktestConfig:
     funding_rate_series: Any = None
     entry_liquidity: str = "taker"
     exit_liquidity: str = "taker"
+    cooldown_bars: int = 0
 
     def to_dict(self) -> dict:
         result = asdict(self)
@@ -57,3 +58,5 @@ class BacktestResult:
     config: dict
     strategy_name: str
     warnings: list[str]
+    random_baseline_equity_curve: pd.DataFrame = field(default_factory=pd.DataFrame)
+    random_baseline_summary: dict[str, Any] | None = None

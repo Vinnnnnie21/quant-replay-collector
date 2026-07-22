@@ -88,6 +88,7 @@ def test_time_series_report_supports_english(tmp_path):
     result = build_time_series_report(_klines())
     path = write_time_series_report(result, tmp_path / "time_series_report_en.md", language="en_US")
     text = path.read_text(encoding="utf-8")
+    assert "Financial Time-Series Analysis Report" in text
     assert "Return Definition" in text
     assert "Volatility Regime" in text
     assert "Kline Liquidity Impact Proxy" in text

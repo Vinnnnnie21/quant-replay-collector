@@ -9,8 +9,14 @@ from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 from typing import Any, Mapping
 
+try:
+    from backtesting.strategy_spec import StrategySpec
+except ImportError:  # pragma: no cover - package import path
+    from ..backtesting.strategy_spec import StrategySpec
+
 
 SNAPSHOT_MANIFEST_VERSION = "qrc-research-snapshot-v1"
+PENDING_RESEARCH_SNAPSHOT_ID = "__pending_snapshot_id__"
 _ABSOLUTE_PATH = re.compile(
     r"^(?:[A-Za-z]:[\\/]|\\\\|/(?:home|Users|mnt|var|tmp)(?:/|$))"
 )
@@ -168,6 +174,7 @@ class ResearchSnapshotInput:
     versions: ResearchSnapshotVersions
     content: ResearchSnapshotContent
     hypothesis_card: HypothesisCard
+    strategy_spec: Mapping[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -299,9 +306,35 @@ def calculate_snapshot_content_hash(manifest: Mapping[str, Any]) -> str:
             "MANIFEST_CONTENT",
             f"研究快照 manifest 缺少内容字段：{exc.args[0]}",
         ) from exc
+    if "strategy_spec" in manifest:
+        core["strategy_spec"] = _snapshot_hash_strategy_spec_payload(
+            manifest["strategy_spec"]
+        )
     return hashlib.sha256(
         _canonical_json_bytes(snapshot_manifest_as_dict(core))
     ).hexdigest()
+
+
+def _snapshot_hash_strategy_spec_payload(value: Any) -> dict[str, Any]:
+    payload = snapshot_manifest_as_dict(value)
+    if not isinstance(payload, dict):
+        raise ResearchSnapshotValidationError(
+            "STRATEGY_SPEC_INVALID",
+            "StrategySpec manifest payload must be a JSON object.",
+        )
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, dict):
+        raise ResearchSnapshotValidationError(
+            "STRATEGY_SPEC_INVALID",
+            "StrategySpec provenance must be a JSON object.",
+        )
+    return {
+        **payload,
+        "provenance": {
+            **provenance,
+            "research_snapshot_id": PENDING_RESEARCH_SNAPSHOT_ID,
+        },
+    }
 
 
 def _deep_freeze(value: Any) -> Any:
@@ -397,6 +430,7 @@ def build_research_snapshot_draft(
     snapshot_input: ResearchSnapshotInput,
 ) -> ResearchSnapshotDraft:
     _validate_outcome_matrix(snapshot_input.content.outcome_rows)
+    strategy_spec = _strategy_spec_payload(snapshot_input)
     core = {
         "manifest_version": SNAPSHOT_MANIFEST_VERSION,
         "versions": _versions_payload(snapshot_input.versions),
@@ -411,6 +445,8 @@ def build_research_snapshot_draft(
             ),
         },
     }
+    if strategy_spec is not None:
+        core["strategy_spec"] = strategy_spec
     _validate_machine_keys(core)
     _reject_absolute_paths(core)
     content_hash = calculate_snapshot_content_hash(core)
@@ -421,10 +457,46 @@ def build_research_snapshot_draft(
     )
 
 
+def _strategy_spec_payload(
+    snapshot_input: ResearchSnapshotInput,
+) -> dict[str, Any] | None:
+    if snapshot_input.strategy_spec is None:
+        return None
+    spec = StrategySpec.from_dict(snapshot_manifest_as_dict(snapshot_input.strategy_spec))
+    payload = spec.to_dict()
+    versions = snapshot_input.versions
+    provenance = payload["provenance"]
+    expected = {
+        "setup_version_id": versions.setup_version_id,
+        "formula_version": versions.formula_version,
+        "feature_version": versions.feature_version,
+        "application_version": versions.application_version,
+        "random_seed": int(versions.random_seed),
+    }
+    for key, expected_value in expected.items():
+        if provenance.get(key) != expected_value:
+            raise ResearchSnapshotValidationError(
+                "STRATEGY_SPEC_CONTEXT_MISMATCH",
+                f"StrategySpec provenance {key} does not match the research snapshot.",
+            )
+    if versions.direction == "LONG" and payload["position"].get("direction") != "long_only":
+        raise ResearchSnapshotValidationError(
+            "STRATEGY_SPEC_CONTEXT_MISMATCH",
+            "StrategySpec direction does not match the research snapshot direction.",
+        )
+    if provenance.get("research_snapshot_id") != PENDING_RESEARCH_SNAPSHOT_ID:
+        raise ResearchSnapshotValidationError(
+            "STRATEGY_SPEC_CONTEXT_MISMATCH",
+            "StrategySpec research_snapshot_id must be pending before publication.",
+        )
+    return payload
+
+
 __all__ = [
     "HypothesisCard",
     "HypothesisStatus",
     "PublishedResearchSnapshot",
+    "PENDING_RESEARCH_SNAPSHOT_ID",
     "ResearchSnapshotContent",
     "ResearchSnapshotDraft",
     "ResearchSnapshotInput",

@@ -130,6 +130,68 @@ def test_actual_open_completes_three_timeframe_blind_review_before_reveal(
             for pane in workspace.chartPanes
         )
         assert all(
+            pane.volumes.cache_stats()["chunks"] > 0
+            for pane in workspace.chartPanes
+        )
+        assert all(
+            pane.volumes.boundingRect().height() >= max(
+                bar.volume for bar in pane.bars
+            )
+            for pane in workspace.chartPanes
+        )
+        assert all(
+            tuple(pane.plot.getPlotItem().vb.state["mouseEnabled"])
+            == (True, True)
+            for pane in workspace.chartPanes
+        )
+        assert all(
+            tuple(pane.volumePlot.getPlotItem().vb.state["mouseEnabled"])
+            == (True, True)
+            for pane in workspace.chartPanes
+        )
+        assert all(
+            pane.volumePlot.getPlotItem().autoBtn.isVisible()
+            for pane in workspace.chartPanes
+        )
+        assert all(
+            pane.volumePlot.getPlotItem().autoBtn.parentItem()
+            is pane.volumePlot.getPlotItem()
+            for pane in workspace.chartPanes
+        )
+        first_axis_label = workspace.chartPanes[0].volumePlot.getPlotItem().getAxis(
+            "bottom"
+        ).tickStrings(
+            [workspace.chartPanes[0].bars[0].open_time_utc_ms / 1_000.0],
+            1,
+            60,
+        )[0]
+        assert ":" in first_axis_label
+        assert "2026" not in first_axis_label
+        first_pane = workspace.chartPanes[0]
+        first_pane.plot.setYRange(100.0, 101.0, padding=0.0)
+        first_pane.volumePlot.setYRange(1.0, 2.0, padding=0.0)
+        first_pane.plot.setXRange(
+            first_pane.cutoff_time_utc_ms / 1_000.0 - 30.0,
+            first_pane.cutoff_time_utc_ms / 1_000.0,
+            padding=0.0,
+        )
+        first_pane.volumePlot.getPlotItem().autoBtn.clicked.emit(
+            first_pane.volumePlot.getPlotItem().autoBtn
+        )
+        app.processEvents()
+        assert first_pane.plot.getPlotItem().viewRange()[1][1] > max(
+            bar.high for bar in first_pane.bars
+        )
+        assert first_pane.volumePlot.getPlotItem().viewRange()[1][1] > max(
+            bar.volume for bar in first_pane.bars
+        )
+        assert first_pane.plot.getPlotItem().viewRange()[0][0] < (
+            first_pane.bars[0].open_time_utc_ms / 1_000.0
+        )
+        assert first_pane.plot.getPlotItem().viewRange()[0][1] > (
+            first_pane.bars[-1].open_time_utc_ms / 1_000.0
+        )
+        assert all(
             all(bar.close_time_utc_ms <= cutoff for bar in pane.bars)
             for pane in workspace.chartPanes
         )
@@ -227,6 +289,10 @@ def test_blind_workspace_empty_narrow_theme_and_translation_states(tmp_path):
 
         assert workspace.batchList.count() == 0
         assert all(pane.bars == () for pane in workspace.chartPanes)
+        assert all(
+            pane.volumes.cache_stats()["chunks"] == 0
+            for pane in workspace.chartPanes
+        )
         assert "没有待确认种子" in workspace.statusLabel.text()
         assert workspace.batchPanel.isHidden()
         assert workspace.batchToggleButton.isVisible()
@@ -236,6 +302,11 @@ def test_blind_workspace_empty_narrow_theme_and_translation_states(tmp_path):
         dark = normalize_theme_settings(DARK_THEME)
         assert (
             workspace.chartPanes[0].plot.backgroundBrush().color().name().upper()
+            == dark["chart_bg"]
+        )
+        assert (
+            workspace.chartPanes[0]
+            .volumePlot.backgroundBrush().color().name().upper()
             == dark["chart_bg"]
         )
         workspace.apply_theme(LIGHT_THEME)

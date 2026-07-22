@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 import math
 from typing import Any
 
@@ -13,6 +13,7 @@ try:
     from backtesting.engine import run_backtest
     from backtesting.manual_comparison import compare_manual_vs_rule
     from backtesting.parameter_schema import StrategyRuleParams
+    from backtesting.random_baseline import RANDOM_BASELINE_EQUITY_COLUMNS, run_random_entry_baseline
     from backtesting.result_summary import summarize_backtest_result
     from backtesting.types import BacktestConfig
     from research.kline_quality import validate_research_klines
@@ -23,6 +24,7 @@ except ImportError:  # pragma: no cover - package import path
     from ..backtesting.engine import run_backtest
     from ..backtesting.manual_comparison import compare_manual_vs_rule
     from ..backtesting.parameter_schema import StrategyRuleParams
+    from ..backtesting.random_baseline import RANDOM_BASELINE_EQUITY_COLUMNS, run_random_entry_baseline
     from ..backtesting.result_summary import summarize_backtest_result
     from ..backtesting.types import BacktestConfig
     from ..research.kline_quality import validate_research_klines
@@ -55,6 +57,10 @@ class BacktestServiceResult:
     manual_vs_rule_comparison: dict[str, Any] | None
     warnings: list[str]
     errors: list[str]
+    random_baseline_equity_curve: pd.DataFrame = field(
+        default_factory=lambda: pd.DataFrame(columns=RANDOM_BASELINE_EQUITY_COLUMNS)
+    )
+    random_baseline_summary: dict[str, Any] | None = None
 
 
 class BacktestService:
@@ -119,6 +125,23 @@ class BacktestService:
             warnings = list(dict.fromkeys([*raw.warnings, *summary.get("warnings", [])]))
             if comparison is not None:
                 warnings = list(dict.fromkeys([*warnings, *comparison.get("warnings", [])]))
+            random_baseline_curve = pd.DataFrame(columns=RANDOM_BASELINE_EQUITY_COLUMNS)
+            random_baseline_summary: dict[str, Any] | None = None
+            try:
+                random_baseline = run_random_entry_baseline(
+                    selected.data,
+                    raw.trades,
+                    effective_config,
+                    symbol=date_range.symbol,
+                    interval=date_range.interval,
+                )
+                random_baseline_curve = random_baseline.median_equity_curve
+                random_baseline_summary = random_baseline.summary
+                warnings = list(dict.fromkeys([*warnings, *random_baseline.warnings]))
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                warning = f"random baseline skipped: {exc}"
+                random_baseline_summary = {"status": "skipped", "warnings": [warning]}
+                warnings = list(dict.fromkeys([*warnings, warning]))
             return BacktestServiceResult(
                 success=True,
                 summary=summary,
@@ -127,6 +150,8 @@ class BacktestService:
                 manual_vs_rule_comparison=comparison,
                 warnings=warnings,
                 errors=[],
+                random_baseline_equity_curve=random_baseline_curve,
+                random_baseline_summary=random_baseline_summary,
             )
         except Exception as exc:
             return self._failure(str(exc))
@@ -141,6 +166,8 @@ class BacktestService:
             manual_vs_rule_comparison=None,
             warnings=[],
             errors=[str(message)],
+            random_baseline_equity_curve=pd.DataFrame(columns=RANDOM_BASELINE_EQUITY_COLUMNS),
+            random_baseline_summary=None,
         )
 
     @staticmethod
@@ -170,6 +197,9 @@ class BacktestService:
         if config.max_bars_hold is not None:
             if isinstance(config.max_bars_hold, bool) or int(config.max_bars_hold) <= 0:
                 raise ValueError("max_bars_hold must be a positive integer")
+        cooldown_bars = getattr(config, "cooldown_bars", 0)
+        if isinstance(cooldown_bars, bool) or int(cooldown_bars) < 0:
+            raise ValueError("cooldown_bars must be a non-negative integer")
         if config.signal_timing != "next_open":
             raise ValueError("deep-V BacktestService requires signal_timing=next_open")
 
@@ -183,6 +213,7 @@ class BacktestService:
             stop_loss_pct=config.stop_loss_pct if config.stop_loss_pct is not None else params.stop_loss_pct * 100.0,
             take_profit_pct=config.take_profit_pct if config.take_profit_pct is not None else params.take_profit_pct * 100.0,
             signal_timing="next_open",
+            cooldown_bars=params.cooldown_bars,
         )
 
 

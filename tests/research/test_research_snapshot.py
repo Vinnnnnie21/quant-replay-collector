@@ -399,6 +399,85 @@ def test_public_snapshot_publish_atomically_creates_package_and_identity(tmp_pat
     assert not list((tmp_path / "reports").glob(".*.staging-*"))
 
 
+def test_snapshot_publication_writes_structured_strategy_spec_artifact(tmp_path):
+    service, snapshot_input, _storage = _valid_snapshot_service_and_input(
+        tmp_path
+    )
+    versions = snapshot_input.versions
+    strategy_spec = {
+        "schema_version": "strategy_spec_v1",
+        "provenance": {
+            "source": "decision_research",
+            "setup_version_id": versions.setup_version_id,
+            "research_snapshot_id": "__pending_snapshot_id__",
+            "decision_mode": "entry_research",
+            "formula_version": versions.formula_version,
+            "feature_version": versions.feature_version,
+            "application_version": versions.application_version,
+            "random_seed": versions.random_seed,
+            "maturity": "EXPLORATORY_HYPOTHESIS",
+            "warnings": ["needs forward validation"],
+        },
+        "market": {
+            "symbol": "BTCUSDT",
+            "interval": versions.timeframes[0],
+            "data_start_utc_ms": versions.data_start_utc_ms,
+            "data_end_utc_ms": versions.data_end_utc_ms,
+        },
+        "entry": {
+            "rule": {
+                "all": [
+                    {"feature": "volume_ratio_20", "op": ">=", "value": 1.8}
+                ]
+            }
+        },
+        "exit": {
+            "mode": "tp_sl_timeout",
+            "take_profit_pct": 0.03,
+            "stop_loss_pct": 0.015,
+            "max_holding_bars": 20,
+        },
+        "position": {
+            "direction": "long_only",
+            "allow_overlap_positions": False,
+            "cooldown_bars": 2,
+            "notional_per_trade": 1000.0,
+            "fee_bps": 4.0,
+            "slippage_bps": 2.0,
+        },
+    }
+    snapshot_input = dataclasses.replace(
+        snapshot_input,
+        strategy_spec=strategy_spec,
+    )
+
+    publication = service.publish(
+        snapshot_input,
+        created_at="2026-02-02T00:00:00+00:00",
+    )
+
+    spec_path = publication.directory / "strategy_spec_v1.json"
+    spec_payload = json.loads(spec_path.read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (publication.directory / "export_manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert spec_payload["provenance"]["research_snapshot_id"] == (
+        publication.snapshot.snapshot_id
+    )
+    assert spec_payload["provenance"]["setup_version_id"] == (
+        versions.setup_version_id
+    )
+    assert spec_payload["provenance"]["feature_version"] == (
+        versions.feature_version
+    )
+    assert spec_payload["provenance"]["random_seed"] == versions.random_seed
+    assert manifest["files"]["strategy_spec"]["json"] == "strategy_spec_v1.json"
+    assert "strategy_spec_v1.json" in manifest["artifact_hashes"]
+
+
 def test_published_package_is_complete_portable_and_hash_verifiable(tmp_path):
     service, snapshot_input, _storage = _valid_snapshot_service_and_input(
         tmp_path

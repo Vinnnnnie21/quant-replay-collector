@@ -12,8 +12,12 @@ def test_research_translation_resources_default_to_chinese_and_keep_english():
     assert tr("research.run", "zh_CN") == "运行研究分析"
     assert tr("research.tab.data_audit", "en_US") == "Data Audit"
     assert tr("research.run", "en_US") == "Run Research Analysis"
-    assert tr("time_series.workspace", "zh_CN") == "时间序列诊断"
-    assert tr("time_series.workspace", "en_US") == "Time-Series Diagnostics"
+    assert tr("time_series.workspace", "zh_CN") == "时间序列分析"
+    assert tr("time_series.workspace", "en_US") == "Time-Series Analysis"
+    assert tr("time_series.run", "zh_CN") == "运行时间序列分析"
+    assert tr("time_series.run", "en_US") == "Run Time-Series Analysis"
+    assert tr("time_series.failed", "zh_CN") == "时间序列分析失败"
+    assert tr("time_series.failed", "en_US") == "Time-series analysis failed"
     assert tr("workspace.equity", "zh_CN") == "权益曲线"
     assert tr("time_series.pca_unavailable", "zh_CN").startswith("PCA 因子模型需要多币种收益矩阵")
 
@@ -67,7 +71,7 @@ def test_research_workspace_uses_language_for_visible_tabs():
     assert dialog.researchTabs.tabText(0) == "数据审计"
     assert dialog.btnRunResearch.text() == "打开决策研究"
     assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.researchTab)) == "历史研究结果"
-    assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.timeSeriesTab)) == "时间序列诊断"
+    assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.timeSeriesTab)) == "时间序列分析"
     assert not hasattr(dialog, "performanceTabs")
     assert dialog.selectedLabelBox.currentText() == "fwd_ret_10_side_adj"
     assert dialog.researchEventTable.isSortingEnabled() is True
@@ -87,7 +91,7 @@ def test_research_workspace_uses_language_for_visible_tabs():
     assert dialog.researchTabs.tabText(0) == "Data Audit"
     assert dialog.btnRunResearch.text() == "Open Decision Research"
     assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.researchTab)) == "Legacy Research Results"
-    assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.timeSeriesTab)) == "Time-Series Diagnostics"
+    assert dialog.tabs.tabText(dialog.tabs.indexOf(dialog.timeSeriesTab)) == "Time-Series Analysis"
     assert not hasattr(dialog, "performanceTabs")
     assert "No strategy consistency panel." in dialog.consistencyTab.toPlainText()
     dialog.close()
