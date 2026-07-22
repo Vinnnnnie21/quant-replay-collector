@@ -272,9 +272,9 @@ def write_time_series_report(result: dict, output_path: Path, language: str = "z
     limitations = result.get("limitations") or []
     if language == "en_US":
         lines = [
-            "# Financial Time-Series Diagnostic Report",
+            "# Financial Time-Series Analysis Report",
             "",
-            "This is exploratory financial time-series diagnosis, not a price forecast or trading signal.",
+            "This is exploratory financial time-series analysis, not a price forecast or trading signal.",
             "",
             "## Return Definition",
             "",
@@ -319,9 +319,9 @@ def write_time_series_report(result: dict, output_path: Path, language: str = "z
         ]
     else:
         lines = [
-            "# 金融时间序列诊断报告",
+            "# 金融时间序列分析报告",
             "",
-            "本报告是探索性金融时间序列诊断，不是价格预测，也不是交易信号。",
+            "本报告是探索性金融时间序列分析，不是价格预测，也不是交易信号。",
             "",
             "## 收益率定义",
             "",

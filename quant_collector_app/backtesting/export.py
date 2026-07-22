@@ -49,6 +49,18 @@ def _write_dictionary(output_dir: Path):
         "## walk_forward_summary.json",
         "- Optional train/validation/test summary. Test set is evaluation only and must not be used for parameter selection.",
         "",
+        "## random_baseline_median_equity_curve.csv",
+        "- Optional median equity curve from reproducible random-entry simulations using the strategy trade count and execution assumptions.",
+        "",
+        "## random_baseline_summary.json",
+        "- Optional random-entry baseline status, seed, simulation count, constraints and summary statistics.",
+        "",
+        "## strategy_spec_v1.json",
+        "- Optional structured StrategySpec v1 used to fill the backtest form. This is not parsed from Markdown.",
+        "",
+        "## backtest_applied_params.json",
+        "- Optional form and execution assumptions applied before running the research backtest.",
+        "",
     ]
     (output_dir / "data_dictionary.md").write_text("\n".join(lines), encoding="utf-8")
 
@@ -58,13 +70,16 @@ def export_backtest_result(
     output_dir: Path | str,
     parameter_scan_results: pd.DataFrame | None = None,
     walk_forward_summary: dict | None = None,
+    *,
+    strategy_spec: dict[str, Any] | None = None,
+    applied_params: dict[str, Any] | None = None,
 ) -> Path:
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
 
     trades = _df(getattr(result, "trades", None))
     equity = _df(getattr(result, "equity_curve", None))
-    metrics = dict(getattr(result, "metrics", {}) or {})
+    metrics = dict(getattr(result, "metrics", None) or getattr(result, "summary", {}) or {})
     metrics.setdefault("risk_notice", "Backtest result is for research only and does not represent live trading returns.")
 
     trades.to_csv(output / "backtest_trades.csv", index=False)
@@ -81,5 +96,22 @@ def export_backtest_result(
         json.dumps(_json_safe(summary), ensure_ascii=False, indent=2, default=str),
         encoding="utf-8",
     )
+    random_equity = _df(getattr(result, "random_baseline_equity_curve", None))
+    random_summary = getattr(result, "random_baseline_summary", None) or {}
+    random_equity.to_csv(output / "random_baseline_median_equity_curve.csv", index=False)
+    (output / "random_baseline_summary.json").write_text(
+        json.dumps(_json_safe(random_summary), ensure_ascii=False, indent=2, default=str),
+        encoding="utf-8",
+    )
+    if strategy_spec is not None:
+        (output / "strategy_spec_v1.json").write_text(
+            json.dumps(_json_safe(strategy_spec), ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+    if applied_params is not None:
+        (output / "backtest_applied_params.json").write_text(
+            json.dumps(_json_safe(applied_params), ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
     _write_dictionary(output)
     return output

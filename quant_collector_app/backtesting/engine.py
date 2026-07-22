@@ -190,6 +190,7 @@ def run_backtest(
     peak = equity
     position: dict | None = None
     pending_signal: dict[str, Any] | None = None
+    last_exit_i: int | None = None
 
     def open_position(
         i: int,
@@ -232,6 +233,10 @@ def run_backtest(
             "created_at": _utc_now_iso(),
         }
 
+    def cooldown_active(i: int) -> bool:
+        cooldown = int(getattr(config, "cooldown_bars", 0) or 0)
+        return last_exit_i is not None and cooldown > 0 and i - last_exit_i <= cooldown
+
     def close_position(
         i: int,
         row: pd.Series,
@@ -242,7 +247,7 @@ def run_backtest(
         signal_row: pd.Series | None = None,
         fill_mode_override: str | None = None,
     ):
-        nonlocal position, equity, peak
+        nonlocal position, equity, peak, last_exit_i
         if position is None:
             return
         side = str(position["side"]).upper()
@@ -291,6 +296,7 @@ def run_backtest(
             }
         )
         trades.append(trade)
+        last_exit_i = int(i)
         if equity_rows:
             equity_rows[-1]["equity_return_pct"] = ((equity / before) - 1.0) * 100.0 if before else 0.0
             equity_rows[-1]["realized_net_pnl"] = outcome["net_pnl_quote"]
@@ -330,8 +336,12 @@ def run_backtest(
                     exit_reason=exit_reason,
                 )
         elif signal == Signal.OPEN_LONG:
+            if cooldown_active(execution_i):
+                return
             open_position(execution_i, execution_row, "LONG", signal_i=signal_i, signal_row=signal_row, fill_mode_override=fill_mode)
         elif signal == Signal.OPEN_SHORT and config.allow_short:
+            if cooldown_active(execution_i):
+                return
             open_position(execution_i, execution_row, "SHORT", signal_i=signal_i, signal_row=signal_row, fill_mode_override=fill_mode)
 
     def funding_rate_bps(i: int) -> float:

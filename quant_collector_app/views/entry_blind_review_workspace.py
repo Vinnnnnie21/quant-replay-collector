@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 import pyqtgraph as pg
@@ -27,6 +29,7 @@ try:
     )
     from ui_style import SPACING, WORKSPACE_SIZES, normalize_theme_settings
     from views.candlestick_item import CandlestickItem
+    from views.volume_item import VolumeItem
     from views.main_window_presentation import (
         apply_role_button_styles,
         apply_themed_input_styles,
@@ -57,6 +60,7 @@ except ImportError:  # pragma: no cover - package import path
     )
     from ..ui_style import SPACING, WORKSPACE_SIZES, normalize_theme_settings
     from .candlestick_item import CandlestickItem
+    from .volume_item import VolumeItem
     from .main_window_presentation import (
         apply_role_button_styles,
         apply_themed_input_styles,
@@ -84,11 +88,46 @@ JudgmentVersion = EntryJudgmentVersion | ExitJudgmentVersion
 RevealedOriginalAction = (
     RevealedOriginalEntryAction | RevealedOriginalExitAction
 )
+_BJT = ZoneInfo("Asia/Shanghai")
+
+
+class _BlindedTimeAxis(pg.AxisItem):
+    """Display blinded timestamps without exposing the concrete year."""
+
+    def __init__(self) -> None:
+        super().__init__(orientation="bottom")
+        try:
+            self.enableAutoSIPrefix(False)
+        except Exception:
+            pass
+
+    def tickStrings(self, values, scale, spacing):
+        labels: list[str] = []
+        show_intraday = float(spacing or 0.0) < 86_400.0
+        for value in values:
+            try:
+                point = datetime.fromtimestamp(
+                    float(value) * float(scale),
+                    UTC,
+                ).astimezone(_BJT)
+            except (OverflowError, OSError, ValueError):
+                labels.append("")
+                continue
+            labels.append(
+                point.strftime("%m-%d %H:%M")
+                if show_intraday
+                else point.strftime("%m-%d")
+            )
+        return labels
 
 
 class _ManagedReviewPlotWidget(pg.PlotWidget):
-    def __init__(self, parent: QtWidgets.QWidget | None = None) -> None:
-        super().__init__(parent=parent)
+    def __init__(
+        self,
+        parent: QtWidgets.QWidget | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(parent=parent, **kwargs)
         menu = self.plotItem.ctrlMenu
         menu.setParent(self)
         menu.hide()
@@ -138,18 +177,40 @@ class EntryReviewChartPane(QtWidgets.QFrame):
         self.emptyLabel.setProperty("role", "mutedText")
         self.plot = _ManagedReviewPlotWidget(self)
         self.plot.setMinimumHeight(WORKSPACE_SIZES["blind_chart_min_height"])
-        self.plot.setMouseEnabled(x=True, y=False)
+        self.plot.setMouseEnabled(x=True, y=True)
         self.plot.hideButtons()
+        self.volumePlot = _ManagedReviewPlotWidget(
+            self,
+            axisItems={"bottom": _BlindedTimeAxis()},
+        )
+        self.volumePlot.setMinimumHeight(
+            WORKSPACE_SIZES["blind_volume_min_height"]
+        )
+        self.volumePlot.setMouseEnabled(x=True, y=True)
+        self.volumePlot.setXLink(self.plot)
+        self.plot.getPlotItem().hideAxis("bottom")
+        self._show_auto_button()
+        self.volumePlot.getPlotItem().autoBtn.clicked.connect(
+            self._auto_scale_charts
+        )
         self.candles = CandlestickItem()
+        self.volumes = VolumeItem()
         self.plot.addItem(self.candles)
+        self.volumePlot.addItem(self.volumes)
         self.cutoffLine = pg.InfiniteLine(angle=90)
         self.crosshairLine = pg.InfiniteLine(angle=90)
+        self.volumeCutoffLine = pg.InfiniteLine(angle=90)
+        self.volumeCrosshairLine = pg.InfiniteLine(angle=90)
         self.plot.addItem(self.cutoffLine)
         self.plot.addItem(self.crosshairLine)
+        self.volumePlot.addItem(self.volumeCutoffLine)
+        self.volumePlot.addItem(self.volumeCrosshairLine)
         self.plot.scene().sigMouseMoved.connect(self._on_mouse_moved)
+        self.volumePlot.scene().sigMouseMoved.connect(self._on_mouse_moved)
         layout.addWidget(self.titleLabel)
         layout.addWidget(self.emptyLabel)
-        layout.addWidget(self.plot, stretch=1)
+        layout.addWidget(self.plot, stretch=3)
+        layout.addWidget(self.volumePlot, stretch=1)
         self.retranslate_ui()
         self.apply_theme(None)
 
@@ -177,23 +238,21 @@ class EntryReviewChartPane(QtWidgets.QFrame):
 
     def move_crosshair(self, time_utc_ms: int) -> None:
         self.crosshair_time_utc_ms = int(time_utc_ms)
-        self.crosshairLine.setValue(self.crosshair_time_utc_ms / 1_000.0)
+        value = self.crosshair_time_utc_ms / 1_000.0
+        self.crosshairLine.setValue(value)
+        self.volumeCrosshairLine.setValue(value)
 
     def _render_bars(self) -> None:
         if not self.bars:
             self.candles.set_data([], [], [], [], [])
+            self.volumes.set_data([], [], [])
             self.emptyLabel.show()
         else:
             x = np.asarray(
                 [bar.open_time_utc_ms / 1_000.0 for bar in self.bars],
                 dtype=float,
             )
-            width = max(
-                0.001,
-                (self.bars[0].close_time_utc_ms - self.bars[0].open_time_utc_ms)
-                / 1_000.0
-                * 0.7,
-            )
+            width = self._bar_width_seconds()
             self.candles.set_data(
                 x,
                 [bar.open for bar in self.bars],
@@ -207,25 +266,79 @@ class EntryReviewChartPane(QtWidgets.QFrame):
                     self.bars[-1].open_time_utc_ms,
                 ),
             )
-            self.plot.setXRange(
-                float(x[0] - width),
-                float(x[-1] + width),
-                padding=0.02,
+            self.volumes.set_data(
+                x,
+                [bar.volume for bar in self.bars],
+                [bar.close >= bar.open for bar in self.bars],
+                width,
+                data_version=(
+                    self.interval,
+                    len(self.bars),
+                    self.bars[-1].open_time_utc_ms,
+                ),
             )
-            self.plot.enableAutoRange(axis=pg.ViewBox.YAxis)
+            self._auto_scale_charts()
             self.emptyLabel.hide()
         cutoff_seconds = self.cutoff_time_utc_ms / 1_000.0
         self.cutoffLine.setValue(cutoff_seconds)
+        self.volumeCutoffLine.setValue(cutoff_seconds)
         self.move_crosshair(self.crosshair_time_utc_ms)
 
+    def _auto_scale_charts(self) -> None:
+        if not self.bars:
+            return
+        width = self._bar_width_seconds()
+        left = self.bars[0].open_time_utc_ms / 1_000.0 - width
+        right = self.bars[-1].open_time_utc_ms / 1_000.0 + width
+        self.plot.setXRange(left, right, padding=0.02)
+
+        low = min(bar.low for bar in self.bars)
+        high = max(bar.high for bar in self.bars)
+        price_span = max(1e-6, high - low)
+        self.plot.setYRange(
+            low - price_span * 0.08,
+            high + price_span * 0.08,
+            padding=0.0,
+        )
+
+        volume_high = max(0.0, max(bar.volume for bar in self.bars))
+        self.volumePlot.setYRange(
+            0.0,
+            max(1e-6, volume_high * 1.08),
+            padding=0.0,
+        )
+        self._show_auto_button()
+
+    def _show_auto_button(self) -> None:
+        plot_item = self.volumePlot.getPlotItem()
+        plot_item.mouseHovering = True
+        plot_item.showButtons()
+        plot_item.updateButtons()
+
+    def _bar_width_seconds(self) -> float:
+        if not self.bars:
+            return 0.001
+        return max(
+            0.001,
+            (self.bars[0].close_time_utc_ms - self.bars[0].open_time_utc_ms)
+            / 1_000.0
+            * 0.7,
+        )
+
     def _on_mouse_moved(self, scene_position) -> None:
-        if self.plot.plotItem is None:
+        point = self._map_scene_to_chart_point(scene_position)
+        if point is None:
             return
-        view_box = self.plot.plotItem.vb
-        if not view_box.sceneBoundingRect().contains(scene_position):
-            return
-        point = view_box.mapSceneToView(scene_position)
         self.crosshairMoved.emit(round(point.x() * 1_000))
+
+    def _map_scene_to_chart_point(self, scene_position: Any) -> Any | None:
+        for chart in (self.plot, self.volumePlot):
+            if chart.plotItem is None:
+                continue
+            view_box = chart.plotItem.vb
+            if view_box.sceneBoundingRect().contains(scene_position):
+                return view_box.mapSceneToView(scene_position)
+        return None
 
     def retranslate_ui(self, language: str | None = None) -> None:
         if language is not None:
@@ -242,35 +355,55 @@ class EntryReviewChartPane(QtWidgets.QFrame):
     def apply_theme(self, theme: dict | None) -> None:
         settings = normalize_theme_settings(theme)
         self.plot.setBackground(settings["chart_bg"])
+        self.volumePlot.setBackground(settings["chart_bg"])
         self.plot.showGrid(
             x=True,
             y=True,
             alpha=settings["grid_alpha"] / 100.0,
         )
-        for side in ("left", "bottom", "right", "top"):
-            axis = self.plot.getPlotItem().getAxis(side)
-            if axis is not None:
-                axis.setPen(pg.mkPen(settings["chart_axis"]))
-                axis.setTextPen(pg.mkPen(settings["chart_axis"]))
+        self.volumePlot.showGrid(
+            x=True,
+            y=True,
+            alpha=settings["grid_alpha"] / 100.0,
+        )
+        for chart in (self.plot, self.volumePlot):
+            for side in ("left", "bottom", "right", "top"):
+                axis = chart.getPlotItem().getAxis(side)
+                if axis is not None:
+                    axis.setPen(pg.mkPen(settings["chart_axis"]))
+                    axis.setTextPen(pg.mkPen(settings["chart_axis"]))
         self.candles.set_style(
             settings["chart_up"],
             settings["chart_down"],
             settings["chart_wick"],
         )
-        self.cutoffLine.setPen(
-            pg.mkPen(
-                settings["warning"],
-                style=QtCore.Qt.DashLine,
-            )
+        self.volumes.set_style(
+            settings["chart_volume_up"],
+            settings["chart_volume_down"],
         )
-        self.crosshairLine.setPen(pg.mkPen(settings["chart_crosshair"]))
+        cutoff_pen = pg.mkPen(
+            settings["warning"],
+            style=QtCore.Qt.DashLine,
+        )
+        crosshair_pen = pg.mkPen(settings["chart_crosshair"])
+        self.cutoffLine.setPen(cutoff_pen)
+        self.volumeCutoffLine.setPen(cutoff_pen)
+        self.crosshairLine.setPen(crosshair_pen)
+        self.volumeCrosshairLine.setPen(crosshair_pen)
 
     def shutdown(self) -> None:
         try:
             self.plot.scene().sigMouseMoved.disconnect(self._on_mouse_moved)
         except (RuntimeError, TypeError):
             pass
+        try:
+            self.volumePlot.scene().sigMouseMoved.disconnect(
+                self._on_mouse_moved
+            )
+        except (RuntimeError, TypeError):
+            pass
         self.plot.shutdown()
+        self.volumePlot.shutdown()
 
 
 class EntryBlindReviewWorkspace(QtWidgets.QWidget):

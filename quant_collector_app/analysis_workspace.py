@@ -493,6 +493,10 @@ class AnalysisWorkspace(QtWidgets.QDialog):
         if theme is None:
             return
         self.decisionResearchWorkspace.apply_theme(theme)
+        backtest_panel = getattr(self.app_window, "backtestPanel", None)
+        apply_backtest_theme = getattr(backtest_panel, "apply_theme", None)
+        if callable(apply_backtest_theme):
+            apply_backtest_theme(theme)
         try:
             from views.main_window_presentation import (
                 apply_role_button_styles,
@@ -2067,7 +2071,7 @@ class AnalysisWorkspace(QtWidgets.QDialog):
             self.last_time_series_report_text = report_path.read_text(encoding="utf-8")
             self._populate_time_series_views()
         except Exception as exc:
-            logger.exception("Time-series diagnostics failed")
+            logger.exception("Time-series analysis failed")
             QtWidgets.QMessageBox.critical(self, self._tr("time_series.workspace"), f"{self._tr('time_series.failed')}: {exc}")
 
     def _metric_rows(self, values: dict) -> list[dict]:

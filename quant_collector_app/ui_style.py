@@ -172,6 +172,7 @@ SPACING = {
 WORKSPACE_SIZES = {
     "audit_detail_min_height": 160,
     "blind_chart_min_height": 130,
+    "blind_volume_min_height": 56,
     "blind_batch_min_width": 180,
     "blind_chart_column_min_width": 420,
     "blind_form_min_width": 260,

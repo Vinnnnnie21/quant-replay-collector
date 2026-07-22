@@ -588,6 +588,13 @@ def test_analysis_workspace_theme_switch_updates_performance_and_review_charts(t
     host.theme_settings = dict(LIGHT_THEME)
     host.storage = StorageManager(tmp_path / "theme-switch.db")
     host.task_lifecycle = BackgroundTaskLifecycle()
+    applied_backtest_themes = []
+
+    class BacktestPanelProbe(QtWidgets.QWidget):
+        def apply_theme(self, theme):
+            applied_backtest_themes.append(theme)
+
+    host.backtestPanel = BacktestPanelProbe()
     dialog = AnalysisWorkspace(host)
 
     try:
@@ -604,8 +611,10 @@ def test_analysis_workspace_theme_switch_updates_performance_and_review_charts(t
         expected_dark = EXCHANGE_DARK_THEME["chart_bg"].lower()
         assert review_plot.backgroundBrush().color().name() == expected_dark
         assert dialog.equityCurvePlot.backgroundBrush().color().name() == expected_dark
+        assert applied_backtest_themes[-1]["chart_bg"] == EXCHANGE_DARK_THEME["chart_bg"]
     finally:
         dialog.close()
+        host.backtestPanel.close()
         host.close()
         app.processEvents()
 
@@ -1684,6 +1693,6 @@ def test_research_controls_sorting_and_single_symbol_pca_hint():
     dialog.last_time_series_summary = {"factor_model": {"available": False}}
     dialog._populate_time_series_views()
     assert "PCA 因子模型需要多币种收益矩阵" in dialog.tsFactorTable.item(0, 1).text()
-    assert dialog.btnRunTimeSeries.text() == "运行时间序列诊断"
+    assert dialog.btnRunTimeSeries.text() == "运行时间序列分析"
     dialog.close()
     app.processEvents()

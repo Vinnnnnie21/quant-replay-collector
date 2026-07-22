@@ -21,7 +21,7 @@ def test_chinese_time_series_report_is_generated(tmp_path):
     result = build_time_series_report(frame)
     path = write_time_series_report(result, tmp_path / "time_series_report.md")
     text = path.read_text(encoding="utf-8")
-    assert "# 金融时间序列诊断报告" in text
+    assert "# 金融时间序列分析报告" in text
     assert "尾部风险" in text
     assert "不是交易信号" in text
     assert "需要多币种收益矩阵" in text

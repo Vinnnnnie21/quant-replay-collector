@@ -9,6 +9,7 @@ try:
     from analysis.rule_parameter_export import analysis_output_to_backtest_params
     from backtesting.date_range import BacktestDateRange
     from backtesting.parameter_schema import StrategyRuleParams
+    from backtesting.strategy_spec import StrategySpec
     from backtesting.types import BacktestConfig
     from services.backtest_service import (
         EQUITY_OUTPUT_COLUMNS,
@@ -20,6 +21,7 @@ except ImportError:  # pragma: no cover - package import path
     from ..analysis.rule_parameter_export import analysis_output_to_backtest_params
     from ..backtesting.date_range import BacktestDateRange
     from ..backtesting.parameter_schema import StrategyRuleParams
+    from ..backtesting.strategy_spec import StrategySpec
     from ..backtesting.types import BacktestConfig
     from ..services.backtest_service import (
         EQUITY_OUTPUT_COLUMNS,
@@ -134,6 +136,38 @@ class BacktestController:
         mapped = analysis_output_to_backtest_params(dict(analysis_params), defaults=defaults)
         merged = dict(current_values or BacktestController.default_form_values())
         merged.update(mapped.to_dict())
+        return merged
+
+    @staticmethod
+    def apply_strategy_spec(
+        strategy_spec: StrategySpec | Mapping[str, Any],
+        *,
+        current_values: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        spec = (
+            strategy_spec
+            if isinstance(strategy_spec, StrategySpec)
+            else StrategySpec.from_dict(dict(strategy_spec))
+        )
+        merged = dict(current_values or BacktestController.default_form_values())
+        exit_rules = spec.exit
+        position = spec.position
+        market = spec.market
+        merged.update(
+            {
+                "symbol": str(market["symbol"]).strip().upper(),
+                "interval": str(market["interval"]).strip(),
+                "direction": position["direction"],
+                "take_profit_pct": float(exit_rules["take_profit_pct"]),
+                "stop_loss_pct": float(exit_rules["stop_loss_pct"]),
+                "max_holding_bars": int(exit_rules["max_holding_bars"]),
+                "cooldown_bars": int(position["cooldown_bars"]),
+                "notional_per_trade": float(position["notional_per_trade"]),
+                "fee_bps": float(position["fee_bps"]),
+                "slippage_bps": float(position["slippage_bps"]),
+                "strategy_spec": spec.to_dict(),
+            }
+        )
         return merged
 
 

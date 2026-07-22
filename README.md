@@ -18,8 +18,8 @@ QRC 适合希望系统记录和检查主观判断的研究者。当前版本可�
 
 - 回放本地或交易所公开 K 线，记录模拟开仓、全量平仓、止盈止损、标签和备注；
   *Replay local or publicly available exchange candles and record simulated entries, full exits, take-profit and stop-loss levels, labels, and notes;*
-- 查看账户权益、交易明细、策略一致性、回测研究和时间序列诊断；
-  *Review account equity, trade details, strategy consistency, backtest research, and time-series diagnostics;*
+- 查看账户权益、交易明细、策略一致性、回测研究和时间序列分析；
+  *Review account equity, trade details, strategy consistency, backtest research, and time-series analysis;*
 - 为开仓和平仓建立独立的盲审样本；
   *Create separate blind-review samples for entries and exits;*
 - 按市场级重叠区间生成“独立行情片段”，避免把相关样本当成多份独立证据；
@@ -50,7 +50,7 @@ QRC 适合希望系统记录和检查主观判断的研究者。当前版本可�
 | 回测研究<br><sub>Backtest research</sub> | 在明确费用、滑点和成交规则后验证候选规则<br><sub>Evaluate candidate rules under explicit fee, slippage, and fill assumptions.</sub> |
 | USDT 溢价<br><sub>USDT premium</sub> | 保存和查看公开市场溢价样本<br><sub>Save and inspect public-market premium samples.</sub> |
 | 历史研究结果<br><sub>Historical research results</sub> | 读取旧导出和历史报告<br><sub>Read earlier exports and historical reports.</sub> |
-| 时间序列诊断<br><sub>Time-series diagnostics</sub> | 查看收益分布、序列依赖、波动和尾部风险等统计特征<br><sub>Inspect return distributions, serial dependence, volatility, tail risk, and related statistics.</sub> |
+| 时间序列分析<br><sub>Time-series analysis</sub> | 查看收益分布、序列依赖、波动和尾部风险等统计特征<br><sub>Inspect return distributions, serial dependence, volatility, tail risk, and related statistics.</sub> |
 
 ## 决策研究五步
 

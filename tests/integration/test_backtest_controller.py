@@ -11,6 +11,7 @@ import pytest
 
 from backtesting.date_range import BacktestDateRange
 from backtesting.parameter_schema import StrategyRuleParams
+from backtesting.strategy_spec import StrategySpec
 from backtesting.types import BacktestConfig
 from controllers.backtest_controller import BacktestController
 from project_paths import REPO_ROOT
@@ -140,6 +141,66 @@ def test_controller_applies_analysis_params_and_rejects_missing_source():
     assert values["max_holding_bars"] == 12
     with pytest.raises(ValueError, match="No analysis candidate"):
         controller.apply_analysis_params(None)
+
+
+def test_controller_applies_strategy_spec_without_running_backtest_service():
+    service = _BacktestService()
+    controller = BacktestController(service=service)
+    spec = StrategySpec.from_dict(
+        {
+            "schema_version": "strategy_spec_v1",
+            "provenance": {
+                "source": "decision_research",
+                "setup_version_id": "setup-version-1",
+                "research_snapshot_id": "snapshot-abc",
+                "decision_mode": "entry_research",
+                "formula_version": "decision-research-v1",
+                "feature_version": "features-v1",
+                "application_version": "1.6.0",
+                "random_seed": 42,
+                "maturity": "EXPLORATORY_HYPOTHESIS",
+                "warnings": [],
+            },
+            "market": {
+                "symbol": "BTCUSDT",
+                "interval": "5m",
+                "data_start_utc_ms": 1_700_000_000_000,
+                "data_end_utc_ms": 1_700_086_400_000,
+            },
+            "entry": {"rule": {"all": [{"feature": "volume_ratio_20", "op": ">=", "value": 1.8}]}},
+            "exit": {
+                "mode": "tp_sl_timeout",
+                "take_profit_pct": 0.03,
+                "stop_loss_pct": 0.015,
+                "max_holding_bars": 20,
+            },
+            "position": {
+                "direction": "long_only",
+                "allow_overlap_positions": False,
+                "cooldown_bars": 4,
+                "notional_per_trade": 2500.0,
+                "fee_bps": 5.0,
+                "slippage_bps": 1.5,
+            },
+        }
+    )
+
+    values = controller.apply_strategy_spec(
+        spec,
+        current_values=_form_values(symbol="ETHUSDT"),
+    )
+
+    assert values["symbol"] == "BTCUSDT"
+    assert values["interval"] == "5m"
+    assert values["take_profit_pct"] == 0.03
+    assert values["stop_loss_pct"] == 0.015
+    assert values["max_holding_bars"] == 20
+    assert values["cooldown_bars"] == 4
+    assert values["notional_per_trade"] == 2500.0
+    assert values["fee_bps"] == 5.0
+    assert values["slippage_bps"] == 1.5
+    assert values["strategy_spec"]["provenance"]["research_snapshot_id"] == "snapshot-abc"
+    assert service.calls == []
 
 
 def test_controller_runs_real_service_and_returns_zero_trade_warning():
